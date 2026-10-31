@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.io.File
 import java.io.FileInputStream
 
 plugins {
@@ -21,14 +22,18 @@ fun envOrProp(key: String, fallback: String?): String? =
 ///
 /// CI 传的是相对路径（`app/upload-keystore.jks`），而本文件跑在 app 模块里，
 /// 直接 file(...) 会解析成 android/app/app/...。统一按 rootProject 解析。
-fun resolveKeystore(raw: String?): java.io.File? {
+///
+/// 注意：这里必须 `import java.io.File` 后用短名。
+/// 写全限定名 `java.io.File(...)` 在 Kotlin DSL 里会报
+/// `Unresolved reference 'io'`——脚本编译期不认这种调用形式。
+fun resolveKeystore(raw: String?): File? {
     if (raw.isNullOrBlank()) return null
-    val f = java.io.File(raw)
+    val f = File(raw)
     val resolved = if (f.isAbsolute) f else rootProject.file(raw)
     return if (resolved.exists()) resolved else null
 }
 
-val keystoreFile: java.io.File? = resolveKeystore(envOrProp("KEYSTORE_PATH", null))
+val keystoreFile: File? = resolveKeystore(envOrProp("KEYSTORE_PATH", null))
 val hasKeystore = keystoreFile != null
 
 android {
