@@ -1,0 +1,81 @@
+== 列表解析 ==
+latest-p1.html  cards=23  pager=page 1 / 14632
+   sample: #4703941 4:00 views=13 rating=0% (1) comments=0 hd=true
+    (フィオニー) Phoenix ❤ Happy Halloween【Zenless Zone Zero (ゼンレスゾーンゼロ) BlenderMMD】
+    thumb=4703000/4703941/336x189/3.jpg
+  PASS  latest-p1.html 卡片数 >= 1  (23)
+  PASS  latest-p1.html 首卡字段完整
+  PASS  latest-p1.html 分页器可读  (page 1 / 14632)
+latest-p2.html  cards=23  pager=page 2 / 14632
+   sample: #4703155 1:01 views=4.0K rating=100% (5) comments=0 hd=true
+    Buizel Tentacles
+    thumb=4703000/4703155/336x189/3.jpg
+  PASS  latest-p2.html 卡片数 >= 1  (23)
+  PASS  latest-p2.html 首卡字段完整
+  PASS  latest-p2.html 分页器可读  (page 2 / 14632)
+search-zelda-p2.html  cards=24  pager=page 2 / 106
+   sample: #3279864 1:03 views=124K rating=84% (387) comments=0 hd=true
+    Zelda Throated (Blacked) - Commission Project [FaustTerm]
+    thumb=3279000/3279864/336x189/3.jpg
+  PASS  search-zelda-p2.html 卡片数 >= 1  (24)
+  PASS  search-zelda-p2.html 首卡字段完整
+  PASS  search-zelda-p2.html 分页器可读  (page 2 / 106)
+tag-sex-p2.html  cards=23  pager=page 2 / 1950
+   sample: #4702684 3:31 views=7.3K rating=100% (38) comments=0 hd=true
+    Wuthering Waves - Suiming [last animation]
+    thumb=4702000/4702684/336x189/3.jpg
+  PASS  tag-sex-p2.html 卡片数 >= 1  (23)
+  PASS  tag-sex-p2.html 首卡字段完整
+  PASS  tag-sex-p2.html 分页器可读  (page 2 / 1950)
+model-derpixon.html  cards=23  pager=page 1 / 4
+   sample: #4687207 8:07 views=36K rating=84% (45) comments=0 hd=true
+    Paizuri Goon-ness
+    thumb=4687000/4687207/336x189/6.jpg
+  PASS  model-derpixon.html 卡片数 >= 1  (23)
+  PASS  model-derpixon.html 首卡字段完整
+
+== 分类索引解析 ==
+categories=36 withImage=15 withoutImage=21
+  PASS  分类条数 >= 10  (36)
+
+== 详情解析 ==
+  PASS  详情可解析
+id=4703101 title=Moe Love 2 | Doll House
+duration=24:03 views=20K (19,505) added=11 hours ago author=335916
+streams=[360p, 480p, 720p, 1080p]
+   360p -> 4703101_360.mp4  token=true
+   480p -> 4703101_480p.mp4  token=true
+   720p -> 4703101_720p.mp4  token=true
+   1080p -> 4703101_1080p.mp4  token=true
+tags(21)=[blowjob, handjob, cum-in-mouth, cum-on-tongue, thigh-sex, titty-fuck, big-breasts, bouncing-breasts]
+categories=[3d] models=[doll-house]
+poster=https://rule34video.com/contents/videos_screenshots/4703000/4703101/preview.jpg
+timeline=https://rule34video.com/contents/videos_screenshots/4703000/4703101/timelines/360p/196x109/{time}.jpg interval=140
+desc=Animation by Doll House, Please support artist link belowhttps://www.dlsite.com/maniax/cir...
+related=24
+  PASS  id 非空  (4703101)
+  PASS  标题非空
+  PASS  时长形如 mm:ss  (24:03)
+  PASS  清晰度 >= 4 档  (360p,480p,720p,1080p)
+  PASS  所有直链是 http 且带 token
+  PASS  标签 15~30 个  (21)
+  PASS  模型恰好 1 个  ([doll-house])
+  PASS  分类恰好 1 个且为 3d  ([3d])
+  PASS  封面是 http
+  PASS  时间轴模板含 {time}
+  PASS  描述非空
+  PASS  相关推荐 >= 1  (24)
+
+== 坏 HTML 容错 ==
+  PASS  空字符串不崩
+  PASS  垃圾 HTML 列表返回空
+  PASS  垃圾 HTML 详情返回 null
+  PASS  被截断的 flashvars 不崩
+
+== 登录表单解析 ==
+  PASS  找到登录表单
+fields=[remember_me_csrf_token, username, pass, remember_me, action, email_link, redirect_to]
+  PASS  含 username/pass/action
+  PASS  含 csrf 令牌
+
+全部通过 ✅

@@ -1,0 +1,31 @@
+# 统一换行符，避免「Windows 上提交、Linux CI 上炸」这类问题。
+#
+# 踩过的坑：
+# - gradlew 是 shell 脚本。Windows 上提交时若被转成 CRLF，Ubuntu 上执行会报
+#   `/usr/bin/env: 'sh\r': No such file or directory`，CI 直接红。
+# - 同理 gradlew.bat 必须保持 CRLF（Windows 批处理对 LF 不友好）。
+# - *.py / *.sh / *.yml 保持 LF。
+
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell 脚本必须是 LF，且要可执行
+*.sh text eol=lf
+android/gradlew text eol=lf
+android/gradlew.bat text eol=crlf
+
+# 二进制文件不要做任何换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ttf binary
+*.otf binary
+*.woff2 binary
+*.jar binary
+*.apk binary
+*.keystore binary
+*.jks binary

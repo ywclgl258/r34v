@@ -1,0 +1,15 @@
+/.gradle
+/captures/
+/local.properties
+GeneratedPluginRegistrant.java
+.cxx/
+
+# 注意：Flutter 模板默认会忽略 gradlew、gradlew.bat、gradle-wrapper.jar。
+# 这里**全部保留**——CI 从零 clone 后直接跑 gradlew，缺任何一个都会失败，
+# 而 CI 里没有「重新生成 wrapper」这一步。
+
+# Remember to never publicly share your keystore.
+# See https://flutter.dev/to/reference-keystore
+key.properties
+**/*.keystore
+**/*.jks

@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "authoritySchema": "tavernweave/project-orchestration/v1",
+  "projectId": "r34v-android",
+  "title": "R34V · rule34video 安卓客户端",
+  "profile": "single-blueprint",
+  "state": "implementation-candidate",
+  "authorityFile": "总设计案.md",
+  "nextFile": "NEXT.md",
+  "blueprintPolicy": {
+    "masterFile": "项目实现步骤蓝图.md",
+    "maxDepth": 1,
+    "maxChildren": 0,
+    "runtimePersistentBlueprintBudget": 0,
+    "blueprints": [
+      {
+        "id": "BP-ROOT",
+        "path": "项目实现步骤蓝图.md",
+        "parentId": null,
+        "depth": 1,
+        "status": "candidate"
+      }
+    ]
+  },
+  "runtimeRefinementPolicy": {
+    "trigger": "observed-problem-or-failed-exit-condition",
+    "maxDepth": 1,
+    "maxOpenBranches": 1,
+    "persistent": false,
+    "mayExpandProductScope": false,
+    "mustReturnToParent": true
+  },
+  "runtimeRefinements": [],
+  "discussionDirections": [
+    {
+      "id": "D1-login-favorites",
+      "topic": "首版是否含登录与在线收藏",
+      "level": "core",
+      "roundLimit": 3,
+      "roundsUsed": 3,
+      "status": "frozen",
+      "recommendation": "首版不含；收藏先用本地实现，登录进 P5 之后的 Growth Track"
+    },
+    {
+      "id": "D2-offline-download",
+      "topic": "首版是否含下载到本地",
+      "level": "standard",
+      "roundLimit": 2,
+      "roundsUsed": 2,
+      "status": "frozen",
+      "recommendation": "首版不含；下载是独立领域（前台服务/通知/断点续传），进 Growth Track"
+    },
+    {
+      "id": "D3-explore-scope",
+      "topic": "标签/分类/模型/搜索进首版的范围",
+      "level": "standard",
+      "roundLimit": 2,
+      "roundsUsed": 2,
+      "status": "frozen",
+      "recommendation": "四类入口全要，但只做列表与分页，不做筛选面板"
+    },
+    {
+      "id": "D4-min-sdk",
+      "topic": "最低安卓版本",
+      "level": "peripheral",
+      "roundLimit": 1,
+      "roundsUsed": 1,
+      "status": "frozen",
+      "recommendation": "minSdk 24（Android 7.0），覆盖广"
+    }
+  ],
+  "frontendDecision": {
+    "recommended": "independent-ui",
+    "fit": "suitable",
+    "reason": "目标是手机端原生视频播放场景；站点纯 HTML 可解析，播放依赖原生解码器，WebView 套壳路线已由现有仓库 README 自证全屏不可用",
+    "fallback": "PWA + 系统浏览器，仅作临时验证，失去全屏控制与本地片库",
+    "reopenWhen": "站点改为 SPA / 上线 Cloudflare 强挑战 / 直链加密到客户端无法还原",
+    "driverOverride": false,
+    "prototypeGateRequired": false,
+    "realHostGateRequired": true
+  },
+  "acceptance": {
+    "automated": "passed",
+    "staticPreview": "passed",
+    "realHost": "pending",
+    "driver": {
+      "status": "pending",
+      "source": "driver"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/upload-keystore.jks
+android/app/*.jks
+android/app/*.keystore
+**/*.keystore
+**/*.jks
+key.properties
+
+# 构建产物
+*.apk
+*.aab
+build/symbols/
+
+# 上一版 Tauri 脚手架（保留源码，忽略它的构建产物）
+legacy-tauri/src-tauri/target/
+legacy-tauri/src-tauri/gen/
+legacy-tauri/node_modules/
+
+# 探测用的临时文件
+.spike/*.html
+.spike/*.jpg
+.spike/*.log
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 字体子集的源文件（1558KB），只在跑 tool/subset_font.py 时需要
+assets/fonts/NotoSansSC-Regular.woff2

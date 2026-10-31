@@ -1,0 +1,161 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      live_check:
+        description: '顺带回连真实站点做一次联通验证'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 全局关掉 Flutter 的遥测，CI 日志干净且快一点
+  FLUTTER_SUPPRESS_ANALYTICS: 'true'
+  # Gradle 内存给小机器留余地
+  GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.daemon=false'
+
+jobs:
+  # ---------------------------------------------------------------- 静态检查 + 单测
+  # 这一步不需要 Android SDK，跑得快，任何 push 都先过这道闸
+  check:
+    name: 分析与单测
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.6'
+          cache: true
+
+      - name: 拉依赖
+        run: flutter pub get
+
+      - name: 静态分析（零容忍）
+        run: flutter analyze --no-fatal-infos
+
+      - name: 单测（含解析层 fixture 回归）
+        run: flutter test --reporter expanded
+
+      - name: 回连真实站点（可选）
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.live_check == 'true' }}
+        run: flutter test --dart-define=R34V_LIVE=true test/api_test.dart --reporter expanded
+
+  # ---------------------------------------------------------------- 出 APK
+  build:
+    name: 打包 APK
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.6'
+          cache: true
+
+      - name: 拉依赖
+        run: flutter pub get
+
+      - name: 修正 gradlew 可执行位
+        run: |
+          # 仓库在 Windows 上开发，git 的 core.fileMode=false 记录不了 +x。
+          # clone 到 Ubuntu 后 gradlew 没有执行权限，Gradle 直接起不来。
+          chmod +x android/gradlew || true
+
+      - name: 生成应用图标
+        run: |
+          python -m pip install --quiet pillow
+          python tool/gen_android_icons.py
+
+      - name: 解码签名密钥（有则用，没有就退回 debug 签名）
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+            echo "have_key=true" >> "$GITHUB_OUTPUT"
+            echo "已配置签名密钥，产出的包可覆盖安装。"
+          else
+            echo "have_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 KEYSTORE_BASE64，将产出 debug 签名包（可安装，但不能覆盖已装的 release 包）。"
+          fi
+
+      - name: 构建 APK
+        env:
+          # Gradle 从这些环境变量读签名配置（见 android/app/build.gradle.kts）
+          KEYSTORE_PATH: ${{ steps.signing.outputs.have_key == 'true' && 'app/upload-keystore.jks' || '' }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          HAVE_KEY: ${{ steps.signing.outputs.have_key }}
+        run: |
+          # 只出 arm64 与 armv7：覆盖近十年的手机，省一半构建时间
+          if [ "$HAVE_KEY" = "true" ]; then
+            flutter build apk --release \
+              --target-platform android-arm64,android-arm \
+              --obfuscate --split-debug-info=build/symbols
+          else
+            flutter build apk --debug \
+              --target-platform android-arm64,android-arm
+          fi
+
+      - name: 构建失败时的排查提示
+        if: failure()
+        run: |
+          echo "### 构建失败" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "常见原因，按出现频率排：" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. **media_kit 下载原生库失败** —— 该插件构建时会从 GitHub Releases 拉 libmpv 的 .jar（约 20MB）并校验 MD5。" >> "$GITHUB_STEP_SUMMARY"
+          echo "   日志里找 \`Downloading file from:\` 或 \`MD5 verification failed\`。重跑一次通常就好；持续失败说明 release 被删或网络被限。" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. **签名配置不全** —— 只配了 \`KEYSTORE_BASE64\` 但缺 \`KEYSTORE_PASSWORD\` / \`KEY_ALIAS\` / \`KEY_PASSWORD\`。" >> "$GITHUB_STEP_SUMMARY"
+          echo "   要么四个都配，要么四个都不配（走 debug 签名）。" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. **Gradle / AGP 版本冲突** —— 看 \`Unsupported class file major version\` 或 AGP 相关报错。" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 记录构建产物信息
+        run: |
+          echo "### 构建结果" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          ls -lh build/app/outputs/flutter-apk/*.apk | awk '{print "- `" $9 "` — " $5}' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "签名：${{ steps.signing.outputs.have_key == 'true' && 'release（可覆盖安装）' || 'debug（仅自用）' }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: r34v-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 上传混淆符号（排查线上崩溃用）
+        if: ${{ steps.signing.outputs.have_key == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: r34v-symbols
+          path: build/symbols
+          retention-days: 30
+
