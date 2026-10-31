@@ -13,3 +13,7 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# 签名凭据与密钥库（只在本机与 GitHub Secrets，不进仓库）
+upload-keystore.properties
+upload-keystore.jks
