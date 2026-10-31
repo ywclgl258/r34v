@@ -62,8 +62,12 @@ enum FeedKind {
   latest('最新更新'),
   topRated('高分榜'),
   mostPopular('热门榜'),
+  forYou('为你推荐'),
+  topCharacters('角色排行'),
+  topArtists('作者排行'),
   search('搜索'),
   tag('标签'),
+  character('角色'),
   category('分类'),
   model('作者');
 
@@ -107,10 +111,19 @@ class FeedRequest {
         return '/top-rated/$p';
       case FeedKind.mostPopular:
         return '/most-popular/$p';
+      // for-you 没有分页，站点按成员画像一次给一批
+      case FeedKind.forYou:
+        return '/for-you/';
+      case FeedKind.topCharacters:
+        return '/top-characters/';
+      case FeedKind.topArtists:
+        return '/top-model/';
       case FeedKind.search:
         return '/search/${Uri.encodeComponent(target)}/$p';
       case FeedKind.tag:
         return '/tags/$target/$p';
+      case FeedKind.character:
+        return '/characters/$target/$p';
       case FeedKind.category:
         return '/categories/$target/$p';
       case FeedKind.model:

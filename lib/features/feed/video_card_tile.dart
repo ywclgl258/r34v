@@ -47,6 +47,14 @@ class VideoCardTile extends ConsumerWidget {
                       bottom: 6,
                       child: _Badge(text: 'HD', accent: true),
                     ),
+                  // 类型角标（Futa / Gay / …）。放在左下、HD 之上，
+                  // 因为两者位置会撞——HD 在最底，类型往上挪一行。
+                  if (card.type.isNotEmpty)
+                    Positioned(
+                      left: 6,
+                      bottom: card.isHd ? 24 : 6,
+                      child: _TypeBadge(text: card.type),
+                    ),
                   // 看过的话画一条进度
                   if (progress != null && progress.positionSeconds > 0)
                     Positioned(
@@ -174,3 +182,33 @@ class _Badge extends StatelessWidget {
   }
 }
 
+
+/// 类型角标（Futa / Gay / Straight / Music / Iwara）。
+///
+/// 用琥珀色和 HD 的白色区分开：HD 是画质信息，类型是内容标记，
+/// 两者混在一起看不出重点。
+class _TypeBadge extends StatelessWidget {
+  const _TypeBadge({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+      decoration: BoxDecoration(
+        color: const Color(0xCCB8860B),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 8.5,
+          fontWeight: FontWeight.w600,
+          height: 1.2,
+        ),
+      ),
+    );
+  }
+}

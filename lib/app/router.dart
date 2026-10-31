@@ -8,6 +8,7 @@ import '../features/explore/explore_page.dart';
 import '../features/feed/feed_page.dart';
 import '../features/library/library_page.dart';
 import '../features/player/player_page.dart';
+import '../features/auth/login_page.dart';
 import '../features/search/search_page.dart';
 import '../features/settings/settings_page.dart';
 import '../features/shell/root_shell.dart';
@@ -59,6 +60,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           videoId: state.pathParameters['id'] ?? '',
           slug: state.pathParameters['slug'] ?? '',
         ),
+      ),
+      GoRoute(
+        path: '/login',
+        builder: (context, state) => const LoginPage(),
       ),
       // 搜索走独立页（有自己的输入框、历史、空态），不套底部导航
       GoRoute(

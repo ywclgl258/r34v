@@ -47,9 +47,19 @@ class SiteClientImpl implements SiteClient {
   }
 
   @override
-  Future<HttpResult> getHtml(String url, {String? referer}) {
+  Future<HttpResult> getHtml(
+    String url, {
+    String? referer,
+    Map<String, String>? headers,
+  }) {
     return _withRetry(
-      () => _request(url, method: 'GET', referer: referer, accept: 'text/html,application/xhtml+xml'),
+      () => _request(
+        url,
+        method: 'GET',
+        referer: referer,
+        accept: 'text/html,application/xhtml+xml',
+        headers: headers,
+      ),
     );
   }
 

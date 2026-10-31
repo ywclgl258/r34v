@@ -55,7 +55,12 @@ class HttpException implements Exception {
 /// 两者对外行为一致，上层（解析、UI）不需要知道跑在哪个平台。
 abstract class SiteClient {
   /// GET 一个 HTML 页面。
-  Future<HttpResult> getHtml(String url, {String? referer});
+  /// [headers] 用于附加请求头（例如登录后的 Cookie）。
+  Future<HttpResult> getHtml(
+    String url, {
+    String? referer,
+    Map<String, String>? headers,
+  });
 
   /// 探测直链是否还能用。只取 1 字节，不下载整个视频。
   Future<bool> isStreamAlive(String url);

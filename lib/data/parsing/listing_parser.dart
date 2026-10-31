@@ -148,7 +148,37 @@ class ListingParser {
       addedText: _squash(item.querySelector('.video-card-meta__date')?.text) ,
       isHd: item.querySelector('.quality') != null,
       hasSound: item.querySelector('.sound') != null,
+      type: _videoType(item),
     );
+  }
+
+  /// 取封面上的类型角标文本（`Futa` / `Gay` / …）。
+  ///
+  /// 站点的角标是 `<div class="futa">Futa</div>`——**class 名统一是 `futa`**，
+  /// 它只是个样式名，真正有区分度的是文本。所以按「位置 + 文本白名单」取，
+  /// 不能按 class 名匹配（按 class 取会把所有类型都识别成 Futa）。
+  String _videoType(Element item) {
+    // 类型角标出现在封面容器内、紧跟 .quality 之后
+    const known = {
+      'straight',
+      'gay',
+      'futa',
+      'music',
+      'iwara',
+      'lesbian',
+      'trans',
+      'other',
+    };
+    final thumb = item.querySelector('.thumb, .wrap_image') ?? item;
+    for (final div in thumb.querySelectorAll('div')) {
+      final text = _squash(div.text).toLowerCase();
+      if (text.isEmpty || text.length > 12) continue;
+      if (known.contains(text)) {
+        // 首字母大写返回，和站点显示一致
+        return text[0].toUpperCase() + text.substring(1);
+      }
+    }
+    return '';
   }
 
   /// 缩略图真链。

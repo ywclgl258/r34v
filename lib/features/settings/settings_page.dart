@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
+import '../../core/player_bootstrap.dart';
 
 /// 设置页。首版只有播放偏好、历史控制与诊断信息。
 class SettingsPage extends ConsumerWidget {
@@ -84,6 +85,9 @@ class SettingsPage extends ConsumerWidget {
           const _SectionHeader('缓存'),
           const _AutoCacheTile(),
           const _CacheUsageTile(),
+          const Divider(),
+          const _SectionHeader('网络'),
+          const _ProxyTile(),
           const Divider(),
           const _SectionHeader('诊断'),
           const _DiagnosticsTile(),
@@ -238,6 +242,81 @@ class _CacheUsageTile extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// 播放器代理设置。
+///
+/// 为什么需要单独填：libmpv 用自己的网络栈，既不看 Android 的系统代理，
+/// 也不读 HTTP_PROXY 环境变量。只用 VPN（透明路由）时通常不用管它，
+/// 但如果是 HTTP 代理，必须在这里填，否则视频流会 Failed to open。
+class _ProxyTile extends ConsumerStatefulWidget {
+  const _ProxyTile();
+
+  @override
+  ConsumerState<_ProxyTile> createState() => _ProxyTileState();
+}
+
+class _ProxyTileState extends ConsumerState<_ProxyTile> {
+  late final TextEditingController _c = TextEditingController(
+    text: ref.read(libraryStoreProvider).playerProxy,
+  );
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final v = _c.text.trim();
+    await ref.read(libraryStoreProvider).setPlayerProxy(v);
+    PlayerBootstrap.setProxy(v);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(v.isEmpty ? '已取消播放器代理' : '已设置播放器代理：$v'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('播放器代理', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 4),
+          Text(
+            '只影响视频流。网页数据走系统代理/VPN，不用填这里。\n'
+            '填 host:port，例如 127.0.0.1:7897。留空表示直连。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _c,
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    hintText: '127.0.0.1:7897',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(onPressed: _save, child: const Text('保存')),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

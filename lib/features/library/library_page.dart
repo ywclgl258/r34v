@@ -17,7 +17,7 @@ class LibraryPage extends ConsumerStatefulWidget {
 
 class _LibraryPageState extends ConsumerState<LibraryPage>
     with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 5, vsync: this);
+  late final TabController _tabs = TabController(length: 6, vsync: this);
 
   @override
   void dispose() {
@@ -30,6 +30,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
     final history = ref.watch(historyProvider);
     final resumable = ref.watch(resumableProvider);
     final videos = ref.watch(favoritesOfKindProvider(FavoriteKind.video));
+    final characters = ref.watch(favoritesOfKindProvider(FavoriteKind.character));
     final models = ref.watch(favoritesOfKindProvider(FavoriteKind.model));
     final tags = ref.watch(favoritesOfKindProvider(FavoriteKind.tag));
     final cached = ref.watch(cacheIndexProvider);
@@ -44,6 +45,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
           tabs: [
             Tab(text: '继续观看 ${resumable.length}'),
             Tab(text: '视频 ${videos.length}'),
+            Tab(text: '角色 ${characters.length}'),
             Tab(text: '作者 ${models.length}'),
             Tab(text: '标签 ${tags.length}'),
             Tab(text: '已缓存 ${cached.length}'),
@@ -75,6 +77,12 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
         children: [
           _HistoryList(entries: resumable, all: history),
           _FavoriteVideoList(entries: videos),
+          _FavoriteChipList(
+            entries: characters,
+            kind: FavoriteKind.character,
+            icon: Icons.person_pin_outlined,
+            emptyText: '还没有收藏的角色\n在视频详情页长按角色名就能收藏',
+          ),
           _FavoriteChipList(
             entries: models,
             kind: FavoriteKind.model,

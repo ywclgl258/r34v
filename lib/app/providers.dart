@@ -2,7 +2,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/local/library_store.dart';
+import '../data/local/video_downloader.dart';
+import '../data/local/auth_store.dart';
 import '../data/local/video_cache.dart';
+import '../data/remote/auth_client.dart';
+import '../data/remote/stream_fetcher.dart';
 import '../data/remote/rule34_api.dart';
 
 /// 在 main() 里被 override 成真实实例（需要 await 初始化）。
@@ -12,6 +16,12 @@ final sharedPrefsProvider = Provider<SharedPreferences>((ref) {
 
 final libraryStoreProvider = Provider<LibraryStore>((ref) {
   return LibraryStore(ref.watch(sharedPrefsProvider));
+});
+
+/// 边下边播的流抓取器。全局单例，避免同一视频重复下载。
+final streamFetcherProvider = Provider<StreamFetcher>((ref) {
+  final proxy = ref.watch(libraryStoreProvider).playerProxy;
+  return StreamFetcher(proxy: proxy);
 });
 
 final videoCacheProvider = Provider<VideoCache>((ref) {
@@ -43,8 +53,60 @@ class AutoCacheNotifier extends Notifier<bool> {
 final autoCacheProvider =
     NotifierProvider<AutoCacheNotifier, bool>(AutoCacheNotifier.new);
 
+/// 视频下载器（落到系统下载目录，和私有缓存分开）。
+final videoDownloaderProvider = Provider<VideoDownloader>((ref) {
+  final proxy = ref.watch(libraryStoreProvider).playerProxy;
+  return VideoDownloader(proxy: proxy);
+});
+
+final authStoreProvider = Provider<AuthStore>((ref) {
+  return AuthStore(ref.watch(sharedPrefsProvider));
+});
+
+/// 登录状态。null 表示未登录。
+class AuthNotifier extends Notifier<AuthSession?> {
+  @override
+  AuthSession? build() => ref.watch(authStoreProvider).load();
+
+  AuthClient _client() {
+    final proxy = ref.read(libraryStoreProvider).playerProxy;
+    return AuthClient(proxy: proxy);
+  }
+
+  /// 登录。失败抛 AuthException，由界面显示。
+  Future<void> login(String username, String password) async {
+    final s = await _client().login(username: username, password: password);
+    await ref.read(authStoreProvider).save(s);
+    state = s;
+  }
+
+  Future<void> logout() async {
+    final s = state;
+    if (s != null) await _client().logout(s);
+    await ref.read(authStoreProvider).clear();
+    state = null;
+  }
+
+  /// 检查会话是否还有效；失效就清掉。
+  Future<bool> validate() async {
+    final s = state;
+    if (s == null) return false;
+    final ok = await _client().validate(s);
+    if (!ok) {
+      await ref.read(authStoreProvider).clear();
+      state = null;
+    }
+    return ok;
+  }
+}
+
+final authProvider =
+    NotifierProvider<AuthNotifier, AuthSession?>(AuthNotifier.new);
+
 final rule34ApiProvider = Provider<Rule34Api>((ref) {
-  final api = Rule34Api();
+  // 登录态变化时重建 API，让它带上新的会话 cookie
+  final session = ref.watch(authProvider);
+  final api = Rule34Api(cookie: session?.cookieHeader);
   ref.onDispose(api.client.dispose);
   return api;
 });

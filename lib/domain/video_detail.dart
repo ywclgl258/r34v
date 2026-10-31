@@ -45,6 +45,11 @@ class VideoDetail {
     required this.authorName,
     required this.avatarUrl,
     required this.tags,
+    this.uploaderName = '',
+    this.uploaderId = '',
+    this.downloads = const [],
+    this.comments = const [],
+    this.characters = const [],
     required this.categories,
     required this.models,
     required this.description,
@@ -78,11 +83,35 @@ class VideoDetail {
   /// 会把导航、页脚、相关推荐区的链接一起吞进来（实测 21 个真标签被扫成 46 个）。
   final List<String> tags;
 
+  /// 角色 slug 列表（如 `zelda`）。
+  ///
+  /// 站点把它和 tags 都标成 `data-item-type="tag"`，只能靠分组标题
+  /// `Characters` 来区分。混进 tags 会让标签栏又长又乱。
+  final List<String> characters;
+
   /// 分类 slug 列表（如 `3d`）。同样只认分组。
   final List<String> categories;
 
-  /// 模型/作者 slug 列表。同样只认分组。
+  /// 作者（站点内部叫 model）slug 列表。同样只认分组。
   final List<String> models;
+
+  /// 上传者显示名（站点详情页的 Uploaded by）。
+  ///
+  /// 注意：**上传者不是作者**。上传者指向 `/members/{数字id}/`，
+  /// 作者指向 `/models/{slug}/`。同一个人可能两个都有，也可能只有一个。
+  final String uploaderName;
+
+  /// 上传者的数字 id（/members/{id}/）。空表示页面没给。
+  final String uploaderId;
+
+  /// 可下载的清晰度（站点每档一个 download 直链）。
+  ///
+  /// 与 [streams] 的区别：streams 是播放用的流地址，downloads 带
+  /// download=true 和 download_filename，服务端会返回附件。
+  final List<DownloadOption> downloads;
+
+  /// 评论（只读展示）。站点要登录才能发，我们只解析列表。
+  final List<VideoComment> comments;
 
   final String description;
 
@@ -141,4 +170,55 @@ class VideoDetail {
   String toString() =>
       'VideoDetail($id, $duration, ${streams.map((s) => s.label).join("/")}, '
       '${tags.length} tags, ${related.length} related)';
+}
+
+/// 一个可下载的清晰度。
+///
+/// 站点在详情页给出每一档的下载直链，形如：
+/// `/get_file/…/x_1080p.mp4/?v-acctoken=…&download=true&download_filename=mario_1080p.mp4`
+///
+/// 两个要点：
+/// - 链接带 `v-acctoken`，**会过期**。真正下载前要重新抓详情页拿新链。
+/// - `download_filename` 是站点建议的文件名，直接用它比自己拼标题可靠。
+class DownloadOption {
+  const DownloadOption({
+    required this.label,
+    required this.url,
+    required this.fileName,
+    this.sizeText = '',
+  });
+
+  /// 清晰度，如 `1080p`。
+  final String label;
+
+  final String url;
+
+  /// 站点建议的文件名（取自 `download_filename` 参数）。
+  final String fileName;
+
+  /// 文件大小（如果页面给了）。多数情况拿不到，留空。
+  final String sizeText;
+
+  @override
+  String toString() => 'DownloadOption($label)';
+}
+
+/// 一条评论（只读）。
+class VideoComment {
+  const VideoComment({
+    required this.author,
+    required this.text,
+    this.avatarUrl = '',
+    this.dateText = '',
+    this.authorUrl = '',
+  });
+
+  final String author;
+  final String text;
+  final String avatarUrl;
+  final String dateText;
+  final String authorUrl;
+
+  @override
+  String toString() => '$author: $text';
 }

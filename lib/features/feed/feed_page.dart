@@ -339,10 +339,18 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
         return '搜索';
       case FeedKind.tag:
         return '标签';
+      case FeedKind.character:
+        return '角色';
       case FeedKind.category:
         return '分类';
       case FeedKind.model:
         return '作者';
+      case FeedKind.forYou:
+        return '为你推荐';
+      case FeedKind.topCharacters:
+        return '角色排行';
+      case FeedKind.topArtists:
+        return '作者排行';
     }
   }
 

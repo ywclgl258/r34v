@@ -42,7 +42,12 @@ class SiteClientImpl implements SiteClient {
   }
 
   @override
-  Future<HttpResult> getHtml(String url, {String? referer}) {
+  Future<HttpResult> getHtml(
+    String url, {
+    String? referer,
+    Map<String, String>? headers,
+  }) {
+    // 网页预览走代理，浏览器自己带 cookie；headers 在这里用不上（跨域也带不过去）
     return _withRetry(() => _fetch(url));
   }
 

@@ -3,7 +3,9 @@ import '../../domain/feed_link.dart';
 import '../../domain/video_card.dart';
 import '../../domain/video_detail.dart';
 import '../parsing/detail_parser.dart';
+import '../../domain/ranked_entry.dart';
 import '../parsing/listing_parser.dart';
+import '../parsing/ranking_parser.dart';
 import '../parsing/parse_exception.dart';
 import 'site_client.dart';
 
@@ -16,11 +18,16 @@ class Rule34Api {
     SiteClient? client,
     ListingParser? listingParser,
     DetailParser? detailParser,
+    this.cookie,
   })  : _client = client ?? createSiteClient(),
         _listing = listingParser ?? const ListingParser(),
         _detail = detailParser ?? const DetailParser();
 
   final SiteClient _client;
+
+  /// 登录后的会话 cookie。只有会员专属页面（for-you）需要它，
+  /// 公开页面不带也没关系（带了反而少一层匿名缓存）。
+  final String? cookie;
   final ListingParser _listing;
   final DetailParser _detail;
 
@@ -31,8 +38,18 @@ class Rule34Api {
   /// 会先跑结构哨兵：如果页面明显是列表页但一张卡都解析不出来，抛
   /// [ParseException] 而不是返回空列表——空列表会让 UI 说「这里没有视频」，
   /// 而实际是站点改版了，那种沉默的失败最难查。
+  /// 只有会员专属页面才带 cookie。
+  Map<String, String>? _headersFor(FeedRequest request) {
+    if (cookie == null || cookie!.isEmpty) return null;
+    if (request.kind != FeedKind.forYou) return null;
+    return {'Cookie': cookie!};
+  }
+
   Future<FeedPage> fetchFeed(FeedRequest request) async {
-    final res = await _client.getHtml(request.url);
+    final res = await _client.getHtml(
+      request.url,
+      headers: _headersFor(request),
+    );
     if (!res.ok) {
       throw HttpException('列表页返回 ${res.status}', status: res.status, url: res.url);
     }
@@ -84,7 +101,49 @@ class Rule34Api {
   }
 
   /// 拉分类索引。
+  final RankingParser _ranking = const RankingParser();
+
+  /// 角色排行榜的作品分类（/top-characters/）。
+  Future<List<CharacterWork>> fetchCharacterWorks() async {
+    final res = await _client.getHtml('${Site.base}/top-characters/');
+    if (!res.ok) {
+      throw HttpException('角色榜返回 ${res.status}', status: res.status, url: res.url);
+    }
+    return _ranking.parseWorks(res.body);
+  }
+
+  /// 某个作品下的角色排行（/top-characters/{work}/）。
+  Future<List<RankedEntry>> fetchCharacterRanking(String work) async {
+    final res = await _client.getHtml(
+      '${Site.base}/top-characters/${Uri.encodeComponent(work)}/',
+    );
+    if (!res.ok) {
+      throw HttpException('角色榜返回 ${res.status}', status: res.status, url: res.url);
+    }
+    return _ranking.parse(res.body);
+  }
+
+  /// 作者排行榜（/top-model/）。
+  ///
+  /// 必须带 ?sort=az：不带参数时站点渲染不出作者（实测 0 条），
+  /// 带了才有 20 条。这是站点的怪癖，不是我们的解析问题。
+  Future<List<RankedEntry>> fetchArtistRanking() async {
+    final res = await _client.getHtml('${Site.base}/top-model/?sort=az');
+    if (!res.ok) {
+      throw HttpException('作者榜返回 ${res.status}', status: res.status, url: res.url);
+    }
+    return _ranking.parse(res.body);
+  }
+
   Future<List<FeedLink>> fetchCategories() => _fetchLinkIndex('/categories/', 'categories');
+
+  /// 角色索引（/characters/）。
+  Future<List<FeedLink>> fetchCharacters() =>
+      _fetchLinkIndex('/characters/', 'characters');
+
+  /// 作者索引（/models/）。站点内部把作者叫 model。
+  Future<List<FeedLink>> fetchModels() =>
+      _fetchLinkIndex('/models/', 'models');
 
   /// 拉标签索引首页。
   Future<List<FeedLink>> fetchTags() => _fetchLinkIndex('/tags/', 'tags');

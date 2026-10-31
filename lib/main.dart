@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:media_kit/media_kit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app/providers.dart';
 import 'app/router.dart';
+import 'core/player_bootstrap.dart';
+import 'data/local/library_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // media_kit 必须在 runApp 前初始化（libmpv 的 native 侧准备）
-  MediaKit.ensureInitialized();
+  await PlayerBootstrap.init();
 
   final prefs = await SharedPreferences.getInstance();
+  // 恢复上次保存的播放器代理（libmpv 不认系统代理，必须每次启动告诉它）
+  final savedProxy = LibraryStore(prefs).playerProxy;
+  if (savedProxy.isNotEmpty) PlayerBootstrap.setProxy(savedProxy);
 
   runApp(
     ProviderScope(

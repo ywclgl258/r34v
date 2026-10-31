@@ -302,6 +302,55 @@ class VideoCache {
     }
   }
 
+  /// 把已经下好的文件直接登记为缓存（不再重复下载）。
+  ///
+  /// 用于「边下边播」那条路径：播放时文件已经在本地了，没必要再跑一遍下载。
+  /// 会把文件从临时目录**改名搬到缓存目录**，避免被系统当临时文件清掉。
+  Future<CachedVideo> adoptFile({
+    required String videoId,
+    required String title,
+    required String sourcePath,
+    required String quality,
+    String thumb = '',
+    int durationSeconds = 0,
+  }) async {
+    final src = File(sourcePath);
+    if (!await src.exists()) {
+      throw HttpException('源文件不存在：$sourcePath');
+    }
+
+    final dir = await _cacheDir();
+    final safeQuality = quality.replaceAll(RegExp(r'[^0-9a-zA-Z]'), '');
+    final target = File(p.join(dir.path, '${videoId}_$safeQuality.mp4'));
+
+    // 同 id 同清晰度已有正式缓存就不动
+    final existing = find(videoId);
+    if (existing != null && existing.fileExists && existing.filePath == target.path) {
+      return existing;
+    }
+
+    if (await target.exists()) await target.delete();
+    await src.rename(target.path);
+
+    final size = await target.length();
+    final entry = CachedVideo(
+      videoId: videoId,
+      title: title,
+      filePath: target.path,
+      bytes: size,
+      quality: quality,
+      createdAt: DateTime.now(),
+      thumb: thumb,
+      durationSeconds: durationSeconds,
+    );
+
+    final list = loadIndex().where((e) => e.videoId != videoId).toList()
+      ..insert(0, entry);
+    await _saveIndex(list);
+    await enforceBudget();
+    return entry;
+  }
+
   /// 本地已有的文件路径（没有就 null）。播放器优先用它。
   String? localPathFor(String videoId) {
     final e = find(videoId);

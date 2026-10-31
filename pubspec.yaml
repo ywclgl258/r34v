@@ -87,6 +87,12 @@ flutter:
   #
   # 这是从全量字体裁出来的子集（见 tool/subset_font.py），
   # 只含 lib/ 里实际出现过的字，约 160KB。改了界面文案后要重跑一次脚本。
+  # libmpv 做 https 握手要靠 CA 证书包，而 APK 默认不含任何 CA。
+  # 缺了它 ffmpeg 的 TLS 验证必然失败，表现就是「Failed to open」——
+  # 和有没有挂代理无关，很多人会误判成网络问题。
+  assets:
+    - assets/certs/cacert.pem
+
   fonts:
     - family: NotoSansSC
       fonts:

@@ -11,6 +11,8 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../../app/providers.dart';
 import '../../data/local/library_store.dart';
 import '../../data/local/video_cache.dart';
+import '../../core/player_bootstrap.dart';
+import '../../data/remote/stream_fetcher.dart';
 import '../../data/parsing/parse_exception.dart';
 import '../../data/remote/site_client.dart';
 import '../../domain/video_detail.dart';
@@ -34,6 +36,15 @@ class PlayerPage extends ConsumerStatefulWidget {
 
 class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObserver {
   late final Player _player = Player();
+
+  /// CA 证书与 UA 要在 open 之前设置好，否则第一次握手就失败。
+  Future<void> _ensurePlayerConfigured() async {
+    if (_playerConfigured) return;
+    _playerConfigured = true;
+    await PlayerBootstrap.configure(_player);
+  }
+
+  bool _playerConfigured = false;
   late final VideoController _controller = VideoController(_player);
 
   VideoDetail? _detail;
@@ -56,6 +67,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
 
   /// 本次播放是不是用的本地缓存文件。
   bool _playingFromCache = false;
+
+  /// 边下边播的缓冲状态。
+  bool _buffering = false;
+  int _fetchReceived = 0;
+  int _fetchTotal = 0;
+  StreamFetchHandle? _currentFetch;
 
   /// 正在做后台缓存。
   bool _caching = false;
@@ -92,6 +109,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    final fetching = _currentFetch;
+    if (fetching != null) {
+      unawaited(ref.read(streamFetcherProvider).cancel(fetching.videoId));
+    }
     _saveTimer?.cancel();
     _hideTimer?.cancel();
     _persistProgress();
@@ -183,46 +204,119 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     final cache = ref.read(videoCacheProvider);
     // 优先播本地缓存：省流量，而且不受直链 token 过期影响
     final local = cache.localPathFor(d.id);
-
-    await _player.open(Media(local ?? s.url), play: true);
-    _playingFromCache = local != null;
-    if (_playingFromCache && mounted) {
-      setState(() {});
+    if (local != null) {
+      await _openAndSeek(local, resumeAt);
+      _playingFromCache = true;
+      if (mounted) setState(() {});
+      return;
     }
 
+    // 没有完整缓存时，**先把流抓到本地再播**。
+    //
+    // 不能把直链直接交给播放器：media_kit 底层 libmpv 的 HTTP 走 ffmpeg 自己的
+    // 协议栈，不经过 Android 的 VPN/代理路由。真机上表现为「列表能刷、视频
+    // Failed to open」，即使挂了代理也一样。走 Dart 的 HTTP 客户端下载则和抓页面
+    // 同一条通道，代理对它是生效的。
+    await _openViaFetch(d, s, resumeAt);
+  }
+
+  /// 通过「边下边播」打开远端流。
+  Future<void> _openViaFetch(VideoDetail d, StreamVariant s, int resumeAt) async {
+    final fetch = ref.read(streamFetcherProvider);
+    setState(() {
+      _buffering = true;
+      _cacheProgress = null;
+    });
+
+    var opened = false;
+    String? firstError;
+
+    final handle = await fetch.fetch(
+      videoId: d.id,
+      url: s.url,
+      quality: s.label,
+      onProgress: (received, total) {
+        if (!mounted) return;
+        setState(() {
+          _fetchReceived = received;
+          _fetchTotal = total;
+        });
+      },
+      onReady: (filePath) {
+        // 头部数据够了，可以起播
+        if (opened || !mounted) return;
+        opened = true;
+        _openAndSeek(filePath, resumeAt).catchError((Object e) {
+          firstError = '$e';
+        });
+      },
+      onDone: (err) {
+        if (!mounted) return;
+        final fatal = (err != null || firstError != null) && !opened;
+        if (fatal) {
+          // 还没起播就失败，才是真失败
+          setState(() {
+            _buffering = false;
+            _error = '打不开视频流：${firstError ?? err}';
+          });
+        } else {
+          setState(() {
+            _buffering = false;
+            _fetchReceived = 0;
+            _fetchTotal = 0;
+          });
+        }
+      },
+    );
+
+    _currentFetch = handle;
+
+    // 收藏的视频顺手转成正式缓存，下次就不用再抓了
+    if (ref.read(videoCacheProvider).autoCache) {
+      _promoteToCache(d, s, handle.filePath);
+    }
+  }
+
+  /// 把边下边播抓到的文件升格为正式缓存记录。
+  Future<void> _promoteToCache(
+    VideoDetail d,
+    StreamVariant s,
+    String partialPath,
+  ) async {
+    try {
+      final cache = ref.read(videoCacheProvider);
+      if (cache.isCached(d.id)) return;
+      await cache.adoptFile(
+        videoId: d.id,
+        title: d.title,
+        sourcePath: partialPath,
+        quality: s.label,
+        thumb: d.poster,
+        durationSeconds: d.durationSeconds,
+      );
+      if (!mounted) return;
+      ref.invalidate(cacheIndexProvider);
+    } catch (_) {
+      // 升格失败不影响当前播放
+    }
+  }
+
+  Future<void> _openAndSeek(String source, int resumeAt) async {
+    await _ensurePlayerConfigured();
+    await _player.open(Media(source), play: true);
     if (resumeAt > 0) {
       // media_kit 在 open 后立刻 seek 有时会被忽略，等一小会儿再跳
       await Future<void>.delayed(const Duration(milliseconds: 350));
       await _player.seek(Duration(seconds: resumeAt));
     }
     await _player.setRate(_speed);
-
-    // 起播成功后再考虑缓存，避免网络本身就不通时白跑一趟下载
-    _maybeAutoCache(d, s);
-  }
-
-  /// 自动缓存策略。
-  ///
-  /// 触发条件（任一）：
-  /// - 视频在本地收藏里；
-  /// - 视频时长够长（太短的片段没必要占空间）。
-  ///
-  /// 也就是说：**收藏的一定存，看过的长视频也存**。
-  /// 只在走网络播放时触发，已经缓存的不重复下载。
-  void _maybeAutoCache(VideoDetail d, StreamVariant s) {
-    final cache = ref.read(videoCacheProvider);
-    if (!cache.autoCache) return;
-    if (_playingFromCache) return;
-    if (d.durationSeconds > 0 && d.durationSeconds < VideoCache.minDurationSeconds) return;
-    if (_caching) return;
-
-    final fav = ref
-        .read(favoritesProvider)
-        .any((e) => e.kind == FavoriteKind.video && e.target == d.id);
-    // 收藏的必缓存；非收藏的只缓存长视频
-    if (!fav && d.durationSeconds < 60) return;
-
-    _startCache(d, s, reason: fav ? '已收藏' : '看过的视频');
+    if (_volume != null) await _player.setVolume(_muted ? 0 : _volume!);
+    if (mounted) {
+      setState(() {
+        _buffering = false;
+        _error = null;
+      });
+    }
   }
 
   void _startCache(VideoDetail d, StreamVariant s, {String reason = ''}) {
@@ -728,7 +822,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         Text(d.title, style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
         Text(
-          '${d.duration}  ·  ${d.viewsText}  ·  ${d.addedText}',
+          '${d.duration}  ·  ${d.viewsText}  ·  ${d.addedText}'
+          '${_playingFromCache ? '  ·  本地播放' : ''}',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 10),
@@ -778,6 +873,36 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
 
   Widget _buildCacheRow(dynamic d) {
     final scheme = Theme.of(context).colorScheme;
+    // 还在边下边播：显示缓冲进度，比「缓存」按钮更有信息量
+    if (_buffering) {
+      final fraction =
+          _fetchTotal > 0 ? (_fetchReceived / _fetchTotal).clamp(0.0, 1.0) : null;
+      final mb = (_fetchReceived / (1024 * 1024)).toStringAsFixed(1);
+      final total = _fetchTotal > 0
+          ? '${(_fetchTotal / (1024 * 1024)).toStringAsFixed(0)} MB'
+          : '大小未知';
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.downloading, size: 16, color: scheme.primary),
+              const SizedBox(width: 6),
+              Text(
+                '缓冲中  $mb / $total',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: scheme.primary),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          LinearProgressIndicator(value: fraction, minHeight: 3),
+        ],
+      );
+    }
+
     final cached = ref.watch(isCachedProvider(d.id as String));
     final entry = ref.watch(cacheIndexProvider).where((e) => e.videoId == d.id).firstOrNull;
 

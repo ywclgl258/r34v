@@ -17,6 +17,7 @@ class VideoCard {
     required this.addedText,
     required this.isHd,
     required this.hasSound,
+    this.type = '',
   });
 
   final String id;
@@ -49,6 +50,16 @@ class VideoCard {
 
   final bool isHd;
   final bool hasSound;
+
+  /// 视频类型标记，来自封面角标（<div class="futa">Futa</div>）。
+  ///
+  /// 站点的 class 名统一叫 uta（样式名），**真正有区分度的是文本**：
+  /// Futa / Gay / Straight / Music / Iwara 等。
+  /// 空字符串表示没有标记。
+  ///
+  /// 注意：这只是显示用。实测 ?type=futa 和 /futa/ 都不生效，
+  /// 站点没有提供按类型筛选的入口。
+  final String type;
 
   /// 用于详情页跳转的路径部分，如 `/video/4703101/moe-love-2-by-doll-house/`。
   String get path => Uri.parse(url).path;

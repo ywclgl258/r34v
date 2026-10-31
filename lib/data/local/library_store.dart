@@ -92,6 +92,7 @@ class WatchEntry {
 /// 混在一个列表里只能做成「一堆链接」，没法按类型筛选、也没法给不同图标。
 enum FavoriteKind {
   video('视频'),
+  character('角色'),
   model('作者'),
   tag('标签');
 
@@ -304,6 +305,15 @@ class LibraryStore {
       _prefs.setString('${_kSettings}_quality', label);
 
   /// 上次手动调的播放音量（0–100）。null 表示用户没调过，交给系统默认。
+  /// 播放器代理（host:port）。空表示直连。
+  ///
+  /// 只给 libmpv 用——它不认系统代理，必须显式设置。
+  String get playerProxy => _prefs.getString('${_kSettings}_player_proxy') ?? '';
+
+  Future<void> setPlayerProxy(String v) => v.isEmpty
+      ? _prefs.remove('${_kSettings}_player_proxy')
+      : _prefs.setString('${_kSettings}_player_proxy', v);
+
   double? get volume => _prefs.getDouble('${_kSettings}_volume');
 
   Future<void> setVolume(double v) => _prefs.setDouble('${_kSettings}_volume', v);

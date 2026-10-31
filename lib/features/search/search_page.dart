@@ -29,6 +29,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   final _scroll = ScrollController();
 
   String _query = '';
+  FeedSort _sort = FeedSort.newest;
   List<VideoCard> _results = const [];
   Pager _pager = Pager.unknown;
   int _page = 1;
@@ -88,7 +89,12 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     try {
       final api = ref.read(rule34ApiProvider);
       final result = await api.fetchFeed(
-        FeedRequest(kind: FeedKind.search, target: q, page: page),
+        FeedRequest(
+          kind: FeedKind.search,
+          target: q,
+          sort: _sort,
+          page: page,
+        ),
       );
       if (!mounted) return;
       setState(() {
@@ -172,7 +178,37 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           ),
         ],
       ),
-      body: _buildBody(history, hasMore),
+      body: Column(
+        children: [
+          // 排序栏：站内搜索支持全部排序，之前只给了默认顺序。
+          // 搜「zelda」时按播放量排和按最新排差别很大，这个不能省。
+          if (_searched && _results.isNotEmpty)
+            SizedBox(
+              height: 44,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                children: [
+                  for (final s in FeedSort.values)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: ChoiceChip(
+                        label: Text(s.label, style: const TextStyle(fontSize: 12)),
+                        selected: _sort == s,
+                        visualDensity: VisualDensity.compact,
+                        onSelected: (_) {
+                          if (_sort == s) return;
+                          setState(() => _sort = s);
+                          _search(1);
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          Expanded(child: _buildBody(history, hasMore)),
+        ],
+      ),
     );
   }
 
