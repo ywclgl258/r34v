@@ -137,10 +137,6 @@ class Rule34Api {
 
   Future<List<FeedLink>> fetchCategories() => _fetchLinkIndex('/categories/', 'categories');
 
-  /// 角色索引（/characters/）。
-  Future<List<FeedLink>> fetchCharacters() =>
-      _fetchLinkIndex('/characters/', 'characters');
-
   /// 作者索引（/models/）。站点内部把作者叫 model。
   Future<List<FeedLink>> fetchModels() =>
       _fetchLinkIndex('/models/', 'models');

@@ -210,7 +210,7 @@ class _CharacterRankingPageState extends ConsumerState<CharacterRankingPage> {
                       trailing: const Icon(Icons.chevron_right, size: 18),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
-                          builder: (context) => _WorkRankingPage(work: w),
+                          builder: (context) => CharacterWorkRankingPage(work: w),
                         ),
                       ),
                     );
@@ -221,16 +221,19 @@ class _CharacterRankingPageState extends ConsumerState<CharacterRankingPage> {
 }
 
 /// 某个作品下的角色榜。
-class _WorkRankingPage extends ConsumerStatefulWidget {
-  const _WorkRankingPage({required this.work});
+/// 某个作品下的角色榜（公开，供发现页直接跳转）。
+class CharacterWorkRankingPage extends ConsumerStatefulWidget {
+  const CharacterWorkRankingPage({super.key, required this.work});
 
   final CharacterWork work;
 
   @override
-  ConsumerState<_WorkRankingPage> createState() => _WorkRankingPageState();
+  ConsumerState<CharacterWorkRankingPage> createState() =>
+      _CharacterWorkRankingPageState();
 }
 
-class _WorkRankingPageState extends ConsumerState<_WorkRankingPage> {
+class _CharacterWorkRankingPageState
+    extends ConsumerState<CharacterWorkRankingPage> {
   List<RankedEntry> _items = const [];
   bool _loading = true;
   String? _error;

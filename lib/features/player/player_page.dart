@@ -68,6 +68,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   /// 本次播放是不是用的本地缓存文件。
   bool _playingFromCache = false;
 
+  /// 正在试探直连是否可用（期间不触发自动换链）。
+  bool _probingDirect = false;
+
   /// 边下边播的缓冲状态。
   bool _buffering = false;
   int _fetchReceived = 0;
@@ -136,6 +139,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   void _listen() {
     _player.stream.error.listen((e) async {
       if (!mounted) return;
+      // 直连探测期间由 _openRemoteDirect 自己判断成败，
+      // 这里若也抢着回源换链，会两路同时开打。
+      if (_probingDirect) return;
       // 直链过期是这里最常见的错：回源换链再续播
       if (_refreshCount < _maxRefresh) {
         await _recoverStream(reason: '播放报错：$e');
@@ -202,7 +208,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     final resumeAt = (saved != null && saved.isResumable) ? saved.positionSeconds : 0;
 
     final cache = ref.read(videoCacheProvider);
-    // 优先播本地缓存：省流量，而且不受直链 token 过期影响
+    // 优先播本地完整缓存：省流量、不受 token 过期影响、拖动也准
     final local = cache.localPathFor(d.id);
     if (local != null) {
       await _openAndSeek(local, resumeAt);
@@ -211,13 +217,81 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       return;
     }
 
-    // 没有完整缓存时，**先把流抓到本地再播**。
+    // 先直接播远端。
     //
-    // 不能把直链直接交给播放器：media_kit 底层 libmpv 的 HTTP 走 ffmpeg 自己的
-    // 协议栈，不经过 Android 的 VPN/代理路由。真机上表现为「列表能刷、视频
-    // Failed to open」，即使挂了代理也一样。走 Dart 的 HTTP 客户端下载则和抓页面
-    // 同一条通道，代理对它是生效的。
+    // 为什么优先直连而不是先下载：libmpv 自己支持 HTTP Range，拖动进度条会
+    // 按需请求对应区间，跳转是准确的。之前用「边下边播」读正在写入的 .part
+    // 文件，seek 到还没写到的位置时 mpv 会以为文件就到这里，进度条直接弹到结尾。
+    //
+    // CA 证书和代理现在都在启动时配好了，直连具备条件。
+    final ok = await _openRemoteDirect(s.url, resumeAt);
+    if (ok) return;
+
+    // 直连失败（代理只对 Dart 生效等情况），退回边下边播保底。
+    // 这条路能看，但拖动只在前端已下载范围内有效。
     await _openViaFetch(d, s, resumeAt);
+  }
+
+  /// 直接打开远端地址，返回是否成功起播。
+  ///
+  /// media_kit 的 `open` 不会因为网络失败而抛异常，错误是从 `stream.error`
+  /// 出来的，所以这里同时监听 duration（成功）和 error（失败），加超时兜底。
+  Future<bool> _openRemoteDirect(String url, int resumeAt) async {
+    final done = Completer<bool>();
+    StreamSubscription<String>? errSub;
+    StreamSubscription<Duration>? durSub;
+    StreamSubscription<Duration>? posSub;
+
+    void finish(bool v) {
+      if (!done.isCompleted) done.complete(v);
+    }
+
+    // 探测期间抑制 _listen 里的自动换链，避免直连失败时又触发一轮回源
+    _probingDirect = true;
+    errSub = _player.stream.error.listen((e) {
+      if (_player.state.duration.inMilliseconds <= 0) finish(false);
+    });
+    // 有任一时长或播放位置推进，就说明连通了
+    durSub = _player.stream.duration.listen((dur) {
+      if (dur.inMilliseconds > 0) finish(true);
+    });
+    posSub = _player.stream.position.listen((pos) {
+      if (pos.inMilliseconds > 0) finish(true);
+    });
+
+    try {
+      await _ensurePlayerConfigured();
+      await _player.open(Media(url), play: true);
+      // 站点实测首字节要 5–11 秒，给足余量；太短会把能直连的误判成失败，
+      // 一退回边下边播拖动就又坏了。
+      final ok = await done.future.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => false,
+      );
+      if (!ok) return false;
+
+      if (resumeAt > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        await _player.seek(Duration(seconds: resumeAt));
+      }
+      await _player.setRate(_speed);
+      if (_volume != null) await _player.setVolume(_muted ? 0 : _volume!);
+      if (mounted) {
+        setState(() {
+          _buffering = false;
+          _error = null;
+          _playingFromCache = false;
+        });
+      }
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      _probingDirect = false;
+      await errSub.cancel();
+      await durSub.cancel();
+      await posSub.cancel();
+    }
   }
 
   /// 通过「边下边播」打开远端流。

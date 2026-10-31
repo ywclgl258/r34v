@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../domain/feed_link.dart';
+import '../../domain/ranked_entry.dart';
 import 'ranking_page.dart';
 
 /// 发现页：榜单入口 + 三类索引（角色/作者/标签）+ 分类。
@@ -26,7 +27,10 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
   String? _error;
 
   List<FeedLink> _categories = const [];
-  List<FeedLink> _characters = const [];
+  /// 角色没有扁平索引。站点的 `/characters/` 是 404，
+  /// 角色挂在「作品」下面（`/top-characters/<work>/`），
+  /// 所以这里存的是作品清单，点进去才是角色榜。
+  List<CharacterWork> _works = const [];
   List<FeedLink> _models = const [];
   List<FeedLink> _tags = const [];
 
@@ -47,30 +51,47 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
       _loading = true;
       _error = null;
     });
-    try {
-      final api = ref.read(rule34ApiProvider);
-      // 四个索引并发拉，串行会慢一倍多
-      final results = await Future.wait([
-        api.fetchCategories(),
-        api.fetchCharacters(),
-        api.fetchModels(),
-        api.fetchTags(),
-      ]);
-      if (!mounted) return;
-      setState(() {
-        _categories = results[0];
-        _characters = results[1];
-        _models = results[2];
-        _tags = results[3];
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = '$e';
-        _loading = false;
-      });
+
+    final api = ref.read(rule34ApiProvider);
+
+    // 每个索引**独立**加载，一个失败不影响其它。
+    //
+    // 之前用 Future.wait 一把梭，结果 `/characters/` 返回 404（这个路径站内不存在），
+    // 整个索引区就都变成「索引没加载出来 HTTP 404」——一个坏掉拖垮全部。
+    Future<List<T>> safe<T>(Future<List<T>> Function() run) async {
+      try {
+        return await run();
+      } catch (_) {
+        return <T>[];
+      }
     }
+
+    final results = await Future.wait<List<Object>>([
+      safe(api.fetchCategories),
+      safe(api.fetchModels),
+      safe(api.fetchTags),
+      // 角色没有扁平索引，只能拿排行榜里的「作品」清单当入口
+      safe(api.fetchCharacterWorks),
+    ]);
+
+    if (!mounted) return;
+
+    final cats = results[0].cast<FeedLink>();
+    final models = results[1].cast<FeedLink>();
+    final tags = results[2].cast<FeedLink>();
+    final works = results[3].cast<CharacterWork>();
+
+    setState(() {
+      _categories = cats;
+      _models = models;
+      _tags = tags;
+      _works = works;
+      // 全部为空才算真失败，否则只是部分索引拿不到
+      _error = (cats.isEmpty && models.isEmpty && tags.isEmpty && works.isEmpty)
+          ? '索引都没拉到，可能是网络或站点限流'
+          : null;
+      _loading = false;
+    });
   }
 
   void _doSearch() {
@@ -189,18 +210,34 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
               ],
 
               // ---- 角色 ----
-              if (_characters.isNotEmpty) ...[
+              // 站点没有角色总索引，入口是「作品」：点某部作品才看到它的角色榜。
+              if (_works.isNotEmpty) ...[
                 const SizedBox(height: 24),
                 _sectionHeader(
                   context,
                   '角色',
-                  count: _characters.length,
-                  action: () => _openIndex('character', '全部角色', _characters),
+                  count: _works.length,
+                  action: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (context) => const CharacterRankingPage(),
+                    ),
+                  ),
                 ),
-                _LinkGrid(
-                  links: _characters.take(11).toList(),
-                  onTap: (l) =>
-                      context.push('/list/character/${Uri.encodeComponent(l.slug)}'),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final w in _works.take(15))
+                      ActionChip(
+                        label: Text(w.name),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (context) => CharacterWorkRankingPage(work: w),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ],
 

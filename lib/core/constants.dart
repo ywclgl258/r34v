@@ -102,8 +102,12 @@ class FeedRequest {
       );
 
   /// 生成路径（不含域名与查询串）。
+  ///
+  /// 目标 slug 统一做 URL 编码：站点的 slug 虽然通常是 `big-breasts` 这种
+  /// 安全形式，但也存在带空格/特殊字符的（如搜索词），不编码会拼出坏 URL。
   String get path {
     final p = page <= 1 ? '' : '$page/';
+    final t = Uri.encodeComponent(target);
     switch (kind) {
       case FeedKind.latest:
         return '/latest-updates/$p';
@@ -119,15 +123,18 @@ class FeedRequest {
       case FeedKind.topArtists:
         return '/top-model/';
       case FeedKind.search:
-        return '/search/${Uri.encodeComponent(target)}/$p';
+        return '/search/$t/$p';
       case FeedKind.tag:
-        return '/tags/$target/$p';
+        return '/tags/$t/$p';
       case FeedKind.character:
-        return '/characters/$target/$p';
+        // 角色在站内就是 tag。实测 `/characters/` 和 `/characters/<slug>/`
+        // 都是 404，排行榜里角色的链接也指向 `/tags/<slug>/`。
+        // 所以这里必须落到 tags 路径，不能自己造一个 /characters/。
+        return '/tags/$t/$p';
       case FeedKind.category:
-        return '/categories/$target/$p';
+        return '/categories/$t/$p';
       case FeedKind.model:
-        return '/models/$target/$p';
+        return '/models/$t/$p';
     }
   }
 
