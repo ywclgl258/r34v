@@ -25,7 +25,15 @@ class SectionHeader extends StatelessWidget {
       padding: padding,
       child: Row(
         children: [
-          Text(title, style: Theme.of(context).textTheme.titleMedium),
+          Text(
+            title.toUpperCase(),
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.6,
+                  color: R34Color.inkMuted,
+                ),
+          ),
           if (count != null) ...[
             const SizedBox(width: 8),
             Text(

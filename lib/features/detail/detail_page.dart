@@ -151,19 +151,28 @@ class _DetailBody extends ConsumerWidget {
     return ListView(
       padding: EdgeInsets.zero,
       children: [
-        AspectRatio(
-          aspectRatio: 16 / 9,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              CachedNetworkImage(
-                imageUrl: detail.poster,
-                fit: BoxFit.cover,
-                placeholder: (context, url) =>
-                    const ColoredBox(color: R34Color.surfaceHigh),
-                errorWidget: (context, url, error) =>
-                    const ColoredBox(color: R34Color.surfaceHigh),
-              ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            R34Space.page,
+            R34Space.x2,
+            R34Space.page,
+            0,
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(R34Radius.lg),
+            child: AspectRatio(
+              aspectRatio: 16 / 9,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  CachedNetworkImage(
+                    imageUrl: detail.poster,
+                    fit: BoxFit.cover,
+                    placeholder: (context, url) =>
+                        const ColoredBox(color: R34Color.surfaceHigh),
+                    errorWidget: (context, url, error) =>
+                        const ColoredBox(color: R34Color.surfaceHigh),
+                  ),
               // 顶部压暗给磨砂栏垫底，底部过渡到画布色。
               const DecoratedBox(
                 decoration: BoxDecoration(
@@ -171,11 +180,11 @@ class _DetailBody extends ConsumerWidget {
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
                     colors: [
-                      Color(0x99000000),
+                      Color(0x66000000),
                       Color(0x1A000000),
                       Color(0x00000000),
+                      Color(0xA3000000),
                       Color(0xB3000000),
-                      R34Color.canvas,
                     ],
                     stops: [0, 0.22, 0.4, 0.84, 1],
                   ),
@@ -220,7 +229,9 @@ class _DetailBody extends ConsumerWidget {
                   ],
                 ),
               ),
-            ],
+                ],
+              ),
+            ),
           ),
         ),
         Padding(

@@ -227,11 +227,11 @@ ThemeData buildAppTheme() {
       suffixIconColor: R34Color.inkMuted,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.all(Radius.circular(R34Radius.md)),
-        borderSide: BorderSide(color: R34Color.hairline),
+        borderSide: BorderSide(color: R34Color.hairlineSoft),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.all(Radius.circular(R34Radius.md)),
-        borderSide: BorderSide(color: R34Color.hairline),
+        borderSide: BorderSide(color: R34Color.hairlineSoft),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.all(Radius.circular(R34Radius.md)),

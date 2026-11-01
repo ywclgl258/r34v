@@ -424,12 +424,15 @@ class _InlineSearchBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: R34Color.surface.withValues(alpha: 0.72),
-      shape: const StadiumBorder(
-        side: BorderSide(color: R34Color.glassBorder),
+      color: R34Color.surfaceRaised,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(R34Radius.md),
+        side: const BorderSide(color: R34Color.hairlineSoft),
       ),
       child: InkWell(
-        customBorder: const StadiumBorder(),
+        customBorder: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(R34Radius.md),
+        ),
         onTap: () => context.push('/search'),
         child: Container(
           height: 44,

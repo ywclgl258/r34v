@@ -143,26 +143,12 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
               controller: _search,
               textInputAction: TextInputAction.search,
               onSubmitted: (_) => _doSearch(),
-              decoration: InputDecoration(
+              // 不写死边框：用主题里的 surface-2 填充 + 描边，
+              // 保持和原型搜索框一致
+              decoration: const InputDecoration(
                 hintText: '搜索视频、标签、作者',
-                prefixIcon: const Icon(Icons.search_rounded, size: 20),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.arrow_forward_rounded, size: 19),
-                  color: R34Color.accentBright,
-                  onPressed: _doSearch,
-                ),
-                border: const OutlineInputBorder(
-                  borderRadius: BorderRadius.all(Radius.circular(R34Radius.pill)),
-                  borderSide: BorderSide(color: R34Color.hairline),
-                ),
-                enabledBorder: const OutlineInputBorder(
-                  borderRadius: BorderRadius.all(Radius.circular(R34Radius.pill)),
-                  borderSide: BorderSide(color: R34Color.hairline),
-                ),
-                focusedBorder: const OutlineInputBorder(
-                  borderRadius: BorderRadius.all(Radius.circular(R34Radius.pill)),
-                  borderSide: BorderSide(color: R34Color.accent, width: 1.4),
-                ),
+                prefixIcon: Icon(Icons.search_rounded, size: 20),
+                suffixIconColor: R34Color.accent,
               ),
             ),
 
