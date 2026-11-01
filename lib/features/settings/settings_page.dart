@@ -24,6 +24,7 @@ class SettingsPage extends ConsumerWidget {
           const _TranslateTagsTile(),
           const Divider(),
           const _SectionHeader('播放'),
+          const _PlayerEngineTile(),
           ListTile(
             leading: const Icon(Icons.high_quality),
             title: const Text('默认清晰度'),
@@ -421,6 +422,43 @@ class _BlockedTagsSectionState extends ConsumerState<_BlockedTagsSection> {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// 播放器引擎切换（对下一个播放生效）。
+class _PlayerEngineTile extends ConsumerWidget {
+  const _PlayerEngineTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final engine = ref.watch(libraryStoreProvider).playerEngine;
+    return ListTile(
+      leading: const Icon(Icons.smart_display_outlined),
+      title: const Text('播放器引擎'),
+      subtitle: const Text(
+        'ExoPlayer：硬件解码、代理免配置（默认）\nlibmpv：软解万能，冷门编码兜底',
+      ),
+      trailing: DropdownButton<String>(
+        value: engine,
+        underline: const SizedBox.shrink(),
+        items: const [
+          DropdownMenuItem(value: 'exo', child: Text('ExoPlayer')),
+          DropdownMenuItem(value: 'mpv', child: Text('libmpv')),
+        ],
+        onChanged: (v) async {
+          if (v == null) return;
+          await ref.read(libraryStoreProvider).setPlayerEngine(v);
+          ref.invalidate(libraryStoreProvider);
+          if (!context.mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('已切换，对下一个播放生效'),
+              duration: Duration(seconds: 1),
+            ),
+          );
+        },
       ),
     );
   }

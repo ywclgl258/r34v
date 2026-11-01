@@ -5,16 +5,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+
+import 'backends/backends.dart';
 import 'package:dio/dio.dart' show CancelToken;
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../app/providers.dart';
 import '../../data/local/library_store.dart';
 import '../../data/local/video_cache.dart';
 import '../common/video_sections.dart';
 import '../feed/video_card_tile.dart';
-import '../../core/player_bootstrap.dart';
 import '../../data/remote/stream_fetcher.dart';
 import '../../data/parsing/parse_exception.dart';
 import '../../data/remote/site_client.dart';
@@ -38,17 +37,10 @@ class PlayerPage extends ConsumerStatefulWidget {
 }
 
 class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObserver {
-  late final Player _player = Player();
-
-  /// CA 证书与 UA 要在 open 之前设置好，否则第一次握手就失败。
-  Future<void> _ensurePlayerConfigured() async {
-    if (_playerConfigured) return;
-    _playerConfigured = true;
-    await PlayerBootstrap.configure(_player);
-  }
-
-  bool _playerConfigured = false;
-  late final VideoController _controller = VideoController(_player);
+  /// 播放引擎（ExoPlayer 默认 / libmpv 兜底），进页面时按设置定型。
+  /// 设置里切换引擎对下一个播放生效。
+  late final PlayerBackend _backend =
+      createPlayerBackend(ref.read(libraryStoreProvider).playerEngine);
 
   VideoDetail? _detail;
   StreamVariant? _current;
@@ -95,14 +87,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _speed = ref.read(libraryStoreProvider).playbackSpeed;
-    _player.setRate(_speed);
+    _backend.setRate(_speed);
     // 上次调过的音量延续过来；没调过就交给系统默认（100）。
     // 恢复时下限 10：曾经有用户滑到 0 被永久记住，之后所有视频都没声音，
     // 还以为播放器坏了。静音是当下状态，不该变成默认状态。
     final savedVolume = ref.read(libraryStoreProvider).volume;
     if (savedVolume != null) {
       _volume = savedVolume < 10 ? 10 : savedVolume;
-      _player.setVolume(_volume!);
+      _backend.setVolume(_volume!);
     }
     _listen();
     _load();
@@ -119,23 +111,23 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     _hideTimer?.cancel();
 
     // 先记下位置：dispose 之后 player 的状态就不可靠了
-    final posNow = _player.state.position.inSeconds;
-    final durNow = _player.state.duration.inSeconds;
+    final posNow = _backend.currentPosition.inSeconds;
+    final durNow = _backend.currentDuration.inSeconds;
 
     // **先停掉声音，再处理其它事。**
     //
     // 之前顺序是「存进度 → dispose(player)」，而存进度里若抛异常
-    // （prefs 写失败、player 状态已失效等），后面的 _player.dispose()
+    // （prefs 写失败、player 状态已失效等），后面的 _backend.dispose()
     // 就永远执行不到——表现就是退出页面后视频还在后台放，有声音。
     // 所以这里每一步都单独兜住，任何一步失败都不影响停止播放。
     try {
-      unawaited(_player.pause());
+      unawaited(_backend.pause());
     } catch (_) {}
     try {
-      unawaited(_player.stop());
+      unawaited(_backend.pause());
     } catch (_) {}
     try {
-      unawaited(_player.dispose());
+      unawaited(_backend.dispose());
     } catch (_) {}
 
     // 再存进度
@@ -183,12 +175,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     // 切后台就存进度并暂停，避免后台继续消耗流量
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       _persistProgress();
-      _player.pause();
+      _backend.pause();
     }
   }
 
   void _listen() {
-    _player.stream.error.listen((e) async {
+    _backend.errors.listen((e) async {
       if (!mounted) return;
       // 直连探测期间由 _openRemoteDirect 自己判断成败，
       // 这里若也抢着回源换链，会两路同时开打。
@@ -208,7 +200,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     });
 
     // 播完之后把进度写成「已完成」
-    _player.stream.completed.listen((done) {
+    _backend.completed.listen((done) {
       if (done) _persistProgress(forceFinished: true);
     });
   }
@@ -225,8 +217,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     if (d == null || s == null) return;
     _refreshCount++;
     try {
-      final pos = _player.state.position;
-      final wasPlaying = _player.state.playing;
+      final pos = _backend.currentPosition;
+      final wasPlaying = _backend.isPlaying;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -235,13 +227,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
           ),
         );
       }
-      await _player.open(Media(s.url), play: wasPlaying);
+      await _backend.open(s.url, play: wasPlaying);
       if (pos.inSeconds > 0) {
         await Future<void>.delayed(const Duration(milliseconds: 350));
-        await _player.seek(pos);
+        await _backend.seek(pos);
       }
-      await _player.setRate(_speed);
-      if (_volume != null) await _player.setVolume(_muted ? 0 : _volume!);
+      await _backend.setRate(_speed);
+      if (_volume != null) await _backend.setVolume(_muted ? 0 : _volume!);
     } catch (e) {
       // 重试还失败，按 token 过期处理
       await _recoverStream(reason: '重试失败（$e）');
@@ -352,20 +344,20 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
 
     // 探测期间抑制 _listen 里的自动换链，避免直连失败时又触发一轮回源
     _probingDirect = true;
-    errSub = _player.stream.error.listen((e) {
-      if (_player.state.duration.inMilliseconds <= 0) finish(false);
+    errSub = _backend.errors.listen((e) {
+      if (_backend.currentDuration.inMilliseconds <= 0) finish(false);
     });
     // 有任一时长或播放位置推进，就说明连通了
-    durSub = _player.stream.duration.listen((dur) {
+    durSub = _backend.duration.listen((dur) {
       if (dur.inMilliseconds > 0) finish(true);
     });
-    posSub = _player.stream.position.listen((pos) {
+    posSub = _backend.position.listen((pos) {
       if (pos.inMilliseconds > 0) finish(true);
     });
 
     try {
-      await _ensurePlayerConfigured();
-      await _player.open(Media(url), play: true);
+      await _backend.configure();
+      await _backend.open(url, play: true);
       // 站点实测首字节要 5–11 秒，给足余量；太短会把能直连的误判成失败，
       // 一退回边下边播拖动就又坏了。
       final ok = await done.future.timeout(
@@ -376,10 +368,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
 
       if (resumeAt > 0) {
         await Future<void>.delayed(const Duration(milliseconds: 350));
-        await _player.seek(Duration(seconds: resumeAt));
+        await _backend.seek(Duration(seconds: resumeAt));
       }
-      await _player.setRate(_speed);
-      if (_volume != null) await _player.setVolume(_muted ? 0 : _volume!);
+      await _backend.setRate(_speed);
+      if (_volume != null) await _backend.setVolume(_muted ? 0 : _volume!);
       if (mounted) {
         setState(() {
           _buffering = false;
@@ -495,15 +487,15 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   }
 
   Future<void> _openAndSeek(String source, int resumeAt) async {
-    await _ensurePlayerConfigured();
-    await _player.open(Media(source), play: true);
+    await _backend.configure();
+    await _backend.open(source, play: true);
     if (resumeAt > 0) {
       // media_kit 在 open 后立刻 seek 有时会被忽略，等一小会儿再跳
       await Future<void>.delayed(const Duration(milliseconds: 350));
-      await _player.seek(Duration(seconds: resumeAt));
+      await _backend.seek(Duration(seconds: resumeAt));
     }
-    await _player.setRate(_speed);
-    if (_volume != null) await _player.setVolume(_muted ? 0 : _volume!);
+    await _backend.setRate(_speed);
+    if (_volume != null) await _backend.setVolume(_muted ? 0 : _volume!);
     if (mounted) {
       setState(() {
         _buffering = false;
@@ -582,8 +574,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     _restoringStream = true;
     _refreshCount++;
     try {
-      final pos = _player.state.position;
-      final wasPlaying = _player.state.playing;
+      final pos = _backend.currentPosition;
+      final wasPlaying = _backend.isPlaying;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -608,12 +600,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         _current = stream;
       });
 
-      await _player.open(Media(stream.url), play: wasPlaying);
+      await _backend.open(stream.url, play: wasPlaying);
       if (pos.inSeconds > 0) {
         await Future<void>.delayed(const Duration(milliseconds: 350));
-        await _player.seek(pos);
+        await _backend.seek(pos);
       }
-      await _player.setRate(_speed);
+      await _backend.setRate(_speed);
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = '换链接失败：$e\n这个视频现在打不开，稍后再试。');
@@ -625,17 +617,17 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   Future<void> _switchQuality(StreamVariant s) async {
     final d = _detail;
     if (d == null || s.label == _current?.label) return;
-    final pos = _player.state.position;
+    final pos = _backend.currentPosition;
     setState(() => _current = s);
     await ref.read(libraryStoreProvider).setPreferredQuality(s.label);
-    await _player.open(Media(s.url), play: true);
+    await _backend.open(s.url, play: true);
     if (pos.inSeconds > 0) {
       await Future<void>.delayed(const Duration(milliseconds: 350));
-      await _player.seek(pos);
+      await _backend.seek(pos);
     }
-    await _player.setRate(_speed);
+    await _backend.setRate(_speed);
     // open() 之后音量可能被重置，再设一次
-    if (_volume != null) await _player.setVolume(_muted ? 0 : _volume!);
+    if (_volume != null) await _backend.setVolume(_muted ? 0 : _volume!);
   }
 
   /// 设置音量（0–100）。
@@ -649,7 +641,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       _muted = clamped <= 0;
       if (clamped > 0) _volumeBeforeMute = clamped;
     });
-    await _player.setVolume(clamped);
+    await _backend.setVolume(clamped);
     await ref.read(libraryStoreProvider).setVolume(LibraryStore.persistableVolume(clamped));
   }
 
@@ -660,13 +652,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       setState(() => _muted = false);
       await _setVolume(restore);
     } else {
-      final cur = _player.state.volume;
+      final cur = _backend.currentVolume;
       setState(() {
         _volumeBeforeMute = cur > 0 ? cur : 100;
         _muted = true;
         _volume = 0;
       });
-      await _player.setVolume(0);
+      await _backend.setVolume(0);
       // 静音不落盘——落盘下限见 _setVolume
     }
   }
@@ -682,7 +674,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setSheet) {
-            final current = _muted ? 0.0 : (_volume ?? _player.state.volume);
+            final current = _muted ? 0.0 : (_volume ?? _backend.currentVolume);
             return SafeArea(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
@@ -733,8 +725,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   void _persistProgress({bool forceFinished = false}) {
     final d = _detail;
     if (d == null) return;
-    var pos = _player.state.position.inSeconds;
-    var dur = _player.state.duration.inSeconds;
+    var pos = _backend.currentPosition.inSeconds;
+    var dur = _backend.currentDuration.inSeconds;
     if (dur <= 0) dur = d.durationSeconds;
     if (forceFinished && dur > 0) pos = dur;
     if (pos <= 0 && !forceFinished) return;
@@ -812,11 +804,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     final body = Stack(
       children: [
         Center(
-          child: Video(
-            controller: _controller,
-            controls: NoVideoControls,
-            fit: BoxFit.contain,
-          ),
+          child: _backend.videoWidget(),
         ),
         // 点一下切换控制栏；左右区域上下滑调音量 / 亮度
         Positioned.fill(
@@ -834,7 +822,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
               if (details.localPosition.dx > width * 0.5) return;
               final delta = -details.delta.dy;
               if (delta == 0) return;
-              final cur = _muted ? 0.0 : (_volume ?? _player.state.volume);
+              final cur = _muted ? 0.0 : (_volume ?? _backend.currentVolume);
               _setVolume(cur + delta * 0.4);
             },
           ),
@@ -900,9 +888,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   }
 
   void _seekRelative(int seconds) {
-    final cur = _player.state.position;
+    final cur = _backend.currentPosition;
     final target = cur + Duration(seconds: seconds);
-    _player.seek(target.isNegative ? Duration.zero : target);
+    _backend.seek(target.isNegative ? Duration.zero : target);
     if (mounted) {
       ScaffoldMessenger.of(context).clearSnackBars();
       ScaffoldMessenger.of(context).showSnackBar(
@@ -933,28 +921,28 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
           children: [
             // media_kit_video 2.x 不再提供 VideoProgressIndicator，
             // 自己用 Player.stream 画一条可拖动进度条，反而更好控制样式。
-            _SeekBar(player: _player, durationFallback: d.durationSeconds),
+            _SeekBar(backend: _backend, durationFallback: d.durationSeconds),
             Row(
               children: [
                 StreamBuilder<bool>(
-                  stream: _player.stream.playing,
-                  initialData: _player.state.playing,
+                  stream: _backend.playing,
+                  initialData: _backend.isPlaying,
                   builder: (context, snap) {
                     final playing = snap.data ?? false;
                     return IconButton(
                       color: Colors.white,
                       icon: Icon(playing ? Icons.pause : Icons.play_arrow),
-                      onPressed: () => playing ? _player.pause() : _player.play(),
+                      onPressed: () => playing ? _backend.pause() : _backend.resume(),
                     );
                   },
                 ),
                 StreamBuilder<Duration>(
-                  stream: _player.stream.position,
-                  initialData: _player.state.position,
+                  stream: _backend.position,
+                  initialData: _backend.currentPosition,
                   builder: (context, posSnap) {
                     return StreamBuilder<Duration>(
-                      stream: _player.stream.duration,
-                      initialData: _player.state.duration,
+                      stream: _backend.duration,
+                      initialData: _backend.currentDuration,
                       builder: (context, durSnap) {
                         final pos = posSnap.data ?? Duration.zero;
                         final dur = durSnap.data ?? Duration.zero;
@@ -969,10 +957,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                 const Spacer(),
                 // 音量：点开一个小面板拖滑块；长按直接静音。
                 StreamBuilder<double>(
-                  stream: _player.stream.volume,
-                  initialData: _volume ?? _player.state.volume,
+                  stream: _backend.volume,
+                  initialData: _volume ?? _backend.currentVolume,
                   builder: (context, snap) {
-                    final v = _muted ? 0.0 : (snap.data ?? _player.state.volume);
+                    final v = _muted ? 0.0 : (snap.data ?? _backend.currentVolume);
                     return IconButton(
                       color: Colors.white,
                       tooltip: _muted ? '取消静音' : '音量',
@@ -1013,7 +1001,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                   tooltip: '倍速',
                   onSelected: (v) async {
                     setState(() => _speed = v);
-                    await _player.setRate(v);
+                    await _backend.setRate(v);
                     await ref.read(libraryStoreProvider).setPlaybackSpeed(v);
                   },
                   itemBuilder: (context) => [
@@ -1249,9 +1237,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
 /// 用 media_kit 的 position/duration 流，拖动时先本地跟手、松手才 seek，
 /// 否则每一帧都发 seek 会让播放器卡顿。
 class _SeekBar extends StatefulWidget {
-  const _SeekBar({required this.player, required this.durationFallback});
+  const _SeekBar({required this.backend, required this.durationFallback});
 
-  final Player player;
+  final PlayerBackend backend;
 
   /// 播放器还没报时长时用详情页的时长兜底，进度条不会显示成 0。
   final int durationFallback;
@@ -1266,10 +1254,10 @@ class _SeekBarState extends State<_SeekBar> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<Duration>(
-      stream: widget.player.stream.position,
+      stream: widget.backend.position,
       builder: (context, posSnap) {
         return StreamBuilder<Duration>(
-          stream: widget.player.stream.duration,
+          stream: widget.backend.duration,
           builder: (context, durSnap) {
             final pos = posSnap.data?.inMilliseconds ?? 0;
             final durMs = durSnap.data?.inMilliseconds ?? 0;
@@ -1293,7 +1281,7 @@ class _SeekBarState extends State<_SeekBar> {
                     onChanged: (v) => setState(() => _dragValue = v),
                     onChangeEnd: (v) async {
                       final target = Duration(milliseconds: (total * v).round());
-                      await widget.player.seek(target);
+                      await widget.backend.seek(target);
                       if (mounted) setState(() => _dragValue = null);
                     },
                   ),

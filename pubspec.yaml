@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.6.0+7
+version: 1.7.0+8
 
 environment:
   sdk: ^3.12.2
@@ -39,8 +39,9 @@ dependencies:
   # 状态管理：provider 边界清晰，解析层能被纯 Dart 单测覆盖
   flutter_riverpod: ^3.0.0
   go_router: ^16.0.0
-  # 播放器：libmpv 原生解码。选它而不是 WebView/video_player，
-  # 是因为要控制全屏、倍速、清晰度切换，且两个参考项目都验证过这条链。
+  # 播放器：双引擎。默认 ExoPlayer（video_player，硬件解码、走系统代理），
+  # libmpv（media_kit）作软解兜底，设置里可切。
+  video_player: ^2.9.2
   media_kit: ^1.2.0
   media_kit_video: ^2.0.0
   media_kit_libs_android_video: ^1.3.8

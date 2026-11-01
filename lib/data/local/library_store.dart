@@ -310,6 +310,16 @@ class LibraryStore {
   /// 播放器代理（host:port）。空表示直连。
   ///
   /// 只给 libmpv 用——它不认系统代理，必须显式设置。
+  /// 播放器引擎：exo（ExoPlayer，默认）/ mpv（libmpv）。
+  ///
+  /// ExoPlayer 硬件解码、走系统代理；libmpv 软解万能但要自带 CA。
+  /// 在播放页创建时读取——切换对下一个播放生效。
+  String get playerEngine =>
+      _prefs.getString('${_kSettings}_player_engine') ?? 'exo';
+
+  Future<void> setPlayerEngine(String v) =>
+      _prefs.setString('${_kSettings}_player_engine', v);
+
   String get playerProxy => _prefs.getString('${_kSettings}_player_proxy') ?? '';
 
   Future<void> setPlayerProxy(String v) => v.isEmpty
