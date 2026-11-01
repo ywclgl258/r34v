@@ -11,6 +11,9 @@ import '../../ui/components.dart';
 import '../../ui/glass.dart';
 import '../../ui/tokens.dart';
 import 'video_card_tile.dart';
+import 'video_grid.dart';
+
+export 'video_grid.dart' show feedColumnsFor, videoGridDelegateFor;
 
 /// 列表页的加载状态。
 sealed class FeedState {
@@ -139,17 +142,10 @@ class FeedController extends Notifier<FeedState> {
   Future<void> refresh() => loadFirst();
 }
 
-/// 按屏宽决定每行几个视频。
+/// 按屏宽决定每行几个视频。实现见 `video_grid.dart`。
 ///
-/// 参考：常见手机 360–430dp。3 列是「信息密度」和「封面还看得清」的平衡点；
-/// 平板/桌面再往上加。列表页和搜索页共用这个规则，保证观感一致。
-int feedColumnsFor(double width) {
-  if (width >= 1200) return 6;
-  if (width >= 900) return 5;
-  if (width >= 700) return 4;
-  if (width >= 320) return 3;
-  return 2;
-}
+/// 这里保留一层转发，是因为 `feed_page.dart` 是历史入口，
+/// 测试与页面都在 import 它；真正的规则只有一份，不在这里。
 
 String _humanizeHttp(HttpException e) {  if (e.message.contains('人机验证')) {
     return '站点要求人机验证。客户端过不去这一步，需要等一段时间或换网络。';
@@ -308,12 +304,10 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
                     // 列数按屏宽算，不用 maxCrossAxisExtent。
                     // 用固定宽度会在手机上退化成 2 列（420px 宽塞不下两个 320+），
                     // 试过 320 的结果就是「一屏只有 2 个视频」，翻页太累。
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: feedColumnsFor(MediaQuery.sizeOf(context).width),
-                      childAspectRatio: 0.74,
-                      crossAxisSpacing: R34Space.grid,
-                      mainAxisSpacing: R34Space.grid,
-                    ),
+                    //
+                    // 高度给 mainAxisExtent 而不是 childAspectRatio：
+                    // 卡片内容高度是常数，用比例去凑会在底部留白。
+                    gridDelegate: videoGridDelegateFor(context),
                     delegate: SliverChildBuilderDelegate(
                       (context, i) => VideoCardTile(card: cards[i], index: i),
                       childCount: cards.length,

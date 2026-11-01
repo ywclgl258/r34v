@@ -11,6 +11,7 @@ import '../../ui/glass.dart';
 import '../../ui/tokens.dart';
 import '../feed/feed_page.dart';
 import '../feed/video_card_tile.dart';
+import '../feed/video_grid.dart';
 
 /// 搜索页。
 ///
@@ -280,12 +281,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
               0,
             ),
             sliver: SliverGrid(
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: feedColumnsFor(MediaQuery.sizeOf(context).width),
-                childAspectRatio: 0.74,
-                crossAxisSpacing: R34Space.grid,
-                mainAxisSpacing: R34Space.grid + 2,
-              ),
+              gridDelegate: videoGridDelegateFor(context),
               delegate: SliverChildBuilderDelegate(
                 (context, i) => VideoCardTile(card: _results[i], index: i),
                 childCount: _results.length,

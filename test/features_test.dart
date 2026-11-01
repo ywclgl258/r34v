@@ -81,21 +81,23 @@ void main() {
   });
 
   group('信息流列数', () {
-    // 这是用户直接反馈的问题：手机上一排只有 2 个太浪费。
-    test('常见手机宽度排 3 列', () {
-      // 360/390/412/430 是主流安卓与 iPhone 的逻辑宽度
+    // 这是用户直接反馈的问题：手机上一排只有 2 个太浪费 → 改 3 列；
+    // 后来驾驶员又要求回到 2 列（3 列时封面裁得太狠、标题挤成小字）。
+    // 当前契约：手机 2 列，平板起加列。见 layout_geometry_test.dart。
+    test('常见手机宽度排 2 列', () {
       for (final w in [360.0, 390.0, 412.0, 430.0]) {
-        expect(feedColumnsFor(w), 3, reason: '宽度 $w 应该排 3 列');
+        expect(feedColumnsFor(w), 2, reason: '宽度 $w 应该排 2 列');
       }
     });
 
     test('平板与桌面加列', () {
-      expect(feedColumnsFor(700), 4);
-      expect(feedColumnsFor(900), 5);
-      expect(feedColumnsFor(1280), 6);
+      expect(feedColumnsFor(600), 3);
+      expect(feedColumnsFor(840), 4);
+      expect(feedColumnsFor(1100), 5);
+      expect(feedColumnsFor(1400), 6);
     });
 
-    test('超窄屏退回 2 列', () {
+    test('超窄屏仍是 2 列，不会掉成一列', () {
       expect(feedColumnsFor(280), 2);
     });
   });

@@ -1,4 +1,3 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -8,6 +7,7 @@ import '../../data/local/library_store.dart';
 import '../../data/local/video_cache.dart';
 import '../../ui/components.dart';
 import '../../ui/glass.dart';
+import '../../ui/net_image.dart';
 import '../../ui/tokens.dart';
 
 /// 片库：继续观看 + 收藏（视频 / 作者 / 标签分类）。
@@ -393,15 +393,8 @@ class _Thumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (url.isEmpty) {
-      return const ColoredBox(color: R34Color.surfaceHigh);
-    }
-    return CachedNetworkImage(
-      imageUrl: url,
-      fit: BoxFit.cover,
-      placeholder: (context, u) => const ColoredBox(color: R34Color.surfaceHigh),
-      errorWidget: (context, u, e) => const ColoredBox(color: R34Color.surfaceHigh),
-    );
+    // 走统一的网络图组件：测试注入点、占位色、失败态只有一处定义。
+    return NetImage(url: url, showBroken: false, fadeIn: Duration.zero);
   }
 }
 

@@ -16,6 +16,7 @@ import '../../ui/components.dart';
 import '../../ui/tokens.dart';
 import '../common/video_sections.dart';
 import '../feed/video_card_tile.dart';
+import '../feed/video_grid.dart';
 import '../../data/remote/stream_fetcher.dart';
 import '../../data/parsing/parse_exception.dart';
 import '../../data/remote/site_client.dart';
@@ -88,15 +89,24 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _speed = ref.read(libraryStoreProvider).playbackSpeed;
-    _backend.setRate(_speed);
-    // 上次调过的音量延续过来；没调过就交给系统默认（100）。
-    // 恢复时下限 10：曾经有用户滑到 0 被永久记住，之后所有视频都没声音，
-    // 还以为播放器坏了。静音是当下状态，不该变成默认状态。
-    final savedVolume = ref.read(libraryStoreProvider).volume;
-    if (savedVolume != null) {
-      _volume = savedVolume < 10 ? 10 : savedVolume;
-      _backend.setVolume(_volume!);
+    // 注意顺序：_speed / 音量下发必须在 _backend 可用之后，且**绝不能抛异常**。
+    //
+    // 这里曾经是个真坑：ExoBackend 在 `open` 之前调用 setRate 会同步抛
+    // StateError（`=> _require.xxx()` 的 expression body 是同步抛，不是
+    // 返回失败的 Future），initState 一崩，播放页连 build 都跑不到，
+    // release 下就只剩一块 Flutter 错误框——看起来正是「灰屏」。
+    // 现在后端把未 open 时的控制调用都做成 no-op 并记下意图，open 后补上；
+    // 这里再包一层兜底，保证任何引擎实现出错都不至于让整页打不开。
+    try {
+      _speed = ref.read(libraryStoreProvider).playbackSpeed;
+      _backend.setRate(_speed);
+      final savedVolume = ref.read(libraryStoreProvider).volume;
+      if (savedVolume != null) {
+        _volume = savedVolume < 10 ? 10 : savedVolume;
+        _backend.setVolume(_volume!);
+      }
+    } catch (_) {
+      // 引擎未就绪不该阻断页面；起播时还会再下发一次。
     }
     _listen();
     _load();
@@ -854,6 +864,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       ),
       body: Column(
         children: [
+          // 视频区固定 16:9，和站点封面一致。
+          //
+          // 不按视频真实比例做，因为这里不是全屏播放器：下面是信息面板，
+          // 竖屏片段如果按 9:16 撑开会把面板整个挤出屏幕。
+          // 真实比例由后端在 16:9 的框里做信箱（见 ExoBackend.videoWidget）；
+          // 想看满屏就进全屏。
           AspectRatio(aspectRatio: 16 / 9, child: body),
           Expanded(child: _buildInfoPanel(d)),
         ],
@@ -1158,7 +1174,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
             ),
           ),
           SizedBox(
-            height: 208,
+            height: videoTileExtentFor(context, 150, compact: true),
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               clipBehavior: Clip.none,

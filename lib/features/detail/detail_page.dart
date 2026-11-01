@@ -1,4 +1,3 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -11,8 +10,10 @@ import '../../data/remote/site_client.dart';
 import '../../domain/video_detail.dart';
 import '../../ui/components.dart';
 import '../../ui/glass.dart';
+import '../../ui/net_image.dart';
 import '../../ui/tokens.dart';
 import '../feed/video_card_tile.dart';
+import '../feed/video_grid.dart';
 
 /// 详情页：标题、封面、标签、清晰度、相关推荐。
 class DetailPage extends ConsumerStatefulWidget {
@@ -148,13 +149,22 @@ class _DetailBody extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final progress = ref.watch(watchProgressProvider(detail.id));
 
+    // 封面要完整可见，就不能被 AppBar 盖住。
+    //
+    // 页面开了 `extendBodyBehindAppBar`，而 ListView 从 y=0 开始排。
+    // 这时 `MediaQuery.paddingOf(context).top` **已经包含工具栏高度**
+    // （Scaffold 对带 appBar 的 body 用 max(系统内边距, appBarHeight) 兜底，
+    // 实测状态栏 24dp 时是 80 = 24 + 56），所以直接用它即可，
+    // 再加 kToolbarHeight 就是重复计算，封面会被推下去一整个标题栏的高度。
+    final topInset = MediaQuery.paddingOf(context).top;
+
     return ListView(
       padding: EdgeInsets.zero,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(
+          padding: EdgeInsets.fromLTRB(
             R34Space.page,
-            R34Space.x2,
+            topInset + R34Space.x2,
             R34Space.page,
             0,
           ),
@@ -165,14 +175,7 @@ class _DetailBody extends ConsumerWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  CachedNetworkImage(
-                    imageUrl: detail.poster,
-                    fit: BoxFit.cover,
-                    placeholder: (context, url) =>
-                        const ColoredBox(color: R34Color.surfaceHigh),
-                    errorWidget: (context, url, error) =>
-                        const ColoredBox(color: R34Color.surfaceHigh),
-                  ),
+                  NetImage(url: detail.poster, showBroken: false),
               // 顶部压暗给磨砂栏垫底，底部过渡到画布色。
               const DecoratedBox(
                 decoration: BoxDecoration(
@@ -370,7 +373,7 @@ class _DetailBody extends ConsumerWidget {
                   ),
                 ),
                 SizedBox(
-                  height: 208,
+                  height: videoTileExtentFor(context, 200),
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
                     clipBehavior: Clip.none,
