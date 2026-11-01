@@ -342,3 +342,86 @@ class _TranslateTagsTile extends ConsumerWidget {
     );
   }
 }
+
+/// 屏蔽标签管理。
+class _BlockedTagsSection extends ConsumerStatefulWidget {
+  const _BlockedTagsSection();
+
+  @override
+  ConsumerState<_BlockedTagsSection> createState() => _BlockedTagsSectionState();
+}
+
+class _BlockedTagsSectionState extends ConsumerState<_BlockedTagsSection> {
+  final _input = TextEditingController();
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
+  Future<void> _add() async {
+    final v = _input.text.trim();
+    if (v.isEmpty) return;
+    await ref.read(blockedTagsProvider.notifier).add(v);
+    _input.clear();
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final blocked = ref.watch(blockedTagsProvider);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('屏蔽标签', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 4),
+          Text(
+            '包含这些标签的视频不会出现在列表里，详情页也会拦截。\n'
+            '列表卡片不带标签数据，按标题关键词匹配；详情层按真实标签拦截。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _input,
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    hintText: '如 scat、guro、loli',
+                  ),
+                  onSubmitted: (_) => _add(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(onPressed: _add, child: const Text('添加')),
+            ],
+          ),
+          if (blocked.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final tag in blocked)
+                  InputChip(
+                    label: Text(tag),
+                    onDeleted: () =>
+                        ref.read(blockedTagsProvider.notifier).remove(tag),
+                    deleteIcon: const Icon(Icons.close, size: 15),
+                    deleteButtonTooltipMessage: '取消屏蔽',
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}

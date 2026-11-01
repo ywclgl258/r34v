@@ -159,13 +159,13 @@ void main() {
   });
 
   group('自动缓存开关', () {
-    test('默认开启', () {
-      expect(cache.autoCache, isTrue);
+    test('默认关闭（不偷偷占用户存储）', () {
+      expect(cache.autoCache, isFalse);
     });
 
-    test('可关闭', () async {
-      await cache.setAutoCache(false);
-      expect(cache.autoCache, isFalse);
+    test('可开启', () async {
+      await cache.setAutoCache(true);
+      expect(cache.autoCache, isTrue);
     });
   });
 

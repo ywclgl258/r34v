@@ -45,6 +45,7 @@ class Site {
 
 /// 列表页的排序方式。站点用 `?sort_by=` 查询参数，所有列表页通用。
 enum FeedSort {
+  relevance('', '相关'),
   newest('post_date', '最新'),
   mostViewed('video_viewed', '最多播放'),
   topRated('rating', '最高评分'),
@@ -141,7 +142,12 @@ class FeedRequest {
   /// 完整 URL。默认排序（最新）不传 `sort_by`，让站点走自己的默认值——
   /// 少一个参数、少一份缓存区分，也让「第 1 页」和「第 n 页」的 URL 形态一致。
   String get url {
-    final q = sort == FeedSort.newest ? '' : '?sort_by=${sort.param}';
+    // 非搜索列表的站点默认排序就是 post_date，省参数；
+    // 搜索的默认排序是相关性，所以搜索里选「最新」必须显式传 post_date，
+    // 否则「最新」芯片显示的其实是相关性的结果，芯片在撒谎。
+    final emit = sort.param.isNotEmpty &&
+        !(sort == FeedSort.newest && kind != FeedKind.search);
+    final q = emit ? '?sort_by=${sort.param}' : '';
     return '${Site.base}$path$q';
   }
 

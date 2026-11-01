@@ -122,7 +122,7 @@ class VideoCache {
     },
   ));
 
-  bool get autoCache => _prefs.getBool(_kAutoCache) ?? true;
+  bool get autoCache => _prefs.getBool(_kAutoCache) ?? false;
 
   Future<void> setAutoCache(bool v) => _prefs.setBool(_kAutoCache, v);
 

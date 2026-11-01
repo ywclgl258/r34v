@@ -169,7 +169,8 @@ class _HistoryList extends ConsumerWidget {
             icon: const Icon(Icons.close),
             onPressed: () => ref.read(historyProvider.notifier).remove(e.videoId),
           ),
-          onTap: () => context.push(e.path),
+          // e.path 是 /video/id/slug/ 形式，换成直达播放页
+          onTap: () => context.push(e.path.replaceFirst('/video/', '/play/')),
         );
       },
     );
@@ -215,7 +216,8 @@ class _FavoriteVideoList extends ConsumerWidget {
             onPressed: () =>
                 ref.read(favoritesProvider.notifier).toggle(e),
           ),
-          onTap: () => context.push(e.path),
+          // e.path 是 /video/id/slug/ 形式，换成直达播放页
+          onTap: () => context.push(e.path.replaceFirst('/video/', '/play/')),
         );
       },
     );

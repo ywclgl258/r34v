@@ -319,6 +319,48 @@ class LibraryStore {
 
   Future<void> setVolume(double v) => _prefs.setDouble('${_kSettings}_volume', v);
 
+  // ---------- 屏蔽标签 ----------
+
+  /// 被屏蔽的标签 slug 列表。包含这些标签的视频不再出现。
+  /// 返回可变列表——调用方可能要 add/remove。
+  List<String> loadBlockedTags() {
+    final raw = _prefs.getString('${_kSettings}_blocked_tags');
+    if (raw == null || raw.isEmpty) return [];
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return [];
+      return list.map((e) => '$e').where((e) => e.isNotEmpty).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _saveBlockedTags(List<String> tags) =>
+      _prefs.setString('${_kSettings}_blocked_tags', jsonEncode(tags));
+
+  Future<void> addBlockedTag(String slug) async {
+    final s = slug.trim().toLowerCase().replaceAll(' ', '-');
+    if (s.isEmpty) return;
+    final list = loadBlockedTags();
+    if (list.contains(s)) return;
+    list.add(s);
+    await _saveBlockedTags(list);
+  }
+
+  Future<void> removeBlockedTag(String slug) async {
+    final list = loadBlockedTags()..remove(slug);
+    await _saveBlockedTags(list);
+  }
+
+  bool isTagBlocked(String slug) =>
+      loadBlockedTags().contains(slug.toLowerCase());
+
+  /// 值得落盘的音量：小于 10 的一律记 10。
+  ///
+  /// 用户把音量拖到 0 是「这次想安静」，不该让以后每次打开播放页都无声
+  /// （真有过这种反馈：滑到 0 被永久记住，所有视频静音，以为播放器坏了）。
+  static double persistableVolume(double v) => v < 10 ? 10 : v;
+
   /// 标签是否显示中文译名。
   ///
   /// 默认开：站点标签全是英文，中文用户看着累。

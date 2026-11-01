@@ -29,7 +29,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   final _scroll = ScrollController();
 
   String _query = '';
-  FeedSort _sort = FeedSort.newest;
+  FeedSort _sort = FeedSort.relevance;
   List<VideoCard> _results = const [];
   Pager _pager = Pager.unknown;
   int _page = 1;

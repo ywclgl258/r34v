@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/local/library_store.dart';
 import '../data/local/video_downloader.dart';
 import '../data/local/auth_store.dart';
+import '../domain/video_card.dart';
 import '../data/local/video_cache.dart';
 import '../data/remote/auth_client.dart';
 import '../data/remote/stream_fetcher.dart';
@@ -136,6 +137,41 @@ final rule34ApiProvider = Provider<Rule34Api>((ref) {
   ref.onDispose(api.client.dispose);
   return api;
 });
+
+/// 屏蔽的标签列表。增删后 invalidate，列表/搜索会跟着过滤。
+class BlockedTagsNotifier extends Notifier<List<String>> {
+  @override
+  List<String> build() => ref.watch(libraryStoreProvider).loadBlockedTags();
+
+  Future<void> add(String slug) async {
+    await ref.read(libraryStoreProvider).addBlockedTag(slug);
+    state = ref.read(libraryStoreProvider).loadBlockedTags();
+  }
+
+  Future<void> remove(String slug) async {
+    await ref.read(libraryStoreProvider).removeBlockedTag(slug);
+    state = ref.read(libraryStoreProvider).loadBlockedTags();
+  }
+}
+
+final blockedTagsProvider =
+    NotifierProvider<BlockedTagsNotifier, List<String>>(BlockedTagsNotifier.new);
+
+/// 视频卡片是否通过屏蔽过滤。
+///
+/// 列表卡片不带 tag 数据（站点列表页没给），只能按标题词匹配：
+/// 被屏蔽 slug 拆成单词后，全部出现在标题里才算命中。
+/// 详情/播放层另有真实 tag 的精确拦截。
+bool cardPassesBlocklist(VideoCard card, List<String> blockedTags) {
+  if (blockedTags.isEmpty) return true;
+  final title = card.title.toLowerCase();
+  for (final slug in blockedTags) {
+    final words = slug.split('-').where((w) => w.isNotEmpty);
+    if (words.isEmpty) continue;
+    if (words.every(title.contains)) return false;
+  }
+  return true;
+}
 
 /// 观看记录。
 ///

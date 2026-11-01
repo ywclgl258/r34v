@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:dio/dio.dart' show CancelToken;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -11,6 +12,8 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../../app/providers.dart';
 import '../../data/local/library_store.dart';
 import '../../data/local/video_cache.dart';
+import '../common/video_sections.dart';
+import '../feed/video_card_tile.dart';
 import '../../core/player_bootstrap.dart';
 import '../../data/remote/stream_fetcher.dart';
 import '../../data/parsing/parse_exception.dart';
@@ -93,11 +96,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     _speed = ref.read(libraryStoreProvider).playbackSpeed;
     _player.setRate(_speed);
-    // 上次调过的音量延续过来；没调过就交给系统默认（100）
+    // 上次调过的音量延续过来；没调过就交给系统默认（100）。
+    // 恢复时下限 10：曾经有用户滑到 0 被永久记住，之后所有视频都没声音，
+    // 还以为播放器坏了。静音是当下状态，不该变成默认状态。
     final savedVolume = ref.read(libraryStoreProvider).volume;
     if (savedVolume != null) {
-      _volume = savedVolume;
-      _player.setVolume(savedVolume);
+      _volume = savedVolume < 10 ? 10 : savedVolume;
+      _player.setVolume(_volume!);
     }
     _listen();
     _load();
@@ -220,6 +225,18 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         (s) => s.label == label,
         orElse: () => d.preferredStream ?? d.streams.first,
       );
+
+      // 屏蔽拦截：详情层有真实 tag，命中就不播
+      final blocked = ref.read(blockedTagsProvider);
+      final hit = d.tags.where((t) => blocked.contains(t.toLowerCase())).toList();
+      if (hit.isNotEmpty) {
+        setState(() {
+          _error = '已按屏蔽设置拦截（命中标签：${hit.join('、')}）\n\n'
+              '可在「设置 → 屏蔽标签」里管理';
+          _loading = false;
+        });
+        return;
+      }
 
       setState(() {
         _detail = d;
@@ -565,7 +582,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     if (_volume != null) await _player.setVolume(_muted ? 0 : _volume!);
   }
 
-  /// 设置音量（0–100）。顺手记下来，下次进播放页沿用。
+  /// 设置音量（0–100）。
+  ///
+  /// 持久化有个下限 10：拖到 0 只代表「这次想安静」，不该让以后每次
+  /// 打开播放页都无声。静音状态本身也不落盘。
   Future<void> _setVolume(double v) async {
     final clamped = v.clamp(0.0, 100.0);
     setState(() {
@@ -574,7 +594,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       if (clamped > 0) _volumeBeforeMute = clamped;
     });
     await _player.setVolume(clamped);
-    await ref.read(libraryStoreProvider).setVolume(clamped);
+    await ref.read(libraryStoreProvider).setVolume(LibraryStore.persistableVolume(clamped));
   }
 
   /// 静音/取消静音。静音记的是「静音前那一刻的音量」，能原样恢复。
@@ -591,7 +611,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         _volume = 0;
       });
       await _player.setVolume(0);
-      await ref.read(libraryStoreProvider).setVolume(0);
+      // 静音不落盘——落盘下限见 _setVolume
     }
   }
 
@@ -781,6 +801,20 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     return Scaffold(
       appBar: AppBar(
         title: Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        actions: [
+          // 收藏视频（和详情页同一逻辑，现在详情/播放合一了）
+          IconButton(
+            tooltip: ref.watch(isFavoriteProvider(videoKey(d.id)))
+                ? '取消收藏'
+                : '收藏',
+            icon: Icon(
+              ref.watch(isFavoriteProvider(videoKey(d.id)))
+                  ? Icons.favorite
+                  : Icons.favorite_border,
+            ),
+            onPressed: _toggleFavorite,
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -788,6 +822,24 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
           Expanded(child: _buildInfoPanel(d)),
         ],
       ),
+    );
+  }
+
+  Future<void> _toggleFavorite() async {
+    final d = _detail;
+    if (d == null) return;
+    final now = await ref.read(favoritesProvider.notifier).toggle(FavoriteEntry(
+          kind: FavoriteKind.video,
+          target: d.id,
+          title: d.title,
+          thumb: d.poster,
+          path: d.path,
+          subtitle: d.duration,
+          addedAt: DateTime.now(),
+        ));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(now ? '已收藏' : '已取消收藏'), duration: const Duration(seconds: 1)),
     );
   }
 
@@ -851,7 +903,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                         final pos = posSnap.data ?? Duration.zero;
                         final dur = durSnap.data ?? Duration.zero;
                         return Text(
-                          '${_fmt(pos.inSeconds)} / ${_fmt(dur.inSeconds)}',
+                          '${fmtDuration(pos.inSeconds)} / ${fmtDuration(dur.inSeconds)}',
                           style: const TextStyle(color: Colors.white, fontSize: 12),
                         );
                       },
@@ -949,21 +1001,55 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         const SizedBox(height: 10),
         _buildCacheRow(d),
         const SizedBox(height: 12),
-        if (d.tags.isNotEmpty) ...[
-          Text('标签', style: Theme.of(context).textTheme.titleSmall),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
+
+        // 四组标签（角色/分类/作者/标签），与详情页一致：
+        // 点进去看列表，长按收藏，跟随翻译开关。
+        if (d.characters.isNotEmpty)
+          GroupSection(
+            title: '角色',
+            hint: '长按可收藏',
             children: [
-              for (final t in d.tags.take(24))
-                Chip(
-                  label: Text(_pretty(t), style: const TextStyle(fontSize: 11)),
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
+              for (final c in d.characters) CharacterChip(slug: c),
+            ],
+          ),
+        if (d.categories.isNotEmpty)
+          GroupSection(
+            title: '分类',
+            children: [
+              for (final c in d.categories)
+                ActionChip(
+                  label: Text(prettySlug(c)),
+                  onPressed: () =>
+                      context.push('/list/category/${Uri.encodeComponent(c)}'),
                 ),
             ],
           ),
+        if (d.models.isNotEmpty)
+          GroupSection(
+            title: '作者',
+            hint: '长按可收藏',
+            children: [
+              for (final m in d.models) ModelChip(slug: m),
+            ],
+          ),
+        if (d.tags.isNotEmpty)
+          GroupSection(
+            title: '标签',
+            hint: '长按可收藏',
+            children: [
+              for (final t in d.tags) TagChip(slug: t),
+            ],
+          ),
+
+        if (d.uploaderName.isNotEmpty)
+          UploaderRow(name: d.uploaderName, id: d.uploaderId),
+        if (d.downloads.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          DownloadSection(video: d),
+        ],
+        if (d.comments.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          CommentSection(comments: d.comments),
         ],
         if (d.description.isNotEmpty) ...[
           const SizedBox(height: 16),
@@ -971,24 +1057,28 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
           const SizedBox(height: 8),
           SelectableText(d.description, style: Theme.of(context).textTheme.bodySmall),
         ],
+        if (d.related.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          Text('相关推荐', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 200,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: d.related.length,
+              separatorBuilder: (context, i) => const SizedBox(width: 8),
+              itemBuilder: (context, i) {
+                final r = d.related[i];
+                return SizedBox(
+                  width: 150,
+                  child: VideoCardTile(card: r, compact: true),
+                );
+              },
+            ),
+          ),
+        ],
       ],
     );
-  }
-
-  static String _pretty(String slug) => slug
-      .replaceAll('-', ' ')
-      .split(' ')
-      .map((w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1))
-      .join(' ');
-
-  static String _fmt(int s) {
-    if (s <= 0) return '00:00';
-    final h = s ~/ 3600;
-    final m = (s % 3600) ~/ 60;
-    final sec = s % 60;
-    final mm = m.toString().padLeft(2, '0');
-    final ss = sec.toString().padLeft(2, '0');
-    return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
   }
 
   Widget _buildCacheRow(dynamic d) {
@@ -1158,11 +1248,11 @@ class _SeekBarState extends State<_SeekBar> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        _PlayerPageState._fmt(((value * total) / 1000).round()),
+                        fmtDuration(((value * total) / 1000).round()),
                         style: const TextStyle(color: Colors.white70, fontSize: 11),
                       ),
                       Text(
-                        _PlayerPageState._fmt((total / 1000).round()),
+                        fmtDuration((total / 1000).round()),
                         style: const TextStyle(color: Colors.white70, fontSize: 11),
                       ),
                     ],
