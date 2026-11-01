@@ -12,7 +12,7 @@ import 'package:r34v/data/remote/rule34_api.dart';
 import 'package:r34v/domain/feed_link.dart';
 import 'package:r34v/domain/video_card.dart';
 import 'package:r34v/domain/video_detail.dart';
-import 'package:r34v/features/detail/detail_page.dart';
+import 'package:r34v/features/player/player_page.dart';
 import 'package:r34v/features/feed/feed_page.dart';
 import 'package:r34v/features/feed/video_card_tile.dart';
 import 'package:r34v/features/feed/video_grid.dart';
@@ -171,41 +171,43 @@ void main() {
     });
   });
 
-  group('详情页：封面不被标题栏遮住', () {
-    testWidgets('封面顶边在标题栏底边之下', (tester) async {
-      await pumpAt(tester, const DetailPage(videoId: '4703101', slug: 'x'));
+  // 详情与播放合并成一页后，视频区不再靠 `extendBodyBehindAppBar` 顶到
+  // 状态栏下面，而是规规矩矩待在 AppBar 之下的 Column 里。
+  // 「被标题栏压掉」这个 bug 在新结构下不可能再发生——但断言留着，
+  // 因为它防的是同一类错误：有人再把视频区塞进透明 AppBar 后面。
+  group('合并页：视频区不被标题栏遮住', () {
+    testWidgets('视频区顶边在标题栏底边之下', (tester) async {
+      await pumpAt(tester, const PlayerPage(videoId: '4703101', slug: 'x'));
 
       final bar = tester.getRect(find.byType(AppBar).first);
-      final poster = tester.getRect(find.byType(AspectRatio).first);
+      final video = tester.getRect(find.byType(AspectRatio).first);
 
-      expect(poster.top, greaterThanOrEqualTo(bar.bottom),
-          reason: '封面被标题栏压掉 ${bar.bottom - poster.top}dp');
-      // 也不能推太远
-      expect(poster.top - bar.bottom, lessThan(24));
+      expect(video.top, greaterThanOrEqualTo(bar.bottom),
+          reason: '视频区被标题栏压掉 ${bar.bottom - video.top}dp');
+      // 也不该推太远：贴着栏底才对
+      expect(video.top - bar.bottom, lessThan(4));
       // 仍是 16:9
-      expect(poster.height, closeTo(poster.width * 9 / 16, 0.5));
+      expect(video.height, closeTo(video.width * 9 / 16, 0.5));
     });
 
-    testWidgets('有状态栏时同样不被遮，且不重复叠加工具栏高度', (tester) async {
+    testWidgets('有状态栏时同样不被遮', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 72); // 24dp @ dpr3
       tester.view.viewPadding = const FakeViewPadding(top: 72);
 
-      await pumpAt(tester, const DetailPage(videoId: '4703101', slug: 'x'));
+      await pumpAt(tester, const PlayerPage(videoId: '4703101', slug: 'x'));
 
       final bar = tester.getRect(find.byType(AppBar).first);
-      final poster = tester.getRect(find.byType(AspectRatio).first);
+      final video = tester.getRect(find.byType(AspectRatio).first);
 
-      // Scaffold 已把 appBarHeight 并进 paddingOf.top，
-      // 再加一次 kToolbarHeight 会把封面推下一整个标题栏高度。
-      expect(poster.top - bar.bottom, lessThan(24),
-          reason: '留白 ${poster.top - bar.bottom}dp，疑似重复加了工具栏高度');
-      expect(poster.top, greaterThanOrEqualTo(bar.bottom));
+      expect(video.top, greaterThanOrEqualTo(bar.bottom));
+      expect(video.top - bar.bottom, lessThan(4),
+          reason: '留白 ${video.top - bar.bottom}dp，疑似重复叠加了工具栏高度');
     });
   });
 
   group('播放页：引擎未就绪时不能炸 initState', () {
     testWidgets('打开播放页不应抛出异常（灰屏根因）', (tester) async {
-      await pumpAt(tester, const DetailPage(videoId: '4703101', slug: 'x'));
+      await pumpAt(tester, const PlayerPage(videoId: '4703101', slug: 'x'));
       expect(tester.takeException(), isNull);
     });
   });

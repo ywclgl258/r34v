@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart' as mk;
@@ -15,11 +17,39 @@ import 'player_backend.dart';
 /// 提前构造 Player 会在 `MediaKit.ensureInitialized` 之前触到 native 库，
 /// 直接抛异常把整页打不开（灰屏）。这里把意图记在字段上，open 后应用。
 class MpvBackend implements PlayerBackend {
+  MpvBackend({Player Function()? playerFactory})
+    : _createPlayer = playerFactory ?? (() => Player());
+
+  final Player Function() _createPlayer;
+  bool _disposed = false;
+  int _openRevision = 0;
+  final _position = StreamController<Duration>.broadcast();
+  final _duration = StreamController<Duration>.broadcast();
+  final _volumeStream = StreamController<double>.broadcast();
+  final _errors = StreamController<String>.broadcast();
+  final _completed = StreamController<bool>.broadcast();
+  final _playing = StreamController<bool>.broadcast();
+  final _subscriptions = <StreamSubscription<dynamic>>[];
   Player? _player;
   mk.VideoController? _controller;
 
   /// 只在真的要播放时才创建底层实例。
-  Player get _p => _player ??= Player();
+  Player get _p {
+    if (_disposed) throw StateError('播放器已经释放');
+    if (_player != null) return _player!;
+    final player = _player = _createPlayer();
+    _subscriptions.addAll([
+      player.stream.position.listen(_position.add),
+      player.stream.duration.listen(_duration.add),
+      player.stream.volume.listen(_volumeStream.add),
+      player.stream.error.listen(_errors.add),
+      player.stream.completed.listen(_completed.add),
+      player.stream.playing.listen(_playing.add),
+    ]);
+    return player;
+  }
+
+  bool _isCurrent(int revision) => !_disposed && revision == _openRevision;
 
   mk.VideoController get _vc => _controller ??= mk.VideoController(_p);
 
@@ -32,9 +62,10 @@ class MpvBackend implements PlayerBackend {
 
   @override
   Future<void> configure() async {
+    if (_disposed) throw StateError('播放器已经释放');
     if (_configured) return;
-    _configured = true;
     await PlayerBootstrap.configure(_p);
+    if (!_disposed) _configured = true;
   }
 
   @override
@@ -51,11 +82,18 @@ class MpvBackend implements PlayerBackend {
 
   @override
   Future<void> open(String url, {required bool play}) async {
-    await _p.open(Media(url), play: play);
-    // open 会重置倍速和音量，把这一轮记下的值补上
-    await _p.setRate(_rate);
-    await _p.setVolume(_volume);
+    if (_disposed) throw StateError('播放器已经释放');
+    final revision = ++_openRevision;
     _wantPlaying = play;
+    final player = _p;
+    // 起播意图可能在等待 open 时被 pause/dispose 改变。
+    await player.open(Media(url), play: false);
+    if (!_isCurrent(revision)) return;
+    // open 会重置倍速和音量，把这一轮记下的值补上
+    await player.setRate(_rate);
+    if (!_isCurrent(revision)) return;
+    await player.setVolume(_volume);
+    if (_isCurrent(revision) && _wantPlaying) await player.play();
   }
 
   @override
@@ -68,6 +106,7 @@ class MpvBackend implements PlayerBackend {
 
   @override
   Future<void> resume() async {
+    if (_disposed) return;
     _wantPlaying = true;
     final p = _player;
     if (p == null) return;
@@ -99,36 +138,44 @@ class MpvBackend implements PlayerBackend {
 
   @override
   Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    _openRevision++;
+    _wantPlaying = false;
     final p = _player;
     _player = null;
     _controller = null;
-    if (p == null) return;
-    await p.dispose();
+    for (final subscription in _subscriptions) {
+      await subscription.cancel();
+    }
+    if (p != null) await p.dispose();
+    await Future.wait([
+      _position.close(),
+      _duration.close(),
+      _volumeStream.close(),
+      _errors.close(),
+      _completed.close(),
+      _playing.close(),
+    ]);
   }
 
   @override
-  Stream<Duration> get position =>
-      _player?.stream.position ?? const Stream<Duration>.empty();
+  Stream<Duration> get position => _position.stream;
 
   @override
-  Stream<Duration> get duration =>
-      _player?.stream.duration ?? const Stream<Duration>.empty();
+  Stream<Duration> get duration => _duration.stream;
 
   @override
-  Stream<double> get volume =>
-      _player?.stream.volume ?? const Stream<double>.empty();
+  Stream<double> get volume => _volumeStream.stream;
 
   @override
-  Stream<String> get errors =>
-      _player?.stream.error ?? const Stream<String>.empty();
+  Stream<String> get errors => _errors.stream;
 
   @override
-  Stream<bool> get completed =>
-      _player?.stream.completed ?? const Stream<bool>.empty();
+  Stream<bool> get completed => _completed.stream;
 
   @override
-  Stream<bool> get playing =>
-      _player?.stream.playing ?? const Stream<bool>.empty();
+  Stream<bool> get playing => _playing.stream;
 
   @override
   Duration get currentPosition => _player?.state.position ?? Duration.zero;

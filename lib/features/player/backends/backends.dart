@@ -1,3 +1,5 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import 'exo_backend.dart';
 import 'mpv_backend.dart';
 import 'player_backend.dart';
@@ -5,6 +7,10 @@ import 'player_backend.dart';
 export 'exo_backend.dart';
 export 'mpv_backend.dart';
 export 'player_backend.dart';
+
+final playerBackendFactoryProvider = Provider<PlayerBackend Function(String)>(
+  (ref) => createPlayerBackend,
+);
 
 /// 按引擎名创建播放器后端。
 ///

@@ -12,7 +12,7 @@ import 'package:r34v/data/remote/rule34_api.dart';
 import 'package:r34v/domain/feed_link.dart';
 import 'package:r34v/domain/video_card.dart';
 import 'package:r34v/domain/video_detail.dart';
-import 'package:r34v/features/detail/detail_page.dart';
+import 'package:r34v/features/player/player_page.dart';
 import 'package:r34v/features/feed/feed_page.dart';
 import 'package:r34v/ui/net_image.dart';
 import 'package:r34v/ui/theme.dart';
@@ -179,10 +179,10 @@ void main() {
     );
   }, skip: !_enabled);
 
-  testWidgets('渲染详情页截图', (tester) async {
-    await pumpAt(tester, const DetailPage(videoId: '4703101', slug: 'x'));
+  testWidgets('渲染视频页截图（详情 + 播放合并）', (tester) async {
+    await pumpAt(tester, const PlayerPage(videoId: '4703101', slug: 'x'));
     await expectLater(
-      find.byType(DetailPage),
+      find.byType(PlayerPage),
       matchesGoldenFile('../evidence/preview/07-detail.png'),
     );
   }, skip: !_enabled);

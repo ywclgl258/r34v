@@ -83,7 +83,7 @@ void main() {
 
     // 页面真的画出来了：标题栏 + 清晰度/标签等信息面板
     expect(find.byType(AppBar), findsOneWidget);
-    expect(find.text('清晰度'), findsNothing); // 明细在详情页，这里只有信息面板
+    expect(find.text('清晰度'), findsOneWidget); // 合并页保留详情里的清晰度入口
     expect(find.textContaining('views'), findsNothing);
   });
 

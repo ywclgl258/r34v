@@ -25,6 +25,20 @@ import 'player_backend.dart';
 /// （release 下就是一块灰屏，看起来像「视频加载失败」而不是崩溃）。
 /// 现在倍速/音量先记着，open 成功后一次性应用。
 class ExoBackend implements PlayerBackend {
+  ExoBackend({VideoPlayerController Function(String)? controllerFactory})
+    : _createController = controllerFactory ?? _networkController;
+
+  final VideoPlayerController Function(String) _createController;
+  bool _disposed = false;
+  int _openRevision = 0;
+
+  static VideoPlayerController _networkController(String url) =>
+      VideoPlayerController.networkUrl(
+        Uri.parse(url),
+        httpHeaders: {'User-Agent': Site.userAgent, 'Referer': '${Site.base}/'},
+      );
+
+  bool _isCurrent(int revision) => !_disposed && revision == _openRevision;
   VideoPlayerController? _c;
   Timer? _poll;
 
@@ -61,10 +75,7 @@ class ExoBackend implements PlayerBackend {
             ? value.aspectRatio
             : 16 / 9;
         return Center(
-          child: AspectRatio(
-            aspectRatio: ar,
-            child: VideoPlayer(c),
-          ),
+          child: AspectRatio(aspectRatio: ar, child: VideoPlayer(c)),
         );
       },
     );
@@ -72,20 +83,26 @@ class ExoBackend implements PlayerBackend {
 
   @override
   Future<void> open(String url, {required bool play}) async {
+    if (_disposed) throw StateError('播放器已经释放');
+    final revision = ++_openRevision;
+    _wantPlaying = play;
     await _teardown();
-    final c = VideoPlayerController.networkUrl(
-      Uri.parse(url),
-      httpHeaders: {
-        'User-Agent': Site.userAgent,
-        'Referer': '${Site.base}/',
-      },
-    );
+    if (!_isCurrent(revision)) return;
+    final c = _createController(url);
     _c = c;
     // initialize 失败（网络/格式）会直接抛异常——调用方据此判失败
-    await c.initialize();
+    try {
+      await c.initialize();
+    } catch (_) {
+      if (_isCurrent(revision)) rethrow;
+      return;
+    }
+    if (!_isCurrent(revision)) {
+      await c.dispose();
+      return;
+    }
     _completedSent = false;
     _lastError = null;
-    _wantPlaying = play;
 
     c.addListener(_onValueChanged);
     _poll = Timer.periodic(const Duration(milliseconds: 250), (_) {
@@ -94,9 +111,10 @@ class ExoBackend implements PlayerBackend {
 
     // 把 open 之前记下的倍速/音量补上
     await c.setPlaybackSpeed(_rate);
+    if (!_isCurrent(revision)) return;
     await c.setVolume((_volume / 100).clamp(0.0, 1.0));
 
-    if (play) {
+    if (_isCurrent(revision) && _wantPlaying) {
       await c.play();
     }
   }
@@ -139,6 +157,7 @@ class ExoBackend implements PlayerBackend {
 
   @override
   Future<void> resume() async {
+    if (_disposed) return;
     _wantPlaying = true;
     final c = _c;
     if (c == null) return;
@@ -169,7 +188,21 @@ class ExoBackend implements PlayerBackend {
   }
 
   @override
-  Future<void> dispose() => _teardown();
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    _openRevision++;
+    _wantPlaying = false;
+    await _teardown();
+    await Future.wait([
+      _position.close(),
+      _duration.close(),
+      _volumeStream.close(),
+      _errors.close(),
+      _completed.close(),
+      _playing.close(),
+    ]);
+  }
 
   Future<void> _teardown() async {
     _poll?.cancel();

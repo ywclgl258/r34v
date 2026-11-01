@@ -3,7 +3,6 @@ import 'package:go_router/go_router.dart';
 
 import '../core/constants.dart';
 import '../domain/video_card.dart';
-import '../features/detail/detail_page.dart';
 import '../features/explore/explore_page.dart';
 import '../features/feed/feed_page.dart';
 import '../features/library/library_page.dart';
@@ -12,6 +11,7 @@ import '../features/auth/login_page.dart';
 import '../features/search/search_page.dart';
 import '../features/settings/settings_page.dart';
 import '../features/shell/root_shell.dart';
+import 'providers.dart';
 
 /// 路由表。
 ///
@@ -20,6 +20,7 @@ import '../features/shell/root_shell.dart';
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     initialLocation: '/feed/latest',
+    observers: [ref.watch(routeObserverProvider)],
     routes: [
       ShellRoute(
         builder: (context, state, child) => RootShell(location: state.uri.path, child: child),
@@ -46,10 +47,18 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
         ],
       ),
-      // 详情与播放走全屏（不套底部导航）
+      // 详情与播放是**同一页**。
+      //
+      // 曾经拆成 `/video/:id/:slug`（详情）和 `/play/:id/:slug`（播放）两页，
+      // 结果是从列表点进详情、再点播放按钮进播放页，返回要按两次——
+      // 而且两页展示的视频信息几乎重复（清晰度、标签、角色、作者、
+      // 上传者、下载、评论、简介、相关推荐）。
+      //
+      // 现在统一进 [PlayerPage]：视频在上、信息面板在下，点播放按钮就地起播，
+      // 返回一次就回到列表。保留两个 path 是为了不让已有深链/历史失效。
       GoRoute(
         path: '/video/:id/:slug',
-        builder: (context, state) => DetailPage(
+        builder: (context, state) => PlayerPage(
           videoId: state.pathParameters['id'] ?? '',
           slug: state.pathParameters['slug'] ?? '',
         ),

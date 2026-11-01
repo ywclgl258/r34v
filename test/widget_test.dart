@@ -14,9 +14,10 @@ import 'package:r34v/data/remote/site_client.dart';
 import 'package:r34v/domain/feed_link.dart';
 import 'package:r34v/domain/video_card.dart';
 import 'package:r34v/domain/video_detail.dart';
-import 'package:r34v/features/detail/detail_page.dart';
 import 'package:r34v/features/feed/feed_page.dart';
 import 'package:r34v/features/feed/video_card_tile.dart';
+import 'package:r34v/features/player/player_page.dart';
+import 'package:r34v/ui/net_image.dart';
 import 'package:r34v/features/library/library_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -95,11 +96,11 @@ void main() {
 
   // 测试里不发图片请求：换成一个 1x1 的透明图，避免真连图床导致超时
   setUpAll(() {
-    VideoCardTile.imageProviderOverride = (url) => MemoryImage(_transparentPng);
+    NetImage.imageOverride = (url) => MemoryImage(_transparentPng);
   });
 
   tearDownAll(() {
-    VideoCardTile.imageProviderOverride = null;
+    NetImage.imageOverride = null;
   });
 
   late SharedPreferences prefs;
@@ -172,32 +173,43 @@ void main() {
     });
   });
 
-  group('详情页 UI', () {
+  // 详情与播放已合并成一页，这组断言照旧、只是换了被测页面。
+  // 合并的验收标准就是「原来详情页有的，现在还在」。
+  group('视频页 UI（详情 + 播放合并）', () {
     testWidgets('渲染标题、四档清晰度、标签', (tester) async {
+      tester.view.physicalSize = const Size(1170, 2532);
+      tester.view.devicePixelRatio = 3.0;
+      addTearDown(tester.view.reset);
+
       await tester.pumpWidget(_wrap(
-        const DetailPage(videoId: '4703101', slug: 'moe-love-2-by-doll-house'),
+        const PlayerPage(videoId: '4703101', slug: 'moe-love-2-by-doll-house'),
         api: FakeApi(), prefs: prefs,
       ));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
 
       expect(find.textContaining('Moe Love 2'), findsWidgets);
       // 四档清晰度 chip
       for (final q in ['360p', '480p', '720p', '1080p']) {
         expect(find.text(q), findsWidgets, reason: '缺少 $q 档位按钮');
       }
-      // 标签（美化后首字母大写）
-      // 标签开启中文显示后，big-breasts 显示为词典里的译名
+      // 标签：开启中文显示后，big-breasts 显示为词典里的译名。
+      // 信息面板是懒构建的，先滚下去。
+      for (var i = 0; i < 12 && find.text('巨乳').evaluate().isEmpty; i++) {
+        await tester.drag(find.byType(Scrollable).last, const Offset(0, -260));
+        await tester.pump();
+      }
       expect(find.text('巨乳'), findsWidgets);
     });
 
     testWidgets('详情加载失败有提示', (tester) async {
       await tester.pumpWidget(_wrap(
-        const DetailPage(videoId: '1', slug: 'x'),
+        const PlayerPage(videoId: '1', slug: 'x'),
         api: FakeApi(failWith: HttpException('详情页返回 500', status: 500)), prefs: prefs,
       ));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 400));
       expect(find.textContaining('500'), findsWidgets);
     });
   });

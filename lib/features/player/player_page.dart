@@ -1,12 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:screen_brightness/screen_brightness.dart';
 
 import 'backends/backends.dart';
+import 'swipe_rate.dart';
 import 'package:dio/dio.dart' show CancelToken;
 
 import '../../app/providers.dart';
@@ -39,11 +42,28 @@ class PlayerPage extends ConsumerStatefulWidget {
   ConsumerState<PlayerPage> createState() => _PlayerPageState();
 }
 
-class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObserver {
+class _PlayerPageState extends ConsumerState<PlayerPage>
+    with WidgetsBindingObserver, RouteAware {
   /// 播放引擎（ExoPlayer 默认 / libmpv 兜底），进页面时按设置定型。
   /// 设置里切换引擎对下一个播放生效。
-  late final PlayerBackend _backend =
-      createPlayerBackend(ref.read(libraryStoreProvider).playerEngine);
+  late final PlayerBackend _backend = ref.read(playerBackendFactoryProvider)(
+    ref.read(libraryStoreProvider).playerEngine,
+  );
+  late final LibraryStore _store = ref.read(libraryStoreProvider);
+  late final RouteObserver<PageRoute<dynamic>> _routeObserver =
+      ref.read(routeObserverProvider);
+  PageRoute<dynamic>? _route;
+  bool _routeVisible = true;
+  bool _appActive = true;
+  bool _resumeOnReturn = false;
+  bool _pendingPlayback = true;
+  int _playbackRevision = 0;
+  VoidCallback? _cancelProbe;
+  final _subscriptions = <StreamSubscription<dynamic>>[];
+  bool _listening = false;
+  bool get _canPlay => mounted && _routeVisible && _appActive;
+  bool _isCurrent(int revision) => _canPlay && revision == _playbackRevision;
+  int _doubleTapSeconds = 10;
 
   VideoDetail? _detail;
   StreamVariant? _current;
@@ -57,14 +77,40 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   bool _controlsVisible = true;
   double _speed = 1.0;
 
-  /// 音量为 null 表示「跟随系统」——不去动它。
-  /// 一旦用户手动调过，就记下来，下次进播放页沿用。
+  /// 音量：0 表示静音，null 表示从未调过。
   double? _volume;
   bool _muted = false;
   double _volumeBeforeMute = 100;
+  final _gestureKey = GlobalKey();
+  double get _gestureWidth => _gestureKey.currentContext?.size?.width ?? 1;
+
+  double? _brightness;
+  bool _brightnessChanged = false;
+  bool _brightnessApplied = false;
+  bool _verticalAdjustsBrightness = false;
+  String? _verticalFeedback;
+  Timer? _verticalFeedbackTimer;
+
+  /// 横向拖动的累计位移（本次手势）。
+  double _rateDragDx = 0;
+
+  /// 本次手势是不是在调速。只有判定成立才动播放器，
+  /// 避免误触把好好的 1.0x 改掉。
+  bool _rateDragging = false;
+
+  /// 调速提示是否可见。
+  bool _swipeRateVisible = false;
+  double _swipeRate = 1.0;
+  double _rateBeforeDrag = 1.0;
+
+  /// 松手后收起临时倍速提示。
+  Timer? _rateRestoreTimer;
 
   /// 本次播放是不是用的本地缓存文件。
   bool _playingFromCache = false;
+
+  /// 进页面时读到的上次进度，用来显示「继续观看」入口。
+  WatchEntry? _savedProgress;
 
   /// 正在试探直连是否可用（期间不触发自动换链）。
   bool _probingDirect = false;
@@ -74,6 +120,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   int _fetchReceived = 0;
   int _fetchTotal = 0;
   StreamFetchHandle? _currentFetch;
+  StreamFetcher? _fetcher;
 
   /// 正在做后台缓存。
   bool _caching = false;
@@ -98,9 +145,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     // 现在后端把未 open 时的控制调用都做成 no-op 并记下意图，open 后补上；
     // 这里再包一层兜底，保证任何引擎实现出错都不至于让整页打不开。
     try {
-      _speed = ref.read(libraryStoreProvider).playbackSpeed;
+      _speed = _store.playbackSpeed;
       _backend.setRate(_speed);
-      final savedVolume = ref.read(libraryStoreProvider).volume;
+      final savedVolume = _store.volume;
       if (savedVolume != null) {
         _volume = savedVolume < 10 ? 10 : savedVolume;
         _backend.setVolume(_volume!);
@@ -108,7 +155,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     } catch (_) {
       // 引擎未就绪不该阻断页面；起播时还会再下发一次。
     }
-    _listen();
+    _readBrightness();
     _load();
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _persistProgress());
     if (ref.read(libraryStoreProvider).autoFullscreen) {
@@ -117,10 +164,94 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute<dynamic> && route != _route) {
+      _routeObserver.unsubscribe(this);
+      _route = route;
+      _routeObserver.subscribe(this, route);
+    }
+  }
+
+  void _invalidatePlayback() {
+    _playbackRevision++;
+    _cancelProbe?.call();
+    _cancelProbe = null;
+    _probingDirect = false;
+  }
+
+  void _resetBrightness() {
+    if (!_brightnessApplied) return;
+    _brightnessApplied = false;
+    unawaited(ScreenBrightness.instance
+        .resetApplicationScreenBrightness()
+        .catchError((Object _) {}));
+  }
+
+  void _suspendPlayback({required bool resumeOnReturn}) {
+    _resumeOnReturn = resumeOnReturn &&
+        (_backend.isPlaying || _pendingPlayback || _loading);
+    _invalidatePlayback();
+    _persistProgress();
+    unawaited(_backend.pause().catchError((Object _) {}));
+    _resetBrightness();
+    if (_rateDragging) _onRateDragEnd();
+  }
+
+  @override
+  void didPushNext() {
+    _routeVisible = false;
+    _suspendPlayback(resumeOnReturn: true);
+  }
+
+  @override
+  void didPop() {
+    _routeVisible = false;
+    _suspendPlayback(resumeOnReturn: false);
+  }
+
+  @override
+  void didPopNext() {
+    _routeVisible = true;
+    // 先让被弹出页面恢复亮度，再应用当前页自己的亮度。
+    scheduleMicrotask(_restoreVisiblePage);
+  }
+
+  void _restoreVisiblePage() {
+    if (!_canPlay || (_route != null && !_route!.isCurrent)) return;
+    if (_brightnessChanged && _brightness != null) {
+      _brightnessApplied = true;
+      unawaited(ScreenBrightness.instance
+          .setApplicationScreenBrightness(_brightness!)
+          .catchError((Object _) {}));
+    }
+    if (!_resumeOnReturn) return;
+    _resumeOnReturn = false;
+    if (_pendingPlayback && _detail != null && _current != null) {
+      unawaited(_startPlayback(_detail!, _current!));
+    } else if (!_pendingPlayback) {
+      unawaited(_backend.resume().catchError((Object _) {}));
+    }
+  }
+
+  @override
   void dispose() {
+    _routeVisible = false;
+    _invalidatePlayback();
+    _routeObserver.unsubscribe(this);
+    for (final subscription in _subscriptions) {
+      unawaited(subscription.cancel());
+    }
     WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
     _hideTimer?.cancel();
+    // 调速提示的回弹延时。不取消的话，离开页面后它还会触发一次
+    // setState（mounted 已为 false 所以不会崩），但测试框架会报
+    // "A Timer is still pending"——而且这是个真实泄漏，应当清掉。
+    _rateRestoreTimer?.cancel();
+    _verticalFeedbackTimer?.cancel();
+    _resetBrightness();
 
     // 先记下位置：dispose 之后 player 的状态就不可靠了
     final posNow = _backend.currentPosition.inSeconds;
@@ -136,9 +267,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       unawaited(_backend.pause());
     } catch (_) {}
     try {
-      unawaited(_backend.pause());
-    } catch (_) {}
-    try {
       unawaited(_backend.dispose());
     } catch (_) {}
 
@@ -148,9 +276,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     } catch (_) {}
 
     final fetching = _currentFetch;
-    if (fetching != null) {
+    if (fetching != null && _fetcher != null) {
       try {
-        unawaited(ref.read(streamFetcherProvider).cancel(fetching.videoId));
+        unawaited(_fetcher!.cancel(fetching.videoId));
       } catch (_) {}
     }
 
@@ -170,7 +298,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     if (d == null) return;
     if (pos <= 0) return;
     final total = dur > 0 ? dur : d.durationSeconds;
-    ref.read(libraryStoreProvider).saveWatch(WatchEntry(
+    _store.saveWatch(WatchEntry(
           videoId: d.id,
           title: d.title,
           thumb: d.poster,
@@ -186,19 +314,24 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 切后台就存进度并暂停，避免后台继续消耗流量
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      _persistProgress();
-      _backend.pause();
+      _appActive = false;
+      _suspendPlayback(resumeOnReturn: false);
+    } else if (state == AppLifecycleState.resumed) {
+      _appActive = true;
+      _restoreVisiblePage();
     }
   }
 
   void _listen() {
-    _backend.errors.listen((e) async {
-      if (!mounted) return;
+    if (_listening) return;
+    _listening = true;
+    _subscriptions.add(_backend.errors.listen((e) async {
+      if (!_canPlay) return;
       // 直连探测期间由 _openRemoteDirect 自己判断成败，
       // 这里若也抢着回源换链，会两路同时开打。
       if (_probingDirect) return;
       if (_refreshCount >= _maxRefresh) {
-        setState(() => _error = '播放失败：$e\n\n已经自动重试过 $_maxRefresh 次，回到详情页重新打开试试。');
+        setState(() => _error = '播放失败：$e\n\n已经自动重试过 $_maxRefresh 次，请重试或换清晰度。');
         return;
       }
       // 只有 401/403/410 才是 token 过期；其它错误（网络抖动、
@@ -209,12 +342,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       } else {
         await _retrySameStream(reason: e);
       }
-    });
+    }));
 
     // 播完之后把进度写成「已完成」
-    _backend.completed.listen((done) {
-      if (done) _persistProgress(forceFinished: true);
-    });
+    _subscriptions.add(_backend.completed.listen((done) {
+      if (mounted && done) _persistProgress(forceFinished: true);
+    }));
   }
 
   /// 错误信息里出现 401/403/410 才算 token 过期。
@@ -226,7 +359,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   Future<void> _retrySameStream({required String reason}) async {
     final d = _detail;
     final s = _current;
-    if (d == null || s == null) return;
+    if (d == null || s == null || !_canPlay) return;
+    final revision = ++_playbackRevision;
+    _pendingPlayback = true;
     _refreshCount++;
     try {
       final pos = _backend.currentPosition;
@@ -239,14 +374,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
           ),
         );
       }
-      await _backend.open(s.url, play: wasPlaying);
-      if (pos.inSeconds > 0) {
-        await Future<void>.delayed(const Duration(milliseconds: 350));
-        await _backend.seek(pos);
-      }
-      await _backend.setRate(_speed);
-      if (_volume != null) await _backend.setVolume(_muted ? 0 : _volume!);
+      await _openAndSeek(s.url, pos.inSeconds, revision: revision, play: wasPlaying);
     } catch (e) {
+      if (!_isCurrent(revision)) return;
       // 重试还失败，按 token 过期处理
       await _recoverStream(reason: '重试失败（$e）');
     }
@@ -256,6 +386,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     setState(() {
       _loading = true;
       _error = null;
+      _refreshCount = 0;
     });
     try {
       final api = ref.read(rule34ApiProvider);
@@ -279,6 +410,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
           _error = '已按屏蔽设置拦截（命中标签：${hit.join('、')}）\n\n'
               '可在「设置 → 屏蔽标签」里管理';
           _loading = false;
+          _detail = null;
         });
         return;
       }
@@ -286,6 +418,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       setState(() {
         _detail = d;
         _current = stream;
+        _savedProgress = saved;
         _loading = false;
       });
       await _startPlayback(d, stream);
@@ -311,40 +444,56 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   }
 
   Future<void> _startPlayback(VideoDetail d, StreamVariant s) async {
-    // 从上次看到的位置接着播
-    final saved = ref.read(libraryStoreProvider).findWatch(d.id);
-    final resumeAt = (saved != null && saved.isResumable) ? saved.positionSeconds : 0;
+    final revision = ++_playbackRevision;
+    _pendingPlayback = true;
+    if (!_isCurrent(revision)) return;
+    try {
+      // 从上次看到的位置接着播
+      final saved = ref.read(libraryStoreProvider).findWatch(d.id);
+      final resumeAt = (saved != null && saved.isResumable) ? saved.positionSeconds : 0;
 
-    final cache = ref.read(videoCacheProvider);
-    // 优先播本地完整缓存：省流量、不受 token 过期影响、拖动也准
-    final local = cache.localPathFor(d.id);
-    if (local != null) {
-      await _openAndSeek(local, resumeAt);
-      _playingFromCache = true;
-      if (mounted) setState(() {});
-      return;
+      final cache = ref.read(videoCacheProvider);
+      // 优先播本地完整缓存：省流量、不受 token 过期影响、拖动也准
+      final local = cache.localPathFor(d.id);
+      if (local != null) {
+        await _openAndSeek(local, resumeAt, revision: revision);
+        if (!_isCurrent(revision)) return;
+        _playingFromCache = true;
+        if (mounted) setState(() {});
+        return;
+      }
+
+      // 先直接播远端。
+      //
+      // 为什么优先直连而不是先下载：libmpv 自己支持 HTTP Range，拖动进度条会
+      // 按需请求对应区间，跳转是准确的。之前用「边下边播」读正在写入的 .part
+      // 文件，seek 到还没写到的位置时 mpv 会以为文件就到这里，进度条直接弹到结尾。
+      //
+      // CA 证书和代理现在都在启动时配好了，直连具备条件。
+      final ok = await _openRemoteDirect(s.url, resumeAt, revision);
+      if (!_isCurrent(revision)) return;
+      if (ok) return;
+
+      // 直连失败（代理只对 Dart 生效等情况），退回边下边播保底。
+      // 这条路能看，但拖动只在前端已下载范围内有效。
+      await _openViaFetch(d, s, resumeAt, revision);
+    } catch (e) {
+      if (!_isCurrent(revision)) return;
+      setState(() {
+        _buffering = false;
+        _error = '打不开视频流：$e';
+      });
     }
-
-    // 先直接播远端。
-    //
-    // 为什么优先直连而不是先下载：libmpv 自己支持 HTTP Range，拖动进度条会
-    // 按需请求对应区间，跳转是准确的。之前用「边下边播」读正在写入的 .part
-    // 文件，seek 到还没写到的位置时 mpv 会以为文件就到这里，进度条直接弹到结尾。
-    //
-    // CA 证书和代理现在都在启动时配好了，直连具备条件。
-    final ok = await _openRemoteDirect(s.url, resumeAt);
-    if (ok) return;
-
-    // 直连失败（代理只对 Dart 生效等情况），退回边下边播保底。
-    // 这条路能看，但拖动只在前端已下载范围内有效。
-    await _openViaFetch(d, s, resumeAt);
   }
 
   /// 直接打开远端地址，返回是否成功起播。
   ///
   /// media_kit 的 `open` 不会因为网络失败而抛异常，错误是从 `stream.error`
   /// 出来的，所以这里同时监听 duration（成功）和 error（失败），加超时兜底。
-  Future<bool> _openRemoteDirect(String url, int resumeAt) async {
+  Future<bool> _openRemoteDirect(String url, int resumeAt, int revision) async {
+    await _backend.configure();
+    if (!_isCurrent(revision)) return false;
+    _listen();
     final done = Completer<bool>();
     StreamSubscription<String>? errSub;
     StreamSubscription<Duration>? durSub;
@@ -353,11 +502,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     void finish(bool v) {
       if (!done.isCompleted) done.complete(v);
     }
+    void cancel() => finish(false);
+    _cancelProbe = cancel;
 
     // 探测期间抑制 _listen 里的自动换链，避免直连失败时又触发一轮回源
     _probingDirect = true;
     errSub = _backend.errors.listen((e) {
-      if (_backend.currentDuration.inMilliseconds <= 0) finish(false);
+      finish(false);
     });
     // 有任一时长或播放位置推进，就说明连通了
     durSub = _backend.duration.listen((dur) {
@@ -368,34 +519,40 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     });
 
     try {
-      await _backend.configure();
       await _backend.open(url, play: true);
+      if (!_isCurrent(revision)) return false;
       // 站点实测首字节要 5–11 秒，给足余量；太短会把能直连的误判成失败，
       // 一退回边下边播拖动就又坏了。
       final ok = await done.future.timeout(
         const Duration(seconds: 20),
         onTimeout: () => false,
       );
-      if (!ok) return false;
+      if (!ok || !_isCurrent(revision)) return false;
 
       if (resumeAt > 0) {
         await Future<void>.delayed(const Duration(milliseconds: 350));
+        if (!_isCurrent(revision)) return false;
         await _backend.seek(Duration(seconds: resumeAt));
       }
       await _backend.setRate(_speed);
+      if (!_isCurrent(revision)) return false;
       if (_volume != null) await _backend.setVolume(_muted ? 0 : _volume!);
-      if (mounted) {
+      if (_isCurrent(revision)) {
         setState(() {
           _buffering = false;
           _error = null;
           _playingFromCache = false;
+          _pendingPlayback = false;
         });
       }
       return true;
     } catch (_) {
       return false;
     } finally {
-      _probingDirect = false;
+      if (identical(_cancelProbe, cancel)) {
+        _cancelProbe = null;
+        _probingDirect = false;
+      }
       await errSub.cancel();
       await durSub.cancel();
       await posSub.cancel();
@@ -403,15 +560,17 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   }
 
   /// 通过「边下边播」打开远端流。
-  Future<void> _openViaFetch(VideoDetail d, StreamVariant s, int resumeAt) async {
+  Future<void> _openViaFetch(VideoDetail d, StreamVariant s, int resumeAt, int revision) async {
+    if (!_isCurrent(revision)) return;
     final fetch = ref.read(streamFetcherProvider);
+    _fetcher = fetch;
     setState(() {
       _buffering = true;
       _cacheProgress = null;
     });
 
     var opened = false;
-    String? firstError;
+    var starting = false;
 
     final handle = await fetch.fetch(
       videoId: d.id,
@@ -421,7 +580,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       refreshUrl: () async {
         final api = ref.read(rule34ApiProvider);
         final fresh = await api.fetchDetail(_path);
-        if (!mounted) return s.url;
+        if (!_isCurrent(revision)) return s.url;
         setState(() => _detail = fresh);
         final label = _current?.label ?? s.label;
         return fresh.streams
@@ -433,7 +592,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                 .url;
       },
       onProgress: (received, total) {
-        if (!mounted) return;
+        if (!_isCurrent(revision)) return;
         setState(() {
           _fetchReceived = received;
           _fetchTotal = total;
@@ -441,20 +600,26 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       },
       onReady: (filePath) {
         // 头部数据够了，可以起播
-        if (opened || !mounted) return;
-        opened = true;
-        _openAndSeek(filePath, resumeAt).catchError((Object e) {
-          firstError = '$e';
-        });
+        if (starting || opened || !_isCurrent(revision)) return;
+        starting = true;
+        unawaited(_openAndSeek(filePath, resumeAt, revision: revision).then((_) {
+          if (_isCurrent(revision)) opened = true;
+        }).catchError((Object e) {
+          if (!_isCurrent(revision)) return;
+          setState(() {
+            _buffering = false;
+            _error = '打不开视频流：$e';
+          });
+        }));
       },
       onDone: (err) {
-        if (!mounted) return;
-        final fatal = (err != null || firstError != null) && !opened;
+        if (!_isCurrent(revision)) return;
+        final fatal = err != null && !opened && !starting;
         if (fatal) {
           // 还没起播就失败，才是真失败
           setState(() {
             _buffering = false;
-            _error = '打不开视频流：${firstError ?? err}';
+            _error = '打不开视频流：$err';
           });
         } else {
           setState(() {
@@ -466,6 +631,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       },
     );
 
+    if (!_isCurrent(revision)) {
+      await fetch.cancel(d.id);
+      return;
+    }
     _currentFetch = handle;
 
     // 收藏的视频顺手转成正式缓存，下次就不用再抓了
@@ -498,20 +667,29 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     }
   }
 
-  Future<void> _openAndSeek(String source, int resumeAt) async {
+  Future<void> _openAndSeek(String source, int resumeAt, {
+    required int revision, bool play = true,
+  }) async {
+    if (!_isCurrent(revision)) return;
     await _backend.configure();
-    await _backend.open(source, play: true);
+    if (!_isCurrent(revision)) return;
+    _listen();
+    await _backend.open(source, play: play);
+    if (!_isCurrent(revision)) return;
     if (resumeAt > 0) {
       // media_kit 在 open 后立刻 seek 有时会被忽略，等一小会儿再跳
       await Future<void>.delayed(const Duration(milliseconds: 350));
+      if (!_isCurrent(revision)) return;
       await _backend.seek(Duration(seconds: resumeAt));
     }
     await _backend.setRate(_speed);
+    if (!_isCurrent(revision)) return;
     if (_volume != null) await _backend.setVolume(_muted ? 0 : _volume!);
-    if (mounted) {
+    if (_isCurrent(revision)) {
       setState(() {
         _buffering = false;
         _error = null;
+        _pendingPlayback = false;
       });
     }
   }
@@ -582,7 +760,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
 
   /// 直链过期时的恢复：回源详情页拿新链，从当前位置续播。
   Future<void> _recoverStream({required String reason}) async {
-    if (_restoringStream) return;
+    if (_restoringStream || !_canPlay) return;
+    final revision = ++_playbackRevision;
+    _pendingPlayback = true;
     _restoringStream = true;
     _refreshCount++;
     try {
@@ -599,7 +779,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
 
       final api = ref.read(rule34ApiProvider);
       final fresh = await api.refreshStreams(_detail!);
-      if (!mounted) return;
+      if (!_isCurrent(revision)) return;
 
       final label = _current?.label ?? '';
       final stream = fresh.streams.firstWhere(
@@ -612,14 +792,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         _current = stream;
       });
 
-      await _backend.open(stream.url, play: wasPlaying);
-      if (pos.inSeconds > 0) {
-        await Future<void>.delayed(const Duration(milliseconds: 350));
-        await _backend.seek(pos);
-      }
-      await _backend.setRate(_speed);
+      await _openAndSeek(stream.url, pos.inSeconds, revision: revision, play: wasPlaying);
     } catch (e) {
-      if (!mounted) return;
+      if (!_isCurrent(revision)) return;
       setState(() => _error = '换链接失败：$e\n这个视频现在打不开，稍后再试。');
     } finally {
       _restoringStream = false;
@@ -628,18 +803,76 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
 
   Future<void> _switchQuality(StreamVariant s) async {
     final d = _detail;
-    if (d == null || s.label == _current?.label) return;
+    if (!_canPlay || d == null || (s.label == _current?.label && _error == null)) return;
+    final revision = ++_playbackRevision;
+    _pendingPlayback = true;
     final pos = _backend.currentPosition;
-    setState(() => _current = s);
-    await ref.read(libraryStoreProvider).setPreferredQuality(s.label);
-    await _backend.open(s.url, play: true);
-    if (pos.inSeconds > 0) {
-      await Future<void>.delayed(const Duration(milliseconds: 350));
-      await _backend.seek(pos);
+    setState(() {
+      _current = s;
+      _error = null;
+      _refreshCount = 0;
+    });
+    try {
+      await ref.read(libraryStoreProvider).setPreferredQuality(s.label);
+      if (!_isCurrent(revision)) return;
+      await _openAndSeek(s.url, pos.inSeconds, revision: revision);
+    } catch (e) {
+      if (_isCurrent(revision)) setState(() => _error = '切换清晰度失败：$e');
     }
-    await _backend.setRate(_speed);
-    // open() 之后音量可能被重置，再设一次
-    if (_volume != null) await _backend.setVolume(_muted ? 0 : _volume!);
+  }
+
+  Future<void> _readBrightness() async {
+    try {
+      final value = await ScreenBrightness.instance.application;
+      if (mounted) _brightness = value.clamp(0.05, 1.0);
+    } catch (_) {
+      // Web 预览或平台不支持时，不阻断播放与其它手势。
+    }
+  }
+
+  void _onVerticalDragStart(DragStartDetails details) {
+    _verticalAdjustsBrightness = details.localPosition.dx < _gestureWidth / 2;
+    _verticalFeedbackTimer?.cancel();
+    _hideTimer?.cancel();
+  }
+
+  Future<void> _onVerticalDragUpdate(DragUpdateDetails details) async {
+    final delta = -details.delta.dy;
+    if (delta == 0) return;
+    if (_verticalAdjustsBrightness) {
+      final current = _brightness;
+      if (current == null) {
+        setState(() => _verticalFeedback = '当前平台不支持调节亮度');
+        return;
+      }
+      final value = (current + delta * 0.004).clamp(0.05, 1.0);
+      _brightness = value;
+      _brightnessChanged = true;
+      _brightnessApplied = true;
+      final revision = _playbackRevision;
+      try {
+        await ScreenBrightness.instance.setApplicationScreenBrightness(value);
+        if (_isCurrent(revision)) {
+          setState(() => _verticalFeedback = '亮度 ${(value * 100).round()}%');
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() => _verticalFeedback = '当前平台不支持调节亮度');
+        }
+      }
+    } else {
+      final current = _muted ? 0.0 : (_volume ?? _backend.currentVolume);
+      final value = (current + delta * 0.4).clamp(0.0, 100.0);
+      setState(() => _verticalFeedback = '音量 ${value.round()}%');
+      await _setVolume(value);
+    }
+  }
+
+  void _onVerticalDragEnd() {
+    _verticalFeedbackTimer?.cancel();
+    _verticalFeedbackTimer = Timer(const Duration(milliseconds: 700), () {
+      if (mounted) setState(() => _verticalFeedback = null);
+    });
   }
 
   /// 设置音量（0–100）。
@@ -647,6 +880,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   /// 持久化有个下限 10：拖到 0 只代表「这次想安静」，不该让以后每次
   /// 打开播放页都无声。静音状态本身也不落盘。
   Future<void> _setVolume(double v) async {
+    final store = _store;
     final clamped = v.clamp(0.0, 100.0);
     setState(() {
       _volume = clamped;
@@ -654,7 +888,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       if (clamped > 0) _volumeBeforeMute = clamped;
     });
     await _backend.setVolume(clamped);
-    await ref.read(libraryStoreProvider).setVolume(LibraryStore.persistableVolume(clamped));
+    await store.setVolume(LibraryStore.persistableVolume(clamped));
   }
 
   /// 静音/取消静音。静音记的是「静音前那一刻的音量」，能原样恢复。
@@ -709,7 +943,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                           ),
                           onPressed: () async {
                             await _toggleMute();
-                            setSheet(() {});
+                            if (context.mounted) setSheet(() {});
                           },
                         ),
                       ],
@@ -721,7 +955,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                       label: '${current.round()}',
                       onChanged: (v) async {
                         await _setVolume(v);
-                        setSheet(() {});
+                        if (context.mounted) setSheet(() {});
                       },
                     ),
                   ],
@@ -743,7 +977,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     if (forceFinished && dur > 0) pos = dur;
     if (pos <= 0 && !forceFinished) return;
 
-    ref.read(libraryStoreProvider).saveWatch(WatchEntry(
+    _store.saveWatch(WatchEntry(
           videoId: d.id,
           title: d.title,
           thumb: d.poster,
@@ -754,7 +988,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
           streamLabel: _current?.label ?? '',
         )).then((_) {
       // 让片库/列表上的进度条跟着动
-      ref.invalidate(historyProvider);
+      if (mounted) ref.invalidate(historyProvider);
     });
   }
 
@@ -786,46 +1020,103 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     }
   }
 
+  Future<void> _togglePlayback() async {
+    if (!_canPlay) return;
+    if (_backend.isPlaying) {
+      _resumeOnReturn = false;
+      await _backend.pause();
+    } else if (_pendingPlayback && _detail != null && _current != null) {
+      await _startPlayback(_detail!, _current!);
+    } else {
+      await _backend.resume();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
+    if (_loading && _detail == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    if (_error != null) {
+
+    // 详情都没拿到（网络失败/解析失败/被屏蔽），这时没有信息可显示，
+    // 整页给错误态。
+    final d = _detail;
+    if (d == null) {
       return Scaffold(
         appBar: AppBar(),
-        body: ErrorState(message: _error!, onRetry: _load),
+        body: ErrorState(message: _error ?? '没能加载这个视频', onRetry: _load),
       );
     }
 
-    final d = _detail!;
+    // 走到这里说明详情已经有了，**只有播放这一环可能失败**。
+    // 播放失败不该把整页变成错误页——用户还想看标题、标签、简介，
+    // 甚至想换一档清晰度再试。所以错误只占据视频区。
     final body = Stack(
       children: [
-        Center(
-          child: _backend.videoWidget(),
-        ),
-        // 点一下切换控制栏；左右区域上下滑调音量 / 亮度
+        // 视频填满区域，后面的手势层与控件按 Stack 顺序接收指针。
         Positioned.fill(
-          child: GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onTap: _toggleControls,
-            onDoubleTapDown: (details) => _seekRelative(
-              details.localPosition.dx < MediaQuery.sizeOf(context).width / 2 ? -10 : 10,
-            ),
-            onDoubleTap: () {},
-            // 左侧上下滑 = 调音量。手机上看视频的肌肉记忆，
-            // 比每次都点开面板拖滑块快得多。
-            onVerticalDragUpdate: (details) {
-              final width = MediaQuery.sizeOf(context).width;
-              if (details.localPosition.dx > width * 0.5) return;
-              final delta = -details.delta.dy;
-              if (delta == 0) return;
-              final cur = _muted ? 0.0 : (_volume ?? _backend.currentVolume);
-              _setVolume(cur + delta * 0.4);
-            },
-          ),
+          child: _error != null
+              ? _buildPlayerError()
+              : Center(child: _backend.videoWidget()),
         ),
-        if (_controlsVisible) _buildControls(d),
+        // 手势层。
+        //
+        // 手势分工：
+        // - 单击：显隐控制栏
+        // - 双击左/右半屏：退/进 10 秒
+        // - 竖向滑：左侧调亮度、右侧调音量（按起手位置锁定）
+        // - 横向滑：临时改播放速度，松手恢复原倍速
+        //
+        // 横向滑用 `onHorizontalDrag*` 而不是在 `onPanUpdate` 里自己判断方向：
+        // Flutter 的手势竞技场已经做了方向仲裁，横竖两个回调各自只在
+        // 对应方向占优时才触发，比手写阈值可靠，也不会和竖向调音量打架。
+        if (_error == null)
+          Positioned.fill(
+            child: GestureDetector(
+              key: _gestureKey,
+              behavior: HitTestBehavior.opaque,
+              dragStartBehavior: DragStartBehavior.down,
+              onTap: _toggleControls,
+              onDoubleTapDown: (details) => _doubleTapSeconds =
+                  details.localPosition.dx < _gestureWidth / 2 ? -10 : 10,
+              onDoubleTap: () => _seekRelative(_doubleTapSeconds),
+              onVerticalDragStart: _onVerticalDragStart,
+              onVerticalDragUpdate: _onVerticalDragUpdate,
+              onVerticalDragEnd: (_) => _onVerticalDragEnd(),
+              onVerticalDragCancel: _onVerticalDragEnd,
+              onHorizontalDragStart: _onRateDragStart,
+              onHorizontalDragUpdate: _onRateDragUpdate,
+              onHorizontalDragEnd: (_) => _onRateDragEnd(),
+              onHorizontalDragCancel: _onRateDragEnd,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        if (_error == null && _controlsVisible) _buildControls(d),
+        // 滑动调速的实时提示。放在 Stack 顶层、控制栏之外：
+        // 调速时控制栏往往是隐藏的，提示必须自己可见。
+        if (_swipeRateVisible) _buildRateIndicator(),
+        if (_verticalFeedback != null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Center(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(R34Radius.pill),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 10,
+                    ),
+                    child: Text(
+                      _verticalFeedback!,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
       ],
     );
 
@@ -844,7 +1135,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       appBar: AppBar(
         title: Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
-          // 收藏视频（和详情页同一逻辑，现在详情/播放合一了）
+          IconButton(
+            tooltip: '刷新',
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: _load,
+          ),
+          // 收藏视频
           IconButton(
             tooltip: ref.watch(isFavoriteProvider(videoKey(d.id)))
                 ? '取消收藏'
@@ -862,17 +1158,73 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
           const SizedBox(width: R34Space.x1),
         ],
       ),
-      body: Column(
-        children: [
-          // 视频区固定 16:9，和站点封面一致。
-          //
-          // 不按视频真实比例做，因为这里不是全屏播放器：下面是信息面板，
-          // 竖屏片段如果按 9:16 撑开会把面板整个挤出屏幕。
-          // 真实比例由后端在 16:9 的框里做信箱（见 ExoBackend.videoWidget）；
-          // 想看满屏就进全屏。
-          AspectRatio(aspectRatio: 16 / 9, child: body),
-          Expanded(child: _buildInfoPanel(d)),
-        ],
+      body: LayoutBuilder(builder: (context, constraints) {
+        // 视频框保持 16:9；横屏将信息面板放在右侧，避免竖向空间溢出。
+        final video = AspectRatio(aspectRatio: 16 / 9, child: body);
+        final info = _buildInfoPanel(d);
+        if (constraints.maxWidth > constraints.maxHeight) {
+          return Row(children: [
+            Expanded(flex: 3, child: Center(child: video)),
+            Expanded(flex: 2, child: info),
+          ]);
+        }
+        return Column(children: [video, Expanded(child: info)]);
+      }),
+    );
+  }
+
+  /// 视频区里的播放错误。
+  ///
+  /// 只占视频那一块，不遮信息面板：换清晰度、看标签、读简介都还能做，
+  /// 用户有机会自己绕过去（比如换一档低码率、或切 libmpv）。
+  Widget _buildPlayerError() {
+    return Container(
+      color: Colors.black,
+      padding: const EdgeInsets.all(R34Space.x4),
+      child: Center(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline_rounded,
+                  size: 32, color: R34Color.inkMuted),
+              const SizedBox(height: R34Space.x2),
+              Text(
+                _error!,
+                textAlign: TextAlign.center,
+                maxLines: 6,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: R34Color.inkSecondary,
+                  fontSize: 12.5,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: R34Space.x3),
+              Wrap(
+                spacing: R34Space.x2,
+                alignment: WrapAlignment.center,
+                children: [
+                  FilledButton.tonal(
+                    onPressed: _load,
+                    child: const Text('重试'),
+                  ),
+                  if (_current != null && _detail != null &&
+                      _detail!.streams.length > 1)
+                    TextButton(
+                      onPressed: () {
+                        // 换一档清晰度：换链最容易解决"这条链坏了"的情况
+                        final other = _detail!.streams
+                            .firstWhere((s) => s.label != _current!.label);
+                        _switchQuality(other);
+                      },
+                      child: const Text('换清晰度'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -899,7 +1251,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     final cur = _backend.currentPosition;
     final target = cur + Duration(seconds: seconds);
     _backend.seek(target.isNegative ? Duration.zero : target);
-    if (mounted) {
+    if (mounted && seconds != 0) {
       ScaffoldMessenger.of(context).clearSnackBars();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -910,22 +1262,141 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     }
   }
 
+  // ---------------- 横向滑动调速 ----------------
+
+  void _onRateDragStart(DragStartDetails details) {
+    _rateDragDx = 0;
+    _rateDragging = false;
+    _rateRestoreTimer?.cancel();
+    _rateBeforeDrag = _speed;
+    setState(() => _swipeRateVisible = false);
+  }
+
+  void _onRateDragUpdate(DragUpdateDetails details) {
+    _rateDragDx += details.delta.dx;
+
+    // 累计位移还不够判定方向，先不动播放器。
+    // 一旦判定成立就锁住（_rateDragging），后续本次手势都按横向处理，
+    // 不会滑到一半又"反悔"。
+    if (!_rateDragging) {
+      if (!isRateSwipe(_rateDragDx, 0)) return;
+      _rateDragging = true;
+    }
+
+    final width = _gestureWidth;
+    final rate = rateForDrag(_rateDragDx, width, initialRate: _rateBeforeDrag);
+
+    setState(() {
+      _speed = rate;
+      _swipeRate = rate;
+      _swipeRateVisible = true;
+    });
+    _backend.setRate(rate);
+  }
+
+  /// 松手：提示留一会儿再消失，速度回到用户原本设定的值。
+  ///
+  /// **不回弹到 1.0，而是回弹到「进入本次手势前的值」。**
+  /// 用户可能本来就设了 1.5x 在看，临时划一下不该把设置清成 1.0。
+  void _onRateDragEnd() {
+    if (!_rateDragging) {
+      _rateDragDx = 0;
+      return;
+    }
+    _rateDragging = false;
+    _rateDragDx = 0;
+
+    final restore = _rateBeforeDrag;
+    _speed = restore;
+    _backend.setRate(restore);
+
+    _rateRestoreTimer?.cancel();
+    // 提示多留 500ms 再消失，让人看清刚才滑到了几倍。
+    _rateRestoreTimer = Timer(const Duration(milliseconds: 500), () {
+      if (!mounted) return;
+      setState(() {
+        _swipeRateVisible = false;
+      });
+    });
+  }
+
+  /// 调速提示：屏幕中间一个胶囊，显示当前倍速。
+  Widget _buildRateIndicator() {
+    return Positioned(
+      top: 12,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: Center(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.72),
+              borderRadius: BorderRadius.circular(R34Radius.pill),
+              border: Border.all(color: R34Color.glassBorder),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _swipeRate > kNormalRate
+                        ? Icons.fast_forward_rounded
+                        : _swipeRate < kNormalRate
+                            ? Icons.fast_rewind_rounded
+                            : Icons.play_arrow_rounded,
+                    size: 16,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    rateLabel(_swipeRate),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildControls(VideoDetail d) {
     return Positioned(
       left: 0,
       right: 0,
       bottom: 0,
-      child: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.bottomCenter,
-            end: Alignment.topCenter,
-            colors: [Colors.black87, Colors.transparent],
+      // 背景渐变只是装饰，不该拦指针。
+      //
+      // 控制栏一旦显示就盖住视频区下半部分。之前整个 `Container` 是普通
+      // 绘制盒，命中测试会把这片区域的空白全部吃掉（按钮之间那点缝隙除外），
+      // 于是「点一下显隐控制栏」在控制栏可见时失效、横滑调倍速也只能在
+      // 上半屏划。把**背景**放到 IgnorePointer 里，按钮仍是正常子树，
+      // 各自响应自己的点击——两者互不影响。
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [Colors.black87, Colors.transparent],
+                  ),
+                ),
+              ),
+            ),
           ),
-        ),
-        padding: const EdgeInsets.fromLTRB(8, 24, 8, 8),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 24, 8, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
           children: [
             // media_kit_video 2.x 不再提供 VideoProgressIndicator，
             // 自己用 Player.stream 画一条可拖动进度条，反而更好控制样式。
@@ -984,8 +1455,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                       shape: const CircleBorder(),
                       clipBehavior: Clip.antiAlias,
                       child: InkWell(
-                        onTap: () =>
-                            playing ? _backend.pause() : _backend.resume(),
+                        onTap: _togglePlayback,
                         child: SizedBox(
                           width: 46,
                           height: 46,
@@ -1080,7 +1550,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
             ),
           ],
         ),
-      ),
+          ), // Padding
+        ],
+      ), // Stack
     );
   }
 
@@ -1104,7 +1576,57 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         ),
         const SizedBox(height: R34Space.x2 + 2),
         _buildCacheRow(d),
-        const SizedBox(height: R34Space.x2 + 2),
+
+        // 清晰度：详情页原本也有一组，合并后只留这一处。
+        // 点它就换档并从当前位置续播，比去播放器控件里翻菜单好找。
+        if (d.streams.isNotEmpty) ...[
+          SectionHeader(
+            title: '清晰度',
+            padding: const EdgeInsets.only(
+              top: R34Space.x5,
+              bottom: R34Space.x2 + 2,
+            ),
+          ),
+          Wrap(
+            spacing: R34Space.x2,
+            runSpacing: R34Space.x2,
+            children: [
+              for (final s in d.streams)
+                ActionChip(
+                  avatar: Icon(
+                    s.isHd ? Icons.hd_outlined : Icons.sd_outlined,
+                    size: 17,
+                  ),
+                  label: Text(s.label),
+                  // 当前档位加星标：换档会重建播放器，不标出来会让人
+                  // 以为点了没反应。
+                  backgroundColor: s.label == _current?.label
+                      ? R34Color.accentSoft
+                      : null,
+                  onPressed: () => _switchQuality(s),
+                ),
+            ],
+          ),
+        ],
+
+        // 继续观看：有进度时给一个明确的入口。
+        if (_savedProgress?.isResumable ?? false) ...[
+          const SizedBox(height: R34Space.x4),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: () async {
+                await _backend.seek(Duration(seconds: _savedProgress!.positionSeconds));
+                await _backend.resume();
+              },
+              icon: const Icon(Icons.play_circle_outline_rounded, size: 19),
+              label: Text(
+                '继续观看 ${fmtDuration(_savedProgress!.positionSeconds)}'
+                ' / ${fmtDuration(d.durationSeconds)}',
+              ),
+            ),
+          ),
+        ],
 
         // 四组标签（角色/分类/作者/标签），与详情页一致：
         // 点进去看列表，长按收藏，跟随翻译开关。

@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.8.1+10
+version: 1.9.1+12
 
 environment:
   sdk: ^3.12.2
@@ -56,6 +56,8 @@ dependencies:
   # 仅在 Web 预览构建里参与（data/remote/site_client_web.dart 用 fetch）。
   # 原生包不会链接它。
   web: ^1.1.0
+  # 播放区左侧竖滑：只调当前应用亮度，无需修改系统设置权限。
+  screen_brightness: 2.1.11
 
 dev_dependencies:
   flutter_test:

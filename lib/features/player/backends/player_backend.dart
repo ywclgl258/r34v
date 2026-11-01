@@ -31,7 +31,7 @@ abstract class PlayerBackend {
 
   Future<void> dispose();
 
-  // ---- 状态流 ----
+  // ---- 状态流：初始化前也可订阅，不能换成一次性的空流。 ----
   Stream<Duration> get position;
   Stream<Duration> get duration;
   Stream<double> get volume;

@@ -137,6 +137,7 @@ void main() {
     final src = makeBytes(600);
     final server = FakeServer(src);
     final progresses = <int>[];
+    final done = Completer<String?>();
     final fetcher = StreamFetcher(dio: server.dio());
     final handle = await fetcher.fetch(
       videoId: 'vid2',
@@ -144,13 +145,11 @@ void main() {
       quality: '360p',
       chunkSizeOverride: 100,
       onProgress: (received, total) => progresses.add(received),
-      onDone: (_) {},
+      onDone: done.complete,
     );
-    for (var i = 0; i < 200; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-      final f = File(handle.filePath);
-      if (await f.exists() && await f.length() == src.length) break;
-    }
+    // 文件长度先增长，进度回调随后才发出；必须等下载完成再断言和清理。
+    expect(await done.future.timeout(const Duration(seconds: 5)), isNull);
+    expect(handle.complete, isTrue);
     expect(progresses.last, src.length);
     for (var i = 1; i < progresses.length; i++) {
       expect(progresses[i], greaterThanOrEqualTo(progresses[i - 1]),

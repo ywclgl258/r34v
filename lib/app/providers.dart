@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -10,6 +11,11 @@ import '../data/remote/auth_client.dart';
 import '../data/remote/stream_fetcher.dart';
 import '../data/remote/tag_translator.dart';
 import '../data/remote/rule34_api.dart';
+
+/// 只观察整页导航，弹出菜单、音量面板不会打断播放。
+final routeObserverProvider = Provider<RouteObserver<PageRoute<dynamic>>>(
+  (ref) => RouteObserver<PageRoute<dynamic>>(),
+);
 
 /// 在 main() 里被 override 成真实实例（需要 await 初始化）。
 final sharedPrefsProvider = Provider<SharedPreferences>((ref) {
