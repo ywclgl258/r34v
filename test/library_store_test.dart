@@ -254,7 +254,8 @@ void main() {
   group('设置', () {
     test('默认值', () {
       expect(store.preferredQuality, '720p');
-      expect(store.autoFullscreen, isTrue);
+      // 全屏改成默认关闭：进播放页自动转屏会打断「只想听声音」的场景
+      expect(store.autoFullscreen, isFalse);
       expect(store.playbackSpeed, 1.0);
     });
 

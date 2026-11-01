@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
+import '../../data/local/tag_dictionary.dart';
 import '../../core/player_bootstrap.dart';
 
 /// 设置页。首版只有播放偏好、历史控制与诊断信息。
@@ -20,6 +21,9 @@ class SettingsPage extends ConsumerWidget {
       appBar: AppBar(title: const Text('设置')),
       body: ListView(
         children: [
+          const _SectionHeader('显示'),
+          const _TranslateTagsTile(),
+          const Divider(),
           const _SectionHeader('播放'),
           ListTile(
             leading: const Icon(Icons.high_quality),
@@ -317,6 +321,28 @@ class _ProxyTileState extends ConsumerState<_ProxyTile> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 标签中文显示开关。
+class _TranslateTagsTile extends ConsumerWidget {
+  const _TranslateTagsTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final on = ref.watch(libraryStoreProvider).translateTags;
+    return SwitchListTile(
+      secondary: const Icon(Icons.translate),
+      title: const Text('标签显示中文'),
+      subtitle: Text(
+        '内置词典收录 $tagDictionarySize 个常用标签，未收录的显示原文',
+      ),
+      value: on,
+      onChanged: (v) async {
+        await ref.read(libraryStoreProvider).setTranslateTags(v);
+        ref.invalidate(libraryStoreProvider);
+      },
     );
   }
 }

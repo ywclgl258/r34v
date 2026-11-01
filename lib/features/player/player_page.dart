@@ -112,19 +112,65 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    final fetching = _currentFetch;
-    if (fetching != null) {
-      unawaited(ref.read(streamFetcherProvider).cancel(fetching.videoId));
-    }
     _saveTimer?.cancel();
     _hideTimer?.cancel();
-    _persistProgress();
-    _player.dispose();
+
+    // 先记下位置：dispose 之后 player 的状态就不可靠了
+    final posNow = _player.state.position.inSeconds;
+    final durNow = _player.state.duration.inSeconds;
+
+    // **先停掉声音，再处理其它事。**
+    //
+    // 之前顺序是「存进度 → dispose(player)」，而存进度里若抛异常
+    // （prefs 写失败、player 状态已失效等），后面的 _player.dispose()
+    // 就永远执行不到——表现就是退出页面后视频还在后台放，有声音。
+    // 所以这里每一步都单独兜住，任何一步失败都不影响停止播放。
+    try {
+      unawaited(_player.pause());
+    } catch (_) {}
+    try {
+      unawaited(_player.stop());
+    } catch (_) {}
+    try {
+      unawaited(_player.dispose());
+    } catch (_) {}
+
+    // 再存进度
+    try {
+      _persistProgressAt(posNow, durNow);
+    } catch (_) {}
+
+    final fetching = _currentFetch;
+    if (fetching != null) {
+      try {
+        unawaited(ref.read(streamFetcherProvider).cancel(fetching.videoId));
+      } catch (_) {}
+    }
+
     if (_fullscreen) {
       SystemChrome.setPreferredOrientations(DeviceOrientation.values);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     super.dispose();
+  }
+
+  /// dispose 用的存进度版本：位置和时长由调用方传入，
+  /// 不再读已经要销毁的 player。
+  void _persistProgressAt(int pos, int dur) {
+    final d = _detail;
+    if (d == null) return;
+    if (pos <= 0) return;
+    final total = dur > 0 ? dur : d.durationSeconds;
+    ref.read(libraryStoreProvider).saveWatch(WatchEntry(
+          videoId: d.id,
+          title: d.title,
+          thumb: d.poster,
+          path: d.path,
+          positionSeconds: pos,
+          durationSeconds: total,
+          streamLabel: _current?.label ?? '',
+          updatedAt: DateTime.now(),
+        ));
   }
 
   @override

@@ -1,0 +1,205 @@
+/// 标签中文对照表。
+///
+/// 为什么用内置词典而不是机器翻译 API：
+/// - 离线可用，不额外消耗流量、不需要申请 key
+/// - 结果稳定，同一个标签永远翻成同一个词（机翻每次可能不同）
+/// - 站点的标签是固定词表，常用的就那么几百个，覆盖住就够用
+///
+/// 未收录的标签**显示原文**，不做猜测——乱翻比不翻更糟。
+/// 词典按类别分组，方便以后补词。
+library;
+
+/// slug → 中文。slug 用小写连字符形式（和站点链接里的 slug 一致）。
+const Map<String, String> kTagZh = {
+  // ---- 体型 / 特征 ----
+  'big-breasts': '巨乳',
+  'large-breasts': '大胸',
+  'huge-breasts': '超大胸',
+  'small-breasts': '小胸',
+  'flat-chest': '平胸',
+  'big-ass': '大臀',
+  'huge-ass': '巨臀',
+  'big-cock': '巨屌',
+  'huge-cock': '巨型肉棒',
+  'thick': '丰满',
+  'chubby': '微胖',
+  'muscular': '肌肉',
+  'slender': '纤细',
+  'tall': '高个',
+  'pregnant': '怀孕',
+  'lactation': '泌乳',
+  'nipples': '乳头',
+  'pussy': '女阴',
+  'penis': '阴茎',
+
+  // ---- 发色 / 外观 ----
+  'blonde': '金发',
+  'brunette': '褐发',
+  'redhead': '红发',
+  'black-hair': '黑发',
+  'white-hair': '白发',
+  'blue-eyes': '蓝眼',
+  'glasses': '眼镜',
+  'barefoot': '赤足',
+  'high-heels': '高跟鞋',
+
+  // ---- 性行为 ----
+  'anal': '肛交',
+  'vaginal': '阴道性交',
+  'oral': '口交',
+  'blowjob': '口交',
+  'handjob': '手交',
+  'footjob': '足交',
+  'titjob': '乳交',
+  'paizuri': '乳交',
+  'deepthroat': '深喉',
+  'creampie': '内射',
+  'cumshot': '射精',
+  'facial': '颜射',
+  'cum-in-mouth': '口内射精',
+  'swallow': '吞精',
+  'swallowing': '吞精',
+  'squirting': '潮吹',
+  'orgasm': '高潮',
+  'multiple-orgasms': '多次高潮',
+  'masturbation': '自慰',
+  'humping': '摩擦',
+  'ahegao': '阿黑颜',
+  'moaning': '呻吟',
+
+  // ---- 人数 / 关系 ----
+  'threesome': '三人行',
+  'group': '群交',
+  'gangbang': '轮奸',
+  'lesbian': '女同',
+  'yuri': '百合',
+  'gay': '男同',
+  'yaoi': '耽美',
+  'futanari': '扶她',
+  'futa': '扶她',
+  'shemale': '人妖',
+  'transgender': '跨性别',
+  'femboy': '伪娘',
+  'traps': '伪娘',
+  'crossdressing': '变装',
+  'gender-bender': '性别转换',
+  'tomboy': '假小子',
+  'milf': '熟女',
+  'dilf': '熟男',
+  'teen': '少女',
+  'loli': '萝莉',
+  'shota': '正太',
+  'mother': '母亲',
+  'sister': '姐妹',
+  'daughter': '女儿',
+  'aunt': '阿姨',
+  'wife': '妻子',
+  'girlfriend': '女友',
+  'stepmom': '继母',
+  'stepsister': '继妹',
+  'incest': '近亲',
+
+  // ---- 制服 / 穿着 ----
+  'cosplay': '角色扮演',
+  'nurse': '护士',
+  'teacher': '教师',
+  'schoolgirl': '女学生',
+  'maid': '女仆',
+  'police': '警察',
+  'military': '军装',
+  'bikini': '比基尼',
+  'swimsuit': '泳装',
+  'lingerie': '内衣',
+  'stockings': '丝袜',
+  'pantyhose': '连裤袜',
+
+  // ---- 题材 / 玩法 ----
+  'bondage': '束缚',
+  'bdsm': 'BDSM',
+  'dominant': '主导',
+  'submissive': '顺从',
+  'mind-control': '精神控制',
+  'hypnosis': '催眠',
+  'corruption': '堕落',
+  'exhibitionism': '露出',
+  'public': '公共场所',
+  'rape': '强迫',
+  'sleep': '睡眠',
+  'drugged': '迷奸',
+  'dildo': '假屌',
+  'vibrator': '振动器',
+  'toys': '玩具',
+  'buttplug': '肛塞',
+  'enema': '灌肠',
+  'peeing': '排尿',
+
+  // ---- 怪物 / 幻想 ----
+  'monster': '怪物',
+  'monster-girl': '怪物娘',
+  'tentacles': '触手',
+  'orc': '兽人',
+  'elf': '精灵',
+  'demon': '恶魔',
+  'succubus': '魅魔',
+  'angel': '天使',
+  'furry': '兽人',
+  'anthro': '兽人',
+  'dragon': '龙',
+  'slime': '史莱姆',
+  'undead': '亡灵',
+  'zombie': '僵尸',
+  'ghost': '幽灵',
+  'vampire': '吸血鬼',
+  'bestiality': '兽交',
+  'horse': '马',
+  'dog': '狗',
+  'wolf': '狼',
+
+  // ---- 风格 / 形式 ----
+  '3d': '三维',
+  '2d': '二维',
+  'animation': '动画',
+  'cartoon': '卡通',
+  'anime': '日式动画',
+  'western': '欧美风',
+  'pixel': '像素',
+  'realistic': '写实',
+  'hand-drawn': '手绘',
+  'pov': '第一人称',
+  'vertical-video': '竖屏',
+  'sound': '有声',
+  'no-sound': '无声',
+  'hd': '高清',
+  'full-hd': '全高清',
+  '60fps': '60 帧',
+  '30fps': '30 帧',
+  'compilation': '合集',
+  'full-movie': '完整版',
+  'short': '短片',
+  'loop': '循环',
+  'gif': '动图',
+  'music': '音乐',
+  'dance': '舞蹈',
+  'parody': '恶搞',
+
+  // ---- 场景 ----
+  'beach': '海滩',
+  'pool': '泳池',
+  'shower': '淋浴',
+  'bath': '浴室',
+  'office': '办公室',
+  'classroom': '教室',
+  'wedding': '婚礼',
+  'halloween': '万圣节',
+  'christmas': '圣诞',
+  'valentine': '情人节',
+};
+
+/// 查中文译名。没有收录时返回空字符串（调用方显示原文）。
+String zhForTag(String slug) => kTagZh[slug] ?? '';
+
+/// 是否收录。
+bool hasTagTranslation(String slug) => kTagZh.containsKey(slug);
+
+/// 词典规模，给界面显示「已收录 N 个」。
+int get tagDictionarySize => kTagZh.length;

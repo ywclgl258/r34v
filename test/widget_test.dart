@@ -187,7 +187,8 @@ void main() {
         expect(find.text(q), findsWidgets, reason: '缺少 $q 档位按钮');
       }
       // 标签（美化后首字母大写）
-      expect(find.text('Big Breasts'), findsWidgets);
+      // 标签开启中文显示后，big-breasts 显示为词典里的译名
+      expect(find.text('巨乳'), findsWidgets);
     });
 
     testWidgets('详情加载失败有提示', (tester) async {

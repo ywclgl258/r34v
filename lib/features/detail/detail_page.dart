@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
+import '../../data/local/tag_dictionary.dart';
 import '../../data/local/library_store.dart';
 import '../../data/parsing/parse_exception.dart';
 import '../../data/remote/site_client.dart';
@@ -365,14 +366,22 @@ class _TagChip extends ConsumerWidget {
     final key = FavoriteKey(FavoriteKind.tag, slug);
     final fav = ref.watch(isFavoriteProvider(key));
 
+    // 标签翻译：词典收录的显示中文，未收录显示原文（不猜）。
+    final translate = ref.watch(libraryStoreProvider).translateTags;
+    final zh = translate ? zhForTag(slug) : '';
+    final label = zh.isEmpty ? prettySlug(slug) : zh;
+
     return GestureDetector(
       onLongPress: () => _toggleGroupFavorite(context, ref, key),
-      child: ActionChip(
-        avatar: fav
-            ? const Icon(Icons.star, size: 15)
-            : null,
-        label: Text(prettySlug(slug)),
-        onPressed: () => context.push('/list/tag/${Uri.encodeComponent(slug)}'),
+      child: Tooltip(
+        // 译文和原文都留着：中文看得懂，原文方便对照站点
+        message: zh.isEmpty ? slug : '$zh · $slug',
+        child: ActionChip(
+          avatar: fav ? const Icon(Icons.star, size: 15) : null,
+          label: Text(label),
+          onPressed: () =>
+              context.push('/list/tag/${Uri.encodeComponent(slug)}'),
+        ),
       ),
     );
   }

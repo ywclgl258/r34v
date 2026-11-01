@@ -318,7 +318,22 @@ class LibraryStore {
 
   Future<void> setVolume(double v) => _prefs.setDouble('${_kSettings}_volume', v);
 
-  bool get autoFullscreen => _prefs.getBool('${_kSettings}_auto_fullscreen') ?? true;
+  /// 标签是否显示中文译名。
+  ///
+  /// 默认开：站点标签全是英文，中文用户看着累。
+  /// 只翻词典里收录的常用词，未收录的显示原文。
+  bool get translateTags =>
+      _prefs.getBool('${_kSettings}_translate_tags') ?? true;
+
+  Future<void> setTranslateTags(bool v) =>
+      _prefs.setBool('${_kSettings}_translate_tags', v);
+
+  /// 进入播放页是否自动横屏全屏。
+  ///
+  /// 默认 **false**：自动转屏在躺着看、只想听声音时会很烦，
+  /// 全屏应该是用户主动点按钮才进。想自动的人可以在设置里打开。
+  bool get autoFullscreen =>
+      _prefs.getBool('${_kSettings}_auto_fullscreen') ?? false;
 
   Future<void> setAutoFullscreen(bool v) => _prefs.setBool('${_kSettings}_auto_fullscreen', v);
 
