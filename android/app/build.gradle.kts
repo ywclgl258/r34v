@@ -54,11 +54,20 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        // 只打 arm64（现代手机全是这个架构），同时滤掉插件 jar 里的
-        // x86_64 / armeabi-v7a so——libmpv 每个架构 11-15MB，白打进 APK。
-        // 代价：不能在模拟器上跑（用户明确说不要）。
+        // 只打 arm64（现代手机全是这个架构）。
+        // 注意：abiFilters 只对 AAR 里的 jni 生效，media_kit 是通过
+        // jar 依赖塞 so 的，不吃这一套——真正滤掉它要靠下面的 packaging.excludes。
         ndk {
             abiFilters += listOf("arm64-v8a")
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // media_kit 的 jar 把三个架构的 libmpv（各 11-15MB）全塞进来，
+            // abiFilters 管不到 jar 来源，这里按路径排除。
+            excludes += "/lib/armeabi-v7a/**"
+            excludes += "/lib/x86_64/**"
         }
     }
 
