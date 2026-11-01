@@ -413,6 +413,21 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       videoId: d.id,
       url: s.url,
       quality: s.label,
+      // 分段下载中途 token 过期：回源换新链续传（换的是同清晰度的链）
+      refreshUrl: () async {
+        final api = ref.read(rule34ApiProvider);
+        final fresh = await api.fetchDetail(_path);
+        if (!mounted) return s.url;
+        setState(() => _detail = fresh);
+        final label = _current?.label ?? s.label;
+        return fresh.streams
+                .firstWhere(
+                  (x) => x.label == label,
+                  orElse: () =>
+                      fresh.preferredStream ?? fresh.streams.first,
+                )
+                .url;
+      },
       onProgress: (received, total) {
         if (!mounted) return;
         setState(() {
