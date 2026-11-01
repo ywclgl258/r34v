@@ -7,6 +7,7 @@ import '../data/local/auth_store.dart';
 import '../data/local/video_cache.dart';
 import '../data/remote/auth_client.dart';
 import '../data/remote/stream_fetcher.dart';
+import '../data/remote/tag_translator.dart';
 import '../data/remote/rule34_api.dart';
 
 /// 在 main() 里被 override 成真实实例（需要 await 初始化）。
@@ -52,6 +53,31 @@ class AutoCacheNotifier extends Notifier<bool> {
 
 final autoCacheProvider =
     NotifierProvider<AutoCacheNotifier, bool>(AutoCacheNotifier.new);
+
+/// 标签翻译服务（联网 + 缓存 + 词典兜底）。
+final tagTranslatorProvider = Provider<TagTranslator>((ref) {
+  return TagTranslator(
+    prefs: ref.watch(sharedPrefsProvider),
+    proxy: ref.watch(libraryStoreProvider).playerProxy,
+  );
+});
+
+/// 标签是否显示中文译名。
+///
+/// 单独一个 Notifier 而不是每次 invalidate(libraryStoreProvider)：
+/// 后者会连带重建 API 客户端、缓存器、下载器，改个显示开关不该动这些。
+class TranslateTagsNotifier extends Notifier<bool> {
+  @override
+  bool build() => ref.watch(libraryStoreProvider).translateTags;
+
+  Future<void> set(bool v) async {
+    await ref.read(libraryStoreProvider).setTranslateTags(v);
+    state = v;
+  }
+}
+
+final translateTagsProvider =
+    NotifierProvider<TranslateTagsNotifier, bool>(TranslateTagsNotifier.new);
 
 /// 视频下载器（落到系统下载目录，和私有缓存分开）。
 final videoDownloaderProvider = Provider<VideoDownloader>((ref) {
@@ -193,6 +219,7 @@ class FavoriteKey {
 
   final FavoriteKind kind;
   final String target;
+
 
   @override
   bool operator ==(Object other) =>

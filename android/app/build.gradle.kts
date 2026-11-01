@@ -53,6 +53,13 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // 只打 arm64（现代手机全是这个架构），同时滤掉插件 jar 里的
+        // x86_64 / armeabi-v7a so——libmpv 每个架构 11-15MB，白打进 APK。
+        // 代价：不能在模拟器上跑（用户明确说不要）。
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     signingConfigs {

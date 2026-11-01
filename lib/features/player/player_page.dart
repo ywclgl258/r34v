@@ -87,8 +87,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   int _refreshCount = 0;
   static const int _maxRefresh = 2;
 
-  String get _path => '/video/${widget.videoId}/${widget.slug}/';
-
   @override
   void initState() {
     super.initState();
@@ -153,6 +151,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     }
     super.dispose();
   }
+
+  String get _path => '/video/${widget.videoId}/${widget.slug}/';
 
   /// dispose 用的存进度版本：位置和时长由调用方传入，
   /// 不再读已经要销毁的 player。
@@ -1023,8 +1023,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       );
     }
 
-    final cached = ref.watch(isCachedProvider(d.id as String));
-    final entry = ref.watch(cacheIndexProvider).where((e) => e.videoId == d.id).firstOrNull;
+    final cached = ref.watch(isCachedProvider(d.id));
+    final entry = ref
+        .watch(cacheIndexProvider)
+        .where((e) => e.videoId == d.id)
+        .firstOrNull;
 
     if (cached && _cacheProgress == null) {
       return Row(

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
-import '../../data/local/tag_dictionary.dart';
 import '../../core/player_bootstrap.dart';
 
 /// 设置页。首版只有播放偏好、历史控制与诊断信息。
@@ -331,18 +330,15 @@ class _TranslateTagsTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final on = ref.watch(libraryStoreProvider).translateTags;
+    final on = ref.watch(translateTagsProvider);
     return SwitchListTile(
       secondary: const Icon(Icons.translate),
       title: const Text('标签显示中文'),
-      subtitle: Text(
-        '内置词典收录 $tagDictionarySize 个常用标签，未收录的显示原文',
+      subtitle: const Text(
+        '常用标签用内置词典（离线、零延迟），其余联网自动翻译并缓存',
       ),
       value: on,
-      onChanged: (v) async {
-        await ref.read(libraryStoreProvider).setTranslateTags(v);
-        ref.invalidate(libraryStoreProvider);
-      },
+      onChanged: (v) => ref.read(translateTagsProvider.notifier).set(v),
     );
   }
 }

@@ -305,6 +305,8 @@ class LibraryStore {
       _prefs.setString('${_kSettings}_quality', label);
 
   /// 上次手动调的播放音量（0–100）。null 表示用户没调过，交给系统默认。
+  double? get volume => _prefs.getDouble('${_kSettings}_volume');
+
   /// 播放器代理（host:port）。空表示直连。
   ///
   /// 只给 libmpv 用——它不认系统代理，必须显式设置。
@@ -314,7 +316,6 @@ class LibraryStore {
       ? _prefs.remove('${_kSettings}_player_proxy')
       : _prefs.setString('${_kSettings}_player_proxy', v);
 
-  double? get volume => _prefs.getDouble('${_kSettings}_volume');
 
   Future<void> setVolume(double v) => _prefs.setDouble('${_kSettings}_volume', v);
 

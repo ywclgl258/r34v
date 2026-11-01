@@ -98,5 +98,21 @@ void main() {
       await pump(tester);
       expect(find.textContaining('评论'), findsNothing);
     });
+
+    testWidgets('标签默认显示中文', (tester) async {
+      await pump(tester);
+      // fixture 的标签是 pov / large-butt / sound / vertical-video，
+      // 其中 pov 词典收录为「第一人称」
+      expect(find.text('第一人称'), findsWidgets);
+    });
+
+    testWidgets('关掉翻译开关后显示英文原文', (tester) async {
+      // 直接写 prefs 模拟用户在设置里关掉
+      SharedPreferences.setMockInitialValues({'settings_v1_translate_tags': false});
+      prefs = await SharedPreferences.getInstance();
+      await pump(tester);
+      expect(find.text('第一人称'), findsNothing);
+      expect(find.text('Pov'), findsWidgets);
+    });
   });
 }

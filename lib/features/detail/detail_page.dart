@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
-import '../../data/local/tag_dictionary.dart';
 import '../../data/local/library_store.dart';
 import '../../data/parsing/parse_exception.dart';
 import '../../data/remote/site_client.dart';
@@ -27,13 +26,13 @@ class _DetailPageState extends ConsumerState<DetailPage> {
   String? _error;
   bool _loading = true;
 
-  String get _path => '/video/${widget.videoId}/${widget.slug}/';
-
   @override
   void initState() {
     super.initState();
     _load();
   }
+
+  String get _path => '/video/${widget.videoId}/${widget.slug}/';
 
   Future<void> _load() async {
     setState(() {
@@ -113,7 +112,8 @@ class _DetailPageState extends ConsumerState<DetailPage> {
               ),
             ),
           ),
-        (_, _, final VideoDetail d) => _DetailBody(detail: d, onPlay: _play),
+        (_, _, final VideoDetail d) =>
+            _DetailBody(detail: d, onPlay: _play),
         _ => const SizedBox.shrink(),
       },
     );
@@ -366,23 +366,39 @@ class _TagChip extends ConsumerWidget {
     final key = FavoriteKey(FavoriteKind.tag, slug);
     final fav = ref.watch(isFavoriteProvider(key));
 
-    // 标签翻译：词典收录的显示中文，未收录显示原文（不猜）。
-    final translate = ref.watch(libraryStoreProvider).translateTags;
-    final zh = translate ? zhForTag(slug) : '';
-    final label = zh.isEmpty ? prettySlug(slug) : zh;
+    // 标签翻译：词典命中立即显示；没命中走联网翻译（有缓存，只翻一次）。
+    // 拿不到译文时显示原文，不显示占位符。
+    final translate = ref.watch(translateTagsProvider);
+    final original = prettySlug(slug);
 
     return GestureDetector(
       onLongPress: () => _toggleGroupFavorite(context, ref, key),
-      child: Tooltip(
-        // 译文和原文都留着：中文看得懂，原文方便对照站点
-        message: zh.isEmpty ? slug : '$zh · $slug',
-        child: ActionChip(
-          avatar: fav ? const Icon(Icons.star, size: 15) : null,
-          label: Text(label),
-          onPressed: () =>
-              context.push('/list/tag/${Uri.encodeComponent(slug)}'),
-        ),
-      ),
+      child: translate
+          ? FutureBuilder<String>(
+              future: ref.read(tagTranslatorProvider).translate(slug),
+              builder: (context, snap) {
+                final zh = snap.data ?? '';
+                final label = zh.isEmpty ? original : zh;
+                return Tooltip(
+                  message: zh.isEmpty ? slug : '$zh · $slug',
+                  child: ActionChip(
+                    avatar: fav ? const Icon(Icons.star, size: 15) : null,
+                    label: Text(label),
+                    onPressed: () => context
+                        .push('/list/tag/${Uri.encodeComponent(slug)}'),
+                  ),
+                );
+              },
+            )
+          : Tooltip(
+              message: slug,
+              child: ActionChip(
+                avatar: fav ? const Icon(Icons.star, size: 15) : null,
+                label: Text(original),
+                onPressed: () =>
+                    context.push('/list/tag/${Uri.encodeComponent(slug)}'),
+              ),
+            ),
     );
   }
 }
