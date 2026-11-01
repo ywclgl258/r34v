@@ -193,11 +193,17 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
       // 直连探测期间由 _openRemoteDirect 自己判断成败，
       // 这里若也抢着回源换链，会两路同时开打。
       if (_probingDirect) return;
-      // 直链过期是这里最常见的错：回源换链再续播
-      if (_refreshCount < _maxRefresh) {
-        await _recoverStream(reason: '播放报错：$e');
-      } else {
+      if (_refreshCount >= _maxRefresh) {
         setState(() => _error = '播放失败：$e\n\n已经自动重试过 $_maxRefresh 次，回到详情页重新打开试试。');
+        return;
+      }
+      // 只有 401/403/410 才是 token 过期；其它错误（网络抖动、
+      // TLS 失败）重开同一条链就好，不必回源——回源反而可能拿到
+      // 一样的新链还白说一句「链接过期」误导用户。
+      if (_looksLikeTokenExpiry(e)) {
+        await _recoverStream(reason: '链接过期（$e）');
+      } else {
+        await _retrySameStream(reason: e);
       }
     });
 
@@ -205,6 +211,41 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     _player.stream.completed.listen((done) {
       if (done) _persistProgress(forceFinished: true);
     });
+  }
+
+  /// 错误信息里出现 401/403/410 才算 token 过期。
+  static bool _looksLikeTokenExpiry(String err) =>
+      err.contains('401') || err.contains('403') || err.contains('410');
+
+  /// 不重回源，直接用当前链重开一次（从当前位置续）。
+  /// 网络抖动类错误多半这样就好了。
+  Future<void> _retrySameStream({required String reason}) async {
+    final d = _detail;
+    final s = _current;
+    if (d == null || s == null) return;
+    _refreshCount++;
+    try {
+      final pos = _player.state.position;
+      final wasPlaying = _player.state.playing;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('播放中断，正在重试…（$reason）'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      await _player.open(Media(s.url), play: wasPlaying);
+      if (pos.inSeconds > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        await _player.seek(pos);
+      }
+      await _player.setRate(_speed);
+      if (_volume != null) await _player.setVolume(_muted ? 0 : _volume!);
+    } catch (e) {
+      // 重试还失败，按 token 过期处理
+      await _recoverStream(reason: '重试失败（$e）');
+    }
   }
 
   Future<void> _load() async {
