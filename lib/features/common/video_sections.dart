@@ -6,6 +6,8 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../data/local/library_store.dart';
 import '../../domain/video_detail.dart';
+import '../../ui/components.dart';
+import '../../ui/tokens.dart';
 
 // 详情页和播放页共用的视频信息组件。
 
@@ -21,8 +23,8 @@ class MetaChip extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 14, color: Theme.of(context).colorScheme.outline),
-        const SizedBox(width: 4),
+        Icon(icon, size: 14, color: R34Color.inkFaint),
+        const SizedBox(width: R34Space.x1 + 1),
         Text(text, style: Theme.of(context).textTheme.labelMedium),
       ],
     );
@@ -70,7 +72,7 @@ class TagChip extends ConsumerWidget {
                 return Tooltip(
                   message: zh.isEmpty ? slug : '$zh · $slug',
                   child: ActionChip(
-                    avatar: fav ? const Icon(Icons.star, size: 15) : null,
+                    avatar: fav ? const Icon(Icons.star_rounded, size: 15, color: R34Color.accentBright) : null,
                     label: Text(label),
                     onPressed: () => context
                         .push('/list/tag/${Uri.encodeComponent(slug)}'),
@@ -81,7 +83,7 @@ class TagChip extends ConsumerWidget {
           : Tooltip(
               message: slug,
               child: ActionChip(
-                avatar: fav ? const Icon(Icons.star, size: 15) : null,
+                avatar: fav ? const Icon(Icons.star_rounded, size: 15, color: R34Color.accentBright) : null,
                 label: Text(original),
                 onPressed: () =>
                     context.push('/list/tag/${Uri.encodeComponent(slug)}'),
@@ -105,7 +107,7 @@ class ModelChip extends ConsumerWidget {
     return GestureDetector(
       onLongPress: () => toggleGroupFavorite(context, ref, key),
       child: ActionChip(
-        avatar: fav ? const Icon(Icons.star, size: 15) : null,
+        avatar: fav ? const Icon(Icons.star_rounded, size: 15, color: R34Color.accentBright) : null,
         label: Text(prettySlug(slug)),
         onPressed: () => context.push('/list/model/${Uri.encodeComponent(slug)}'),
       ),
@@ -169,9 +171,8 @@ class GroupSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.only(top: 20),
+      padding: const EdgeInsets.only(top: R34Space.x5),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -179,19 +180,18 @@ class GroupSection extends StatelessWidget {
             children: [
               Text(title, style: Theme.of(context).textTheme.titleSmall),
               if (hint != null) ...[
-                const SizedBox(width: 6),
+                const SizedBox(width: R34Space.x2 - 2),
                 Text(
                   hint!,
-                  style: Theme.of(context)
-                      .textTheme
-                      .labelSmall
-                      ?.copyWith(color: scheme.outline),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: R34Color.inkFaint,
+                      ),
                 ),
               ],
             ],
           ),
-          const SizedBox(height: 8),
-          Wrap(spacing: 6, runSpacing: 6, children: children),
+          const SizedBox(height: R34Space.x2 + 2),
+          Wrap(spacing: R34Space.x2, runSpacing: R34Space.x2, children: children),
         ],
       ),
     );
@@ -211,14 +211,13 @@ class CharacterChip extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final key = FavoriteKey(FavoriteKind.character, slug);
     final fav = ref.watch(isFavoriteProvider(key));
-    final scheme = Theme.of(context).colorScheme;
 
     return GestureDetector(
       onLongPress: () => toggleGroupFavorite(context, ref, key),
       child: ActionChip(
         avatar: fav
-            ? const Icon(Icons.star, size: 15)
-            : Icon(Icons.person_pin_outlined, size: 15, color: scheme.outline),
+            ? const Icon(Icons.star_rounded, size: 15, color: R34Color.accentBright)
+            : const Icon(Icons.person_pin_outlined, size: 15, color: R34Color.inkFaint),
         label: Text(prettySlug(slug)),
         onPressed: () =>
             context.push('/list/character/${Uri.encodeComponent(slug)}'),
@@ -239,18 +238,17 @@ class UploaderRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Row(
       children: [
-        Icon(Icons.cloud_upload_outlined, size: 16, color: scheme.outline),
-        const SizedBox(width: 6),
+        const Icon(Icons.cloud_upload_outlined, size: 16, color: R34Color.inkFaint),
+        const SizedBox(width: R34Space.x2 - 2),
         Text(
           '上传者',
           style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: scheme.outline,
+                color: R34Color.inkFaint,
               ),
         ),
-        const SizedBox(width: 6),
+        const SizedBox(width: R34Space.x2 - 2),
         Flexible(
           child: Text(
             name,
@@ -335,7 +333,6 @@ class DownloadSectionState extends ConsumerState<DownloadSection> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final fraction = _total > 0 ? (_received / _total).clamp(0.0, 1.0) : null;
 
     return Column(
@@ -344,20 +341,19 @@ class DownloadSectionState extends ConsumerState<DownloadSection> {
         Row(
           children: [
             Text('下载', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(width: 6),
+            const SizedBox(width: R34Space.x2 - 2),
             Text(
               '存到设备下载目录',
-              style: Theme.of(context)
-                  .textTheme
-                  .labelSmall
-                  ?.copyWith(color: scheme.outline),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: R34Color.inkFaint,
+                  ),
             ),
           ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: R34Space.x2 + 2),
         Wrap(
-          spacing: 8,
-          runSpacing: 8,
+          spacing: R34Space.x2,
+          runSpacing: R34Space.x2,
           children: [
             for (final opt in widget.video.downloads)
               OutlinedButton.icon(
@@ -368,24 +364,27 @@ class DownloadSectionState extends ConsumerState<DownloadSection> {
                         height: 14,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Icon(Icons.download, size: 16),
+                    : const Icon(Icons.download_rounded, size: 16),
                 label: Text(opt.label),
               ),
           ],
         ),
         if (_activeLabel != null) ...[
-          const SizedBox(height: 8),
-          LinearProgressIndicator(value: fraction, minHeight: 3),
-          const SizedBox(height: 4),
+          const SizedBox(height: R34Space.x2 + 2),
+          LinearProgressIndicator(
+            value: fraction,
+            minHeight: 4,
+            borderRadius: BorderRadius.circular(R34Radius.pill),
+          ),
+          const SizedBox(height: R34Space.x1),
           Text(
             _total > 0
                 ? '${(_received / 1048576).toStringAsFixed(1)} / '
                     '${(_total / 1048576).toStringAsFixed(1)} MB'
                 : '${(_received / 1048576).toStringAsFixed(1)} MB',
-            style: Theme.of(context)
-                .textTheme
-                .labelSmall
-                ?.copyWith(color: scheme.outline),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: R34Color.inkFaint,
+                ),
           ),
         ],
       ],
@@ -401,73 +400,93 @@ class CommentSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          '评论 ${comments.length}',
-          style: Theme.of(context).textTheme.titleSmall,
+        Row(
+          children: [
+            Text('评论', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(width: R34Space.x2 - 2),
+            Text(
+              '${comments.length}',
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: R34Color.inkFaint,
+                  ),
+            ),
+          ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: R34Space.x2 + 2),
         for (final c in comments.take(20))
           Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                CircleAvatar(
-                  radius: 12,
-                  backgroundColor: scheme.surfaceContainerHighest,
-                  backgroundImage:
-                      c.avatarUrl.isEmpty ? null : NetworkImage(c.avatarUrl),
-                  child: c.avatarUrl.isEmpty
-                      ? Text(
-                          c.author.isEmpty ? '?' : c.author[0].toUpperCase(),
-                          style: const TextStyle(fontSize: 11),
-                        )
-                      : null,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              c.author,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
+            padding: const EdgeInsets.only(bottom: R34Space.x2),
+            child: SurfaceCard(
+              radius: R34Radius.md,
+              padding: const EdgeInsets.all(R34Space.x3),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  CircleAvatar(
+                    radius: 13,
+                    backgroundColor: R34Color.surfaceHigh,
+                    backgroundImage:
+                        c.avatarUrl.isEmpty ? null : NetworkImage(c.avatarUrl),
+                    child: c.avatarUrl.isEmpty
+                        ? Text(
+                            c.author.isEmpty ? '?' : c.author[0].toUpperCase(),
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: R34Color.inkSecondary,
                             ),
-                          ),
-                          if (c.dateText.isNotEmpty) ...[
-                            const SizedBox(width: 8),
-                            Text(
-                              c.dateText,
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: scheme.outline,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        c.text,
-                        style: const TextStyle(fontSize: 12),
-                        maxLines: 6,
-                      ),
-                    ],
+                          )
+                        : null,
                   ),
-                ),
-              ],
+                  const SizedBox(width: R34Space.x2 + 2),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                c.author,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontFamily: 'NotoSansSC',
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: R34Color.ink,
+                                ),
+                              ),
+                            ),
+                            if (c.dateText.isNotEmpty) ...[
+                              const SizedBox(width: R34Space.x2),
+                              Text(
+                                c.dateText,
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  color: R34Color.inkFaint,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: R34Space.x1),
+                        Text(
+                          c.text,
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            height: 1.5,
+                            color: R34Color.inkSecondary,
+                          ),
+                          maxLines: 6,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
       ],

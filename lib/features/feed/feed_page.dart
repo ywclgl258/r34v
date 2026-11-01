@@ -7,6 +7,9 @@ import '../../data/parsing/parse_exception.dart';
 import '../../data/remote/site_client.dart';
 import '../../domain/video_card.dart';
 import '../../app/providers.dart';
+import '../../ui/components.dart';
+import '../../ui/glass.dart';
+import '../../ui/tokens.dart';
 import 'video_card_tile.dart';
 
 /// 列表页的加载状态。
@@ -220,22 +223,27 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
     final state = ref.watch(feedControllerProvider(_request));
     final controller = ref.read(feedControllerProvider(_request).notifier);
 
-    // 首页（最新更新）把搜索框直接摆在标题栏里，不用再跳一层。
-    // 其他列表页标题已有内容，塞搜索会挤，保持只有排序按钮。
+    // 首页（最新更新）把搜索框摆在标题下面的第一行，
+    // 不占标题栏；其他列表页标题已有内容，不塞搜索。
     final showSearch = widget.kind == FeedKind.latest && widget.target.isEmpty;
 
+    // 顶部栏高度（含状态栏）：内容从栏底下穿过去，滚动时才看得见磨砂。
+    final topInset = MediaQuery.paddingOf(context).top + 64 + R34Space.x2;
+
     return Scaffold(
-      appBar: AppBar(
+      extendBodyBehindAppBar: true,
+      appBar: r34AppBar(
+        large: true,
         leading: widget.showBackButton && Navigator.canPop(context)
             ? const BackButton()
             : null,
-        title: showSearch
-            ? const _InlineSearchBar()
-            : Text(widget.headingOverride ?? _titleFor()),
-        titleSpacing: showSearch ? 8 : null,
+        title: Text(widget.headingOverride ?? _titleFor()),
+        titleSpacing: widget.showBackButton && Navigator.canPop(context)
+            ? 0
+            : R34Space.page,
         actions: [
           PopupMenuButton<FeedSort>(
-            icon: const Icon(Icons.sort),
+            icon: const Icon(Icons.sort_rounded, size: 21),
             tooltip: '排序',
             initialValue: _sort,
             onSelected: (s) {
@@ -250,39 +258,64 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
           ),
           IconButton(
             tooltip: '刷新',
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh_rounded, size: 21),
             onPressed: controller.refresh,
           ),
+          const SizedBox(width: R34Space.x2),
         ],
       ),
       body: switch (state) {
         FeedLoading() => const Center(child: CircularProgressIndicator()),
-        FeedError(:final message, :final isChallenge, :final canRetry) => _ErrorView(
+        FeedError(:final message, :final isChallenge, :final canRetry) => ErrorState(
             message: message,
-            isChallenge: isChallenge,
+            title: isChallenge ? '需要人机验证' : '加载失败',
+            icon: isChallenge ? Icons.shield_outlined : Icons.cloud_off_rounded,
             onRetry: canRetry ? controller.refresh : null,
           ),
-        FeedReady(:final cards) when cards.isEmpty => const _EmptyView(),
+        FeedReady(:final cards) when cards.isEmpty => const EmptyState(
+            icon: Icons.search_off_rounded,
+            title: '这里没有内容',
+            message: '换个标签或排序再看看。',
+          ),
         FeedReady(:final cards, :final loadingMore, :final moreError, :final hasMore) =>
           RefreshIndicator(
             onRefresh: controller.refresh,
+            color: R34Color.accent,
             child: CustomScrollView(
               controller: _scroll,
               slivers: [
+                SliverToBoxAdapter(child: SizedBox(height: topInset)),
+                if (showSearch)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        R34Space.page,
+                        R34Space.x2,
+                        R34Space.page,
+                        R34Space.x3,
+                      ),
+                      child: _InlineSearchBar(),
+                    ),
+                  ),
                 SliverPadding(
-                  padding: const EdgeInsets.all(8),
+                  padding: const EdgeInsets.fromLTRB(
+                    R34Space.page,
+                    R34Space.x2,
+                    R34Space.page,
+                    R34Space.x6,
+                  ),
                   sliver: SliverGrid(
                     // 列数按屏宽算，不用 maxCrossAxisExtent。
                     // 用固定宽度会在手机上退化成 2 列（420px 宽塞不下两个 320+），
                     // 试过 320 的结果就是「一屏只有 2 个视频」，翻页太累。
                     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: feedColumnsFor(MediaQuery.sizeOf(context).width),
-                      childAspectRatio: 0.72,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
+                      childAspectRatio: 0.74,
+                      crossAxisSpacing: R34Space.grid,
+                      mainAxisSpacing: R34Space.grid,
                     ),
                     delegate: SliverChildBuilderDelegate(
-                      (context, i) => VideoCardTile(card: cards[i]),
+                      (context, i) => VideoCardTile(card: cards[i], index: i),
                       childCount: cards.length,
                     ),
                   ),
@@ -290,31 +323,51 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
                 if (loadingMore)
                   const SliverToBoxAdapter(
                     child: Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Center(child: CircularProgressIndicator()),
+                      padding: EdgeInsets.all(R34Space.x4),
+                      child: Center(
+                        child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
                     ),
                   ),
                 if (moreError != null)
                   SliverToBoxAdapter(
                     child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        children: [
-                          Text(moreError, textAlign: TextAlign.center),
-                          const SizedBox(height: 8),
-                          FilledButton.tonal(
-                            onPressed: controller.loadMore,
-                            child: const Text('重试'),
-                          ),
-                        ],
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+                      child: SurfaceCard(
+                        padding: const EdgeInsets.all(14),
+                        child: Column(
+                          children: [
+                            Text(
+                              moreError,
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: R34Space.x3),
+                            FilledButton.tonal(
+                              onPressed: controller.loadMore,
+                              child: const Text('重试'),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
                 if (!hasMore && cards.isNotEmpty)
-                  const SliverToBoxAdapter(
+                  SliverToBoxAdapter(
                     child: Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Center(child: Text('到底了')),
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                      child: Center(
+                        child: Text(
+                          '到底了',
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                color: R34Color.inkFaint,
+                              ),
+                        ),
+                      ),
                     ),
                   ),
               ],
@@ -361,58 +414,6 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
       }).join(' ');
 }
 
-class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.message, this.isChallenge = false, this.onRetry});
-
-  final String message;
-  final bool isChallenge;
-  final VoidCallback? onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              isChallenge ? Icons.shield_outlined : Icons.cloud_off,
-              size: 48,
-              color: Theme.of(context).colorScheme.outline,
-            ),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-            if (onRetry != null) ...[
-              const SizedBox(height: 16),
-              FilledButton(onPressed: onRetry, child: const Text('重试')),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _EmptyView extends StatelessWidget {
-  const _EmptyView();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.search_off, size: 48, color: Theme.of(context).colorScheme.outline),
-          const SizedBox(height: 12),
-          const Text('这里没有内容'),
-        ],
-      ),
-    );
-  }
-}
-
-
 /// 标题栏里的搜索框。
 ///
 /// 首页直接可搜，不用先进「发现」再点一下。点它跳搜索页并自动聚焦输入框，
@@ -422,32 +423,34 @@ class _InlineSearchBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return InkWell(
-      borderRadius: BorderRadius.circular(8),
-      onTap: () => context.push('/search'),
-      child: Container(
-        height: 38,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          children: [
-            Icon(Icons.search, size: 18, color: scheme.outline),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                '搜索视频、标签、作者',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: scheme.outline,
-                    ),
+    return Material(
+      color: R34Color.surface.withValues(alpha: 0.72),
+      shape: const StadiumBorder(
+        side: BorderSide(color: R34Color.glassBorder),
+      ),
+      child: InkWell(
+        customBorder: const StadiumBorder(),
+        onTap: () => context.push('/search'),
+        child: Container(
+          height: 44,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Row(
+            children: [
+              const Icon(Icons.search, size: 18, color: R34Color.inkFaint),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '搜索视频、标签、作者',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontSize: 13.5,
+                        color: R34Color.inkFaint,
+                      ),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

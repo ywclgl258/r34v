@@ -6,6 +6,9 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../data/local/library_store.dart';
 import '../../data/local/video_cache.dart';
+import '../../ui/components.dart';
+import '../../ui/glass.dart';
+import '../../ui/tokens.dart';
 
 /// 片库：继续观看 + 收藏（视频 / 作者 / 标签分类）。
 class LibraryPage extends ConsumerStatefulWidget {
@@ -36,23 +39,12 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
     final cached = ref.watch(cacheIndexProvider);
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: r34AppBar(
+        large: true,
         title: const Text('片库'),
-        bottom: TabBar(
-          controller: _tabs,
-          isScrollable: true,
-          tabAlignment: TabAlignment.start,
-          tabs: [
-            Tab(text: '继续观看 ${resumable.length}'),
-            Tab(text: '视频 ${videos.length}'),
-            Tab(text: '角色 ${characters.length}'),
-            Tab(text: '作者 ${models.length}'),
-            Tab(text: '标签 ${tags.length}'),
-            Tab(text: '已缓存 ${cached.length}'),
-          ],
-        ),
         actions: [
           PopupMenuButton<String>(
+            icon: const Icon(Icons.more_horiz_rounded, size: 22),
             onSelected: (v) async {
               if (v == 'clear_history') {
                 final ok = await _confirm(context, '清空全部观看记录？');
@@ -70,32 +62,61 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
               PopupMenuItem(value: 'clear_fav', child: Text('清空收藏')),
             ],
           ),
+          const SizedBox(width: R34Space.x2),
         ],
       ),
-      body: TabBarView(
-        controller: _tabs,
+      body: Column(
         children: [
-          _HistoryList(entries: resumable, all: history),
-          _FavoriteVideoList(entries: videos),
-          _FavoriteChipList(
-            entries: characters,
-            kind: FavoriteKind.character,
-            icon: Icons.person_pin_outlined,
-            emptyText: '还没有收藏的角色\n在视频详情页长按角色名就能收藏',
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              R34Space.page,
+              R34Space.x1,
+              R34Space.page,
+              R34Space.x3,
+            ),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: PillTabs(
+                controller: _tabs,
+                labels: [
+                  '继续观看 ${resumable.length}',
+                  '视频 ${videos.length}',
+                  '角色 ${characters.length}',
+                  '作者 ${models.length}',
+                  '标签 ${tags.length}',
+                  '缓存 ${cached.length}',
+                ],
+              ),
+            ),
           ),
-          _FavoriteChipList(
-            entries: models,
-            kind: FavoriteKind.model,
-            icon: Icons.person_outline,
-            emptyText: '还没有收藏的作者\n在视频详情页长按作者名就能收藏',
+          Expanded(
+            child: TabBarView(
+              controller: _tabs,
+              children: [
+                _HistoryList(entries: resumable, all: history),
+                _FavoriteVideoList(entries: videos),
+                _FavoriteChipList(
+                  entries: characters,
+                  kind: FavoriteKind.character,
+                  icon: Icons.person_pin_outlined,
+                  emptyText: '还没有收藏的角色\n在视频详情页长按角色名就能收藏',
+                ),
+                _FavoriteChipList(
+                  entries: models,
+                  kind: FavoriteKind.model,
+                  icon: Icons.person_outline,
+                  emptyText: '还没有收藏的作者\n在视频详情页长按作者名就能收藏',
+                ),
+                _FavoriteChipList(
+                  entries: tags,
+                  kind: FavoriteKind.tag,
+                  icon: Icons.sell_outlined,
+                  emptyText: '还没有收藏的标签\n在视频详情页长按标签就能收藏',
+                ),
+                _CachedList(entries: cached),
+              ],
+            ),
           ),
-          _FavoriteChipList(
-            entries: tags,
-            kind: FavoriteKind.tag,
-            icon: Icons.sell_outlined,
-            emptyText: '还没有收藏的标签\n在视频详情页长按标签就能收藏',
-          ),
-          _CachedList(entries: cached),
         ],
       ),
     );
@@ -132,41 +153,29 @@ class _HistoryList extends ConsumerWidget {
     }
     return ListView.separated(
       itemCount: entries.length,
-      separatorBuilder: (context, index) => const Divider(height: 1),
+      separatorBuilder: (context, index) =>
+          const Divider(height: 1, indent: 132, endIndent: 16),
       itemBuilder: (context, i) {
         final e = entries[i];
-        return ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          leading: SizedBox(
-            width: 96,
-            height: 54,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  _Thumb(url: e.thumb),
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: LinearProgressIndicator(
-                      value: e.progress,
-                      minHeight: 3,
-                      backgroundColor: Colors.black45,
-                    ),
-                  ),
-                ],
-              ),
+        return _MediaRow(
+          thumb: e.thumb,
+          title: e.title,
+          subtitle:
+              '${_fmt(e.positionSeconds)} / ${_fmt(e.durationSeconds)}  ·  ${_ago(e.updatedAt)}',
+          overlay: Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: LinearProgressIndicator(
+              value: e.progress,
+              minHeight: 3,
+              backgroundColor: Colors.black45,
             ),
-          ),
-          title: Text(e.title, maxLines: 2, overflow: TextOverflow.ellipsis),
-          subtitle: Text(
-            '${_fmt(e.positionSeconds)} / ${_fmt(e.durationSeconds)}  ·  ${_ago(e.updatedAt)}',
           ),
           trailing: IconButton(
             tooltip: '从记录里移除',
-            icon: const Icon(Icons.close),
+            icon: const Icon(Icons.close_rounded, size: 18),
+            color: R34Color.inkFaint,
             onPressed: () => ref.read(historyProvider.notifier).remove(e.videoId),
           ),
           // e.path 是 /video/id/slug/ 形式，换成直达播放页
@@ -193,26 +202,20 @@ class _FavoriteVideoList extends ConsumerWidget {
     }
     return ListView.separated(
       itemCount: entries.length,
-      separatorBuilder: (context, index) => const Divider(height: 1),
+      separatorBuilder: (context, index) =>
+          const Divider(height: 1, indent: 132, endIndent: 16),
       itemBuilder: (context, i) {
         final e = entries[i];
-        return ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          leading: SizedBox(
-            width: 96,
-            height: 54,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: _Thumb(url: e.thumb),
-            ),
-          ),
-          title: Text(e.title, maxLines: 2, overflow: TextOverflow.ellipsis),
-          subtitle: Text(
-            [e.subtitle, _ago(e.addedAt)].where((s) => s.isNotEmpty).join('  ·  '),
-          ),
+        return _MediaRow(
+          thumb: e.thumb,
+          title: e.title,
+          subtitle: [e.subtitle, _ago(e.addedAt)]
+              .where((s) => s.isNotEmpty)
+              .join('  ·  '),
           trailing: IconButton(
             tooltip: '取消收藏',
-            icon: const Icon(Icons.bookmark),
+            icon: const Icon(Icons.bookmark_rounded, size: 19),
+            color: R34Color.accentBright,
             onPressed: () =>
                 ref.read(favoritesProvider.notifier).toggle(e),
           ),
@@ -220,6 +223,97 @@ class _FavoriteVideoList extends ConsumerWidget {
           onTap: () => context.push(e.path.replaceFirst('/video/', '/play/')),
         );
       },
+    );
+  }
+}
+
+/// 片库通用行：封面 + 标题 + 一行元信息 + 尾部动作。
+class _MediaRow extends StatelessWidget {
+  const _MediaRow({
+    required this.thumb,
+    required this.title,
+    required this.subtitle,
+    required this.trailing,
+    required this.onTap,
+    this.overlay,
+    this.subtitleColor,
+  });
+
+  final String thumb;
+  final String title;
+  final String subtitle;
+  final Widget trailing;
+  final VoidCallback onTap;
+  final Widget? overlay;
+  final Color? subtitleColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          R34Space.page,
+          R34Space.x2 + 2,
+          6,
+          R34Space.x2 + 2,
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 104,
+              height: 58,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(R34Radius.sm),
+                border: Border.all(color: R34Color.hairline),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _Thumb(url: thumb),
+                  ?overlay,
+                ],
+              ),
+            ),
+            const SizedBox(width: R34Space.x3),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontFamily: 'NotoSansSC',
+                      fontSize: 13.5,
+                      height: 1.35,
+                      fontWeight: FontWeight.w500,
+                      color: R34Color.ink,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: 'NotoSansSC',
+                      fontSize: 11.5,
+                      height: 1.35,
+                      color: subtitleColor ?? R34Color.inkFaint,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: R34Space.x1),
+            trailing,
+          ],
+        ),
+      ),
     );
   }
 }
@@ -246,16 +340,27 @@ class _FavoriteChipList extends ConsumerWidget {
     }
     final scheme = Theme.of(context).colorScheme;
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(
+        R34Space.page,
+        R34Space.x3,
+        R34Space.page,
+        R34Space.x6,
+      ),
       children: [
         Text(
           '${kind.label} · ${entries.length} 个',
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(color: scheme.primary),
+          style: const TextStyle(
+            fontFamily: 'NotoSansSC',
+            fontSize: 11.5,
+            letterSpacing: 0.4,
+            fontWeight: FontWeight.w600,
+            color: R34Color.inkMuted,
+          ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: R34Space.x3),
         Wrap(
-          spacing: 8,
-          runSpacing: 8,
+          spacing: R34Space.x2,
+          runSpacing: R34Space.x2,
           children: [
             for (final e in entries)
               InputChip(
@@ -268,7 +373,7 @@ class _FavoriteChipList extends ConsumerWidget {
               ),
           ],
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: R34Space.x6),
         Text(
           kind == FavoriteKind.tag
               ? '提示：点标签看这个标签下的视频。标签规模很大（最热的有近两千页），'
@@ -289,15 +394,13 @@ class _Thumb extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (url.isEmpty) {
-      return ColoredBox(color: Theme.of(context).colorScheme.surfaceContainerHighest);
+      return const ColoredBox(color: R34Color.surfaceHigh);
     }
     return CachedNetworkImage(
       imageUrl: url,
       fit: BoxFit.cover,
-      placeholder: (context, u) =>
-          ColoredBox(color: Theme.of(context).colorScheme.surfaceContainerHighest),
-      errorWidget: (context, u, e) =>
-          ColoredBox(color: Theme.of(context).colorScheme.surfaceContainerHighest),
+      placeholder: (context, u) => const ColoredBox(color: R34Color.surfaceHigh),
+      errorWidget: (context, u, e) => const ColoredBox(color: R34Color.surfaceHigh),
     );
   }
 }
@@ -310,15 +413,11 @@ class _EmptyHint extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 48, color: Theme.of(context).colorScheme.outline),
-          const SizedBox(height: 12),
-          Text(text, textAlign: TextAlign.center),
-        ],
-      ),
+    final parts = text.split('\n');
+    return EmptyState(
+      icon: icon,
+      title: parts.first,
+      message: parts.length > 1 ? parts.skip(1).join('\n') : null,
     );
   }
 }
@@ -366,13 +465,18 @@ class _CachedList extends ConsumerWidget {
     return ListView(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          padding: const EdgeInsets.fromLTRB(
+            R34Space.page,
+            R34Space.x3,
+            R34Space.x2,
+            0,
+          ),
           child: Row(
             children: [
               Text(
                 '共 ${entries.length} 个 · ${totalMb.toStringAsFixed(0)} MB',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: scheme.outline,
+                      color: R34Color.inkMuted,
                     ),
               ),
               const Spacer(),
@@ -404,45 +508,36 @@ class _CachedList extends ConsumerWidget {
           ),
         ),
         for (final e in entries)
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            leading: SizedBox(
-              width: 96,
-              height: 54,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    _Thumb(url: e.thumb),
-                    Positioned(
-                      left: 4,
-                      bottom: 4,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.7),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                        child: Text(
-                          e.quality,
-                          style: const TextStyle(color: Colors.white, fontSize: 9),
-                        ),
-                      ),
-                    ),
-                  ],
+          _MediaRow(
+            thumb: e.thumb,
+            title: e.title,
+            subtitle: '${e.megabytes.toStringAsFixed(0)} MB  ·  ${_ago(e.createdAt)}'
+                '${e.fileExists ? "" : "  ·  文件已丢失"}',
+            subtitleColor: e.fileExists ? R34Color.inkFaint : scheme.error,
+            overlay: Positioned(
+              left: 4,
+              bottom: 4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.72),
+                  borderRadius: BorderRadius.circular(R34Radius.sm),
+                ),
+                child: Text(
+                  e.quality,
+                  style: const TextStyle(
+                    color: R34Color.ink,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.3,
+                  ),
                 ),
               ),
             ),
-            title: Text(e.title, maxLines: 2, overflow: TextOverflow.ellipsis),
-            subtitle: Text(
-              '${e.megabytes.toStringAsFixed(0)} MB  ·  ${_ago(e.createdAt)}'
-              '${e.fileExists ? "" : "  ·  文件已丢失"}',
-              style: e.fileExists ? null : TextStyle(color: scheme.error),
-            ),
             trailing: IconButton(
               tooltip: '删除缓存',
-              icon: const Icon(Icons.delete_outline),
+              icon: const Icon(Icons.delete_outline_rounded, size: 19),
+              color: R34Color.inkFaint,
               onPressed: () async {
                 await ref.read(videoCacheProvider).remove(e.videoId);
                 ref.invalidate(cacheIndexProvider);

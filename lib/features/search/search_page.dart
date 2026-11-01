@@ -6,6 +6,9 @@ import '../../core/constants.dart';
 import '../../data/parsing/parse_exception.dart';
 import '../../data/remote/site_client.dart';
 import '../../domain/video_card.dart';
+import '../../ui/components.dart';
+import '../../ui/glass.dart';
+import '../../ui/tokens.dart';
 import '../feed/feed_page.dart';
 import '../feed/video_card_tile.dart';
 
@@ -141,41 +144,62 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     final hasMore = _pager.total == 0 || _page < _pager.total;
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: r34AppBar(
         leading: const BackButton(),
         titleSpacing: 0,
-        title: TextField(
-          controller: _text,
-          focusNode: _focus,
-          autofocus: true,
-          textInputAction: TextInputAction.search,
-          onSubmitted: (_) => _submit(),
-          decoration: InputDecoration(
-            hintText: '搜索视频、标签、作者',
-            border: InputBorder.none,
-            isDense: true,
-            suffixIcon: _text.text.isEmpty
-                ? null
-                : IconButton(
-                    icon: const Icon(Icons.clear, size: 18),
-                    onPressed: () {
-                      _text.clear();
-                      setState(() {
-                        _results = const [];
-                        _searched = false;
-                        _error = null;
-                      });
-                    },
-                  ),
+        title: Container(
+          height: 42,
+          decoration: BoxDecoration(
+            color: R34Color.surfaceRaised.withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(R34Radius.pill),
+            border: Border.all(color: R34Color.glassBorder),
           ),
-          onChanged: (_) => setState(() {}),
+          child: TextField(
+            controller: _text,
+            focusNode: _focus,
+            autofocus: true,
+            textInputAction: TextInputAction.search,
+            onSubmitted: (_) => _submit(),
+            style: const TextStyle(
+              fontFamily: 'NotoSansSC',
+              fontSize: 14,
+              color: R34Color.ink,
+            ),
+            decoration: InputDecoration(
+              hintText: '搜索视频、标签、作者',
+              filled: false,
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: R34Space.x4,
+                vertical: R34Space.x3 - 1,
+              ),
+              suffixIcon: _text.text.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 17),
+                      color: R34Color.inkFaint,
+                      onPressed: () {
+                        _text.clear();
+                        setState(() {
+                          _results = const [];
+                          _searched = false;
+                          _error = null;
+                        });
+                      },
+                    ),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
         ),
         actions: [
           IconButton(
             tooltip: '搜索',
-            icon: const Icon(Icons.arrow_forward),
+            icon: const Icon(Icons.arrow_forward_rounded, color: R34Color.accentBright),
             onPressed: _submit,
           ),
+          const SizedBox(width: R34Space.x1),
         ],
       ),
       body: Column(
@@ -184,14 +208,19 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           // 搜「zelda」时按播放量排和按最新排差别很大，这个不能省。
           if (_searched && _results.isNotEmpty)
             SizedBox(
-              height: 44,
+              height: 46,
               child: ListView(
                 scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+                padding: const EdgeInsets.fromLTRB(
+                  R34Space.page,
+                  R34Space.x1,
+                  R34Space.page,
+                  R34Space.x2,
+                ),
                 children: [
                   for (final s in FeedSort.values)
                     Padding(
-                      padding: const EdgeInsets.only(right: 6),
+                      padding: const EdgeInsets.only(right: R34Space.x2),
                       child: ChoiceChip(
                         label: Text(s.label, style: const TextStyle(fontSize: 12)),
                         selected: _sort == s,
@@ -217,21 +246,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       return const Center(child: CircularProgressIndicator());
     }
     if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline, size: 48),
-              const SizedBox(height: 12),
-              Text(_error!, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              FilledButton(onPressed: () => _search(1), child: const Text('重试')),
-            ],
-          ),
-        ),
-      );
+      return ErrorState(message: _error!, onRetry: () => _search(1));
     }
     // 还没搜过：显示历史 + 提示
     if (!_searched) {
@@ -245,15 +260,10 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       );
     }
     if (_results.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.search_off, size: 48, color: Theme.of(context).colorScheme.outline),
-            const SizedBox(height: 12),
-            Text('没有找到「$_query」相关的内容'),
-          ],
-        ),
+      return EmptyState(
+        icon: Icons.search_off_rounded,
+        title: '没有找到「$_query」',
+        message: '换个关键词试试，或者用更短的词',
       );
     }
 
@@ -263,16 +273,21 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         controller: _scroll,
         slivers: [
           SliverPadding(
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.fromLTRB(
+              R34Space.page,
+              R34Space.x2,
+              R34Space.page,
+              0,
+            ),
             sliver: SliverGrid(
               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: feedColumnsFor(MediaQuery.sizeOf(context).width),
-                childAspectRatio: 0.72,
-                crossAxisSpacing: 8,
-                mainAxisSpacing: 8,
+                childAspectRatio: 0.74,
+                crossAxisSpacing: R34Space.grid,
+                mainAxisSpacing: R34Space.grid + 2,
               ),
               delegate: SliverChildBuilderDelegate(
-                (context, i) => VideoCardTile(card: _results[i]),
+                (context, i) => VideoCardTile(card: _results[i], index: i),
                 childCount: _results.length,
               ),
             ),
@@ -280,15 +295,24 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           if (_loadingMore)
             const SliverToBoxAdapter(
               child: Padding(
-                padding: EdgeInsets.all(16),
+                padding: EdgeInsets.all(R34Space.x4),
                 child: Center(child: CircularProgressIndicator()),
               ),
             ),
           if (!hasMore && !_loadingMore)
             const SliverToBoxAdapter(
               child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: Text('到底了')),
+                padding: EdgeInsets.all(R34Space.x6),
+                child: Center(
+                  child: Text(
+                    '到底了',
+                    style: TextStyle(
+                      fontFamily: 'NotoSansSC',
+                      fontSize: 12,
+                      color: R34Color.inkFaint,
+                    ),
+                  ),
+                ),
               ),
             ),
         ],
@@ -311,26 +335,21 @@ class _SearchPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     if (history.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.manage_search, size: 48, color: scheme.outline),
-            const SizedBox(height: 12),
-            Text(
-              '输入关键词开始搜索\n支持视频标题、标签、作者',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: scheme.outline),
-            ),
-          ],
-        ),
+      return const EmptyState(
+        icon: Icons.manage_search_rounded,
+        title: '输入关键词开始搜索',
+        message: '支持视频标题、标签、作者',
       );
     }
 
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(
+        R34Space.page,
+        R34Space.x2,
+        R34Space.page,
+        R34Space.x8,
+      ),
       children: [
         Row(
           children: [
@@ -339,10 +358,10 @@ class _SearchPlaceholder extends StatelessWidget {
             TextButton(onPressed: onClear, child: const Text('清空')),
           ],
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: R34Space.x1),
         Wrap(
-          spacing: 8,
-          runSpacing: 8,
+          spacing: R34Space.x2,
+          runSpacing: R34Space.x2,
           children: [
             for (final q in history)
               ActionChip(

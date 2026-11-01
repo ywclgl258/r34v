@@ -9,6 +9,9 @@ import '../../data/local/library_store.dart';
 import '../../data/parsing/parse_exception.dart';
 import '../../data/remote/site_client.dart';
 import '../../domain/video_detail.dart';
+import '../../ui/components.dart';
+import '../../ui/glass.dart';
+import '../../ui/tokens.dart';
 import '../feed/video_card_tile.dart';
 
 /// 详情页：标题、封面、标签、清晰度、相关推荐。
@@ -74,7 +77,9 @@ class _DetailPageState extends ConsumerState<DetailPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      // 封面顶到状态栏下面，滚动时从磨砂栏底下穿过去。
+      extendBodyBehindAppBar: true,
+      appBar: r34AppBar(
         title: Text(_detail?.title ?? '加载中…', maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
           if (_detail != null)
@@ -84,35 +89,25 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                   : '收藏',
               icon: Icon(
                 ref.watch(isFavoriteProvider(videoKey(widget.videoId)))
-                    ? Icons.favorite
-                    : Icons.favorite_border,
+                    ? Icons.favorite_rounded
+                    : Icons.favorite_border_rounded,
+                color: ref.watch(isFavoriteProvider(videoKey(widget.videoId)))
+                    ? R34Color.accentBright
+                    : null,
               ),
               onPressed: _toggleFavorite,
             ),
           IconButton(
             tooltip: '刷新',
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh_rounded),
             onPressed: _load,
           ),
+          const SizedBox(width: R34Space.x1),
         ],
       ),
       body: switch ((_loading, _error, _detail)) {
         (true, _, _) => const Center(child: CircularProgressIndicator()),
-        (_, final String e, _) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.error_outline, size: 48),
-                  const SizedBox(height: 12),
-                  Text(e, textAlign: TextAlign.center),
-                  const SizedBox(height: 16),
-                  FilledButton(onPressed: _load, child: const Text('重试')),
-                ],
-              ),
-            ),
-          ),
+        (_, final String e, _) => ErrorState(message: e, onRetry: _load),
         (_, _, final VideoDetail d) =>
             _DetailBody(detail: d, onPlay: _play),
         _ => const SizedBox.shrink(),
@@ -152,7 +147,6 @@ class _DetailBody extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final progress = ref.watch(watchProgressProvider(detail.id));
-    final scheme = Theme.of(context).colorScheme;
 
     return ListView(
       padding: EdgeInsets.zero,
@@ -165,59 +159,121 @@ class _DetailBody extends ConsumerWidget {
               CachedNetworkImage(
                 imageUrl: detail.poster,
                 fit: BoxFit.cover,
-                errorWidget: (context, url, error) => ColoredBox(color: scheme.surfaceContainerHighest),
+                placeholder: (context, url) =>
+                    const ColoredBox(color: R34Color.surfaceHigh),
+                errorWidget: (context, url, error) =>
+                    const ColoredBox(color: R34Color.surfaceHigh),
               ),
-              ColoredBox(color: Colors.black26),
+              // 顶部压暗给磨砂栏垫底，底部过渡到画布色。
+              const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Color(0x99000000),
+                      Color(0x1A000000),
+                      Color(0x00000000),
+                      Color(0xB3000000),
+                      R34Color.canvas,
+                    ],
+                    stops: [0, 0.22, 0.4, 0.84, 1],
+                  ),
+                ),
+              ),
               Center(
-                child: IconButton.filled(
-                  iconSize: 48,
-                  onPressed: () => onPlay(detail),
-                  icon: const Icon(Icons.play_arrow),
+                child: Material(
+                  color: R34Color.accent,
+                  shape: const CircleBorder(),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () => onPlay(detail),
+                    child: const SizedBox(
+                      width: 64,
+                      height: 64,
+                      child: Icon(
+                        Icons.play_arrow_rounded,
+                        size: 36,
+                        color: R34Color.onAccent,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: R34Space.page,
+                bottom: R34Space.x4,
+                child: Row(
+                  children: [
+                    if (detail.duration.isNotEmpty)
+                      PillTag(text: detail.duration, fontSize: 11),
+                    if (detail.streams.any((s) => s.isHd)) ...[
+                      const SizedBox(width: R34Space.x1 + 2),
+                      const PillTag(
+                        text: 'HD',
+                        fontSize: 10,
+                        foreground: R34Color.accentBright,
+                        background: R34Color.accentSoft,
+                      ),
+                    ],
+                  ],
                 ),
               ),
             ],
           ),
         ),
         Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(
+            R34Space.page,
+            R34Space.x4,
+            R34Space.page,
+            0,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (progress != null && progress.positionSeconds > 0) ...[
-                FilledButton.tonalIcon(
-                  onPressed: () => onPlay(detail),
-                  icon: const Icon(Icons.play_circle_outline),
-                  label: Text(
-                    progress.isFinished
-                        ? '已经看完，再看一遍'
-                        : '继续观看 ${fmtDuration(progress.positionSeconds)} / ${fmtDuration(detail.durationSeconds)}',
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
               Wrap(
-                spacing: 8,
-                runSpacing: 8,
+                spacing: R34Space.x4,
+                runSpacing: R34Space.x2,
                 children: [
-                  MetaChip(icon: Icons.schedule, text: detail.duration),
-                  MetaChip(icon: Icons.visibility_outlined, text: detail.viewsText),
-                  MetaChip(icon: Icons.update, text: detail.addedText),
+                  MetaChip(icon: Icons.schedule_rounded, text: detail.duration),
+                  MetaChip(
+                      icon: Icons.visibility_outlined, text: detail.viewsText),
+                  MetaChip(icon: Icons.update_rounded, text: detail.addedText),
                 ],
               ),
-              const SizedBox(height: 16),
-              Text(
-                '清晰度',
-                style: Theme.of(context).textTheme.titleSmall,
+              if (progress != null && progress.positionSeconds > 0) ...[
+                const SizedBox(height: R34Space.x4),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () => onPlay(detail),
+                    icon: const Icon(Icons.play_circle_outline_rounded, size: 19),
+                    label: Text(
+                      progress.isFinished
+                          ? '已经看完，再看一遍'
+                          : '继续观看 ${fmtDuration(progress.positionSeconds)} / ${fmtDuration(detail.durationSeconds)}',
+                    ),
+                  ),
+                ),
+              ],
+              SectionHeader(
+                title: '清晰度',
+                padding: const EdgeInsets.only(
+                  top: R34Space.x5,
+                  bottom: R34Space.x2 + 2,
+                ),
               ),
-              const SizedBox(height: 8),
               Wrap(
-                spacing: 8,
+                spacing: R34Space.x2,
+                runSpacing: R34Space.x2,
                 children: [
                   for (final s in detail.streams)
                     ActionChip(
                       avatar: Icon(
                         s.isHd ? Icons.hd_outlined : Icons.sd_outlined,
-                        size: 18,
+                        size: 17,
                       ),
                       label: Text(s.label),
                       onPressed: () => onPlay(detail),
@@ -264,9 +320,13 @@ class _DetailBody extends ConsumerWidget {
                   ],
                 ),
               if (detail.description.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                Text('简介', style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 8),
+                SectionHeader(
+                  title: '简介',
+                  padding: const EdgeInsets.only(
+                    top: R34Space.x5,
+                    bottom: R34Space.x2,
+                  ),
+                ),
                 SelectableText(
                   detail.description,
                   style: Theme.of(context).textTheme.bodySmall,
@@ -276,38 +336,48 @@ class _DetailBody extends ConsumerWidget {
               // 上传者：站点的 Uploaded by，指向 /members/<id>/，
               // 和 /models/<slug>/ 的「作者」不是一回事，所以单独一行。
               if (detail.uploaderName.isNotEmpty) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: R34Space.x4),
                 UploaderRow(
                   name: detail.uploaderName,
                   id: detail.uploaderId,
                 ),
               ],
               if (detail.downloads.isNotEmpty) ...[
-                const SizedBox(height: 20),
+                const SizedBox(height: R34Space.x5),
                 DownloadSection(video: detail),
               ],
               if (detail.comments.isNotEmpty) ...[
-                const SizedBox(height: 20),
+                const SizedBox(height: R34Space.x5),
                 CommentSection(comments: detail.comments),
               ],
               if (detail.related.isNotEmpty) ...[
-                const SizedBox(height: 24),
-                Text('相关推荐', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
+                SectionHeader(
+                  title: '相关推荐',
+                  padding: const EdgeInsets.only(
+                    top: R34Space.x6,
+                    bottom: R34Space.x2 + 2,
+                  ),
+                ),
                 SizedBox(
-                  height: 200,
+                  height: 208,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
+                    clipBehavior: Clip.none,
                     itemCount: detail.related.length,
-                    separatorBuilder: (context, index) => const SizedBox(width: 8),
+                    separatorBuilder: (context, index) =>
+                        const SizedBox(width: R34Space.x3),
                     itemBuilder: (context, i) => SizedBox(
                       width: 200,
-                      child: VideoCardTile(card: detail.related[i]),
+                      child: VideoCardTile(
+                        card: detail.related[i],
+                        index: i,
+                        animateIn: false,
+                      ),
                     ),
                   ),
                 ),
               ],
-              const SizedBox(height: 32),
+              const SizedBox(height: R34Space.x8),
             ],
           ),
         ),

@@ -6,6 +6,8 @@ import 'app/providers.dart';
 import 'app/router.dart';
 import 'core/player_bootstrap.dart';
 import 'data/local/library_store.dart';
+import 'ui/glass.dart';
+import 'ui/theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,6 +18,8 @@ Future<void> main() async {
   // 恢复上次保存的播放器代理（libmpv 不认系统代理，必须每次启动告诉它）
   final savedProxy = LibraryStore(prefs).playerProxy;
   if (savedProxy.isNotEmpty) PlayerBootstrap.setProxy(savedProxy);
+  // 玻璃模糊是纯 UI 偏好，不进 Riverpod，启动时直接喂给全局开关。
+  glassBlurEnabled.value = LibraryStore(prefs).glassBlur;
 
   runApp(
     ProviderScope(
@@ -35,40 +39,13 @@ class R34vApp extends ConsumerWidget {
       title: 'R34V',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.dark,
-      darkTheme: _darkTheme(),
-      theme: _darkTheme(),
+      darkTheme: buildAppTheme(),
+      theme: buildAppTheme(),
       routerConfig: router,
-    );
-  }
-
-  /// 深色优先：看视频的场景下浅色界面刺眼，而且站点的封面本身偏深色。
-  ThemeData _darkTheme() {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFFD1404A), // 站点主色（红）
-      brightness: Brightness.dark,
-    );
-    // 自带中文字体，不依赖系统字体与网络字体回退。
-    // fontFamilyFallback 兜住英文数字，保证图文混排时基线一致。
-    const cjk = 'NotoSansSC';
-    return ThemeData(
-      useMaterial3: true,
-      colorScheme: scheme,
-      fontFamily: cjk,
-      fontFamilyFallback: const [cjk],
-      scaffoldBackgroundColor: const Color(0xFF121212),
-      cardTheme: const CardThemeData(elevation: 0, clipBehavior: Clip.antiAlias),
-      appBarTheme: AppBarTheme(
-        backgroundColor: const Color(0xFF121212),
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        centerTitle: false,
-        titleTextStyle: TextStyle(
-          fontFamily: cjk,
-          fontSize: 20,
-          fontWeight: FontWeight.w600,
-          color: scheme.onSurface,
-        ),
-      ),
+      // 环境光铺在所有页面下面。Scaffold 背景是透明的，
+      // 于是列表滚动、玻璃栏、半透明浮层都能透出同一层光。
+      builder: (context, child) =>
+          AmbientBackdrop(child: child ?? const SizedBox.shrink()),
     );
   }
 }

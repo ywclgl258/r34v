@@ -3,6 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../core/player_bootstrap.dart';
+import '../../ui/components.dart';
+import '../../ui/glass.dart';
+import '../../ui/tokens.dart';
 
 /// 设置页。首版只有播放偏好、历史控制与诊断信息。
 class SettingsPage extends ConsumerWidget {
@@ -17,96 +20,167 @@ class SettingsPage extends ConsumerWidget {
     final favorites = ref.watch(favoritesProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('设置')),
+      appBar: r34AppBar(large: true, title: const Text('设置')),
       body: ListView(
+        padding: const EdgeInsets.fromLTRB(
+          R34Space.page,
+          R34Space.x1,
+          R34Space.page,
+          R34Space.x8,
+        ),
         children: [
-          const _SectionHeader('显示'),
-          const _TranslateTagsTile(),
-          const Divider(),
-          const _SectionHeader('播放'),
-          const _PlayerEngineTile(),
-          ListTile(
-            leading: const Icon(Icons.high_quality),
-            title: const Text('默认清晰度'),
-            subtitle: Text(quality),
-            trailing: DropdownButton<String>(
-              value: quality,
-              underline: const SizedBox.shrink(),
-              items: [for (final q in const ['360p', '480p', '720p', '1080p']) DropdownMenuItem(value: q, child: Text(q))],
-              onChanged: (v) async {
-                if (v == null) return;
-                await ref.read(preferredQualityProvider.notifier).set(v);
-              },
-            ),
+          _Group(
+            title: '显示',
+            children: const [_TranslateTagsTile(), _GlassBlurTile()],
           ),
-          SwitchListTile(
-            secondary: const Icon(Icons.fullscreen),
-            title: const Text('打开视频时自动全屏横屏'),
-            value: autoFs,
-            onChanged: (v) async {
-              await ref.read(autoFullscreenProvider.notifier).set(v);
-            },
+          _Group(
+            title: '播放',
+            children: [
+              const _PlayerEngineTile(),
+              ListTile(
+                leading: const Icon(Icons.high_quality_rounded, size: 21),
+                title: const Text('默认清晰度'),
+                subtitle: Text(quality),
+                trailing: DropdownButton<String>(
+                  value: quality,
+                  underline: const SizedBox.shrink(),
+                  items: [
+                    for (final q in const ['360p', '480p', '720p', '1080p'])
+                      DropdownMenuItem(value: q, child: Text(q)),
+                  ],
+                  onChanged: (v) async {
+                    if (v == null) return;
+                    await ref.read(preferredQualityProvider.notifier).set(v);
+                  },
+                ),
+              ),
+              SwitchListTile(
+                secondary: const Icon(Icons.fullscreen_rounded, size: 21),
+                title: const Text('打开视频时自动全屏横屏'),
+                value: autoFs,
+                onChanged: (v) async {
+                  await ref.read(autoFullscreenProvider.notifier).set(v);
+                },
+              ),
+            ],
           ),
-          const Divider(),
-          const _SectionHeader('本地数据'),
-          ListTile(
-            leading: const Icon(Icons.history),
-            title: const Text('观看记录'),
-            subtitle: Text('${history.length} 条'),
-            trailing: TextButton(
-              onPressed: history.isEmpty
-                  ? null
-                  : () async {
-                      final ok = await showDialog<bool>(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          content: const Text('清空全部观看记录？'),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context, false),
-                              child: const Text('取消'),
+          _Group(
+            title: '本地数据',
+            children: [
+              ListTile(
+                leading: const Icon(Icons.history_rounded, size: 21),
+                title: const Text('观看记录'),
+                subtitle: Text('${history.length} 条'),
+                trailing: TextButton(
+                  onPressed: history.isEmpty
+                      ? null
+                      : () async {
+                          final ok = await showDialog<bool>(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              content: const Text('清空全部观看记录？'),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(context, false),
+                                  child: const Text('取消'),
+                                ),
+                                FilledButton(
+                                  onPressed: () => Navigator.pop(context, true),
+                                  child: const Text('清空'),
+                                ),
+                              ],
                             ),
-                            FilledButton(
-                              onPressed: () => Navigator.pop(context, true),
-                              child: const Text('清空'),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (ok != true) return;
-                      await store.clearHistory();
-                      ref.invalidate(historyProvider);
-                    },
-              child: const Text('清空'),
+                          );
+                          if (ok != true) return;
+                          await store.clearHistory();
+                          ref.invalidate(historyProvider);
+                        },
+                  child: const Text('清空'),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.bookmark_rounded, size: 21),
+                title: const Text('本地收藏'),
+                subtitle: Text('${favorites.length} 条'),
+              ),
+            ],
+          ),
+          _Group(
+            title: '缓存',
+            children: const [_AutoCacheTile(), _CacheUsageTile()],
+          ),
+          _Group(
+            title: '网络',
+            children: const [_ProxyTile()],
+          ),
+          _Group(
+            title: '诊断',
+            children: const [_DiagnosticsTile()],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              R34Space.x1,
+              R34Space.x8,
+              R34Space.x1,
+              0,
             ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.bookmark),
-            title: const Text('本地收藏'),
-            subtitle: Text('${favorites.length} 条'),
-          ),
-          const Divider(),
-          const _SectionHeader('缓存'),
-          const _AutoCacheTile(),
-          const _CacheUsageTile(),
-          const Divider(),
-          const _SectionHeader('网络'),
-          const _ProxyTile(),
-          const Divider(),
-          const _SectionHeader('诊断'),
-          const _DiagnosticsTile(),
-          const Divider(),
-          const Padding(
-            padding: EdgeInsets.all(16),
             child: Text(
               '这是一个第三方客户端，与 rule34video.com 无关联。\n'
               '应用不托管任何内容，所有视频均来自原站。\n'
               '仅读取公开页面，不做登录、上传、评论或评分。',
-              style: TextStyle(fontSize: 12),
+              style: const TextStyle(
+                fontFamily: 'NotoSansSC',
+                fontSize: 11.5,
+                height: 1.7,
+                color: R34Color.inkFaint,
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 设置分组：小标题 + 一张内嵌列表的卡片，项目之间用发丝线分隔。
+class _Group extends StatelessWidget {
+  const _Group({required this.title, required this.children});
+
+  final String title;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionHeader(
+          title: title,
+          padding: const EdgeInsets.fromLTRB(
+            R34Space.x1 + 2,
+            R34Space.x5,
+            R34Space.x1,
+            R34Space.x2 + 2,
+          ),
+        ),
+        SurfaceCard(
+          padding: EdgeInsets.zero,
+          radius: R34Radius.md,
+          child: Column(
+            children: [
+              for (var i = 0; i < children.length; i++) ...[
+                if (i > 0)
+                  const Divider(
+                    height: 1,
+                    indent: R34Space.x4,
+                    endIndent: R34Space.x4,
+                  ),
+                children[i],
+              ],
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -118,7 +192,7 @@ class _DiagnosticsTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final api = ref.watch(rule34ApiProvider);
     return ExpansionTile(
-      leading: const Icon(Icons.network_check),
+      leading: const Icon(Icons.network_check_rounded, size: 21),
       title: const Text('最近的网络请求'),
       subtitle: const Text('排查「加载不出来」时看这里'),
       children: [
@@ -134,27 +208,6 @@ class _DiagnosticsTile extends ConsumerWidget {
   }
 }
 
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-      child: Text(
-        text,
-        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-            ),
-      ),
-    );
-  }
-}
-
-
-
 /// 「自动缓存」开关。
 ///
 /// 默认开启：收藏的视频与看过的长视频自动存到本地，下次秒开。
@@ -166,7 +219,7 @@ class _AutoCacheTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final on = ref.watch(autoCacheProvider);
     return SwitchListTile(
-      secondary: const Icon(Icons.save_alt),
+      secondary: const Icon(Icons.download_for_offline_outlined, size: 21),
       title: const Text('自动缓存'),
       subtitle: const Text('收藏的视频、看过的长视频自动存到本地，下次不用重新缓冲'),
       value: on,
@@ -189,7 +242,7 @@ class _CacheUsageTile extends ConsumerWidget {
     return Column(
       children: [
         ListTile(
-          leading: const Icon(Icons.sd_storage_outlined),
+          leading: const Icon(Icons.storage_rounded, size: 21),
           title: const Text('已用缓存'),
           subtitle: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -230,7 +283,7 @@ class _CacheUsageTile extends ConsumerWidget {
           ),
         ),
         ListTile(
-          leading: const Icon(Icons.straighten),
+          leading: const Icon(Icons.straighten_rounded, size: 21),
           title: const Text('缓存空间上限'),
           subtitle: const Text('超出后自动删除最旧的，不会撑爆存储'),
           trailing: DropdownButton<int>(
@@ -333,13 +386,35 @@ class _TranslateTagsTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final on = ref.watch(translateTagsProvider);
     return SwitchListTile(
-      secondary: const Icon(Icons.translate),
+      secondary: const Icon(Icons.translate_rounded, size: 21),
       title: const Text('标签显示中文'),
       subtitle: const Text(
         '常用标签用内置词典（离线、零延迟），其余联网自动翻译并缓存',
       ),
       value: on,
       onChanged: (v) => ref.read(translateTagsProvider.notifier).set(v),
+    );
+  }
+}
+
+/// 玻璃模糊开关。
+class _GlassBlurTile extends ConsumerWidget {
+  const _GlassBlurTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: glassBlurEnabled,
+      builder: (context, on, _) => SwitchListTile(
+        secondary: const Icon(Icons.blur_on_rounded, size: 21),
+        title: const Text('毛玻璃模糊'),
+        subtitle: const Text('关掉后顶栏和底栏变成半透明色块，低端机滑动更顺'),
+        value: on,
+        onChanged: (v) async {
+          glassBlurEnabled.value = v;
+          await ref.read(libraryStoreProvider).setGlassBlur(v);
+        },
+      ),
     );
   }
 }
@@ -435,7 +510,7 @@ class _PlayerEngineTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final engine = ref.watch(libraryStoreProvider).playerEngine;
     return ListTile(
-      leading: const Icon(Icons.smart_display_outlined),
+      leading: const Icon(Icons.movie_filter_outlined, size: 21),
       title: const Text('播放器引擎'),
       subtitle: const Text(
         'ExoPlayer：硬件解码、代理免配置（默认）\nlibmpv：软解万能，冷门编码兜底',

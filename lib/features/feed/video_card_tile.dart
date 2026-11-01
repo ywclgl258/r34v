@@ -5,13 +5,30 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../domain/video_card.dart';
+import '../../ui/components.dart';
+import '../../ui/tokens.dart';
 
 /// 列表里的一张视频卡。
+///
+/// 结构固定为「封面 → 标题两行 → 一行元信息」，
+/// 保证三列网格里每张卡的高度、文字基线都对齐。
 class VideoCardTile extends ConsumerWidget {
-  const VideoCardTile({super.key, required this.card, this.compact = false});
+  const VideoCardTile({
+    super.key,
+    required this.card,
+    this.compact = false,
+    this.index = 0,
+    this.animateIn = true,
+  });
 
   final VideoCard card;
   final bool compact;
+
+  /// 在列表里的位置，用来做交错浮入。
+  final int index;
+
+  /// 网格首屏才需要浮入，滚动复用时关掉能省一层动画。
+  final bool animateIn;
 
   /// 测试里替换成不发网络请求的加载器，避免 widget 测试真的去连图床。
   static ImageProvider Function(String url)? imageProviderOverride;
@@ -19,13 +36,18 @@ class VideoCardTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final progress = ref.watch(watchProgressProvider(card.id));
-    final scheme = Theme.of(context).colorScheme;
 
-    return Card(
+    final tile = Material(
+      color: R34Color.surface,
       clipBehavior: Clip.antiAlias,
-      margin: EdgeInsets.zero,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(R34Radius.lg)),
+        side: BorderSide(color: R34Color.hairline),
+      ),
       child: InkWell(
         onTap: () => context.push('/video/${card.id}/${card.slug}'),
+        splashColor: R34Color.accentSoft,
+        highlightColor: Colors.transparent,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -33,29 +55,49 @@ class VideoCardTile extends ConsumerWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  _Thumb(url: card.thumb, scheme: scheme),
-                  // 时长角标
+                  _Thumb(url: card.thumb),
+                  // 封面高光：左上角一道斜向反光，往下压暗，
+                  // 让角标文字在任何封面上都读得出来。
+                  const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Color(0x1FFFFFFF),
+                          Color(0x00FFFFFF),
+                          Color(0x38000000),
+                        ],
+                        stops: [0, 0.42, 1],
+                      ),
+                    ),
+                  ),
                   if (card.duration.isNotEmpty)
                     Positioned(
                       right: 6,
                       bottom: 6,
-                      child: _Badge(text: card.duration),
+                      child: PillTag(text: card.duration),
                     ),
                   if (card.isHd)
                     const Positioned(
                       left: 6,
                       bottom: 6,
-                      child: _Badge(text: 'HD', accent: true),
+                      child: PillTag(
+                        text: 'HD',
+                        background: Color(0xD9D1404A),
+                      ),
                     ),
-                  // 类型角标（Futa / Gay / …）。放在左下、HD 之上，
-                  // 因为两者位置会撞——HD 在最底，类型往上挪一行。
+                  // 类型角标放左下，HD 占了下沿时往上让一行，避免叠字。
                   if (card.type.isNotEmpty)
                     Positioned(
                       left: 6,
-                      bottom: card.isHd ? 24 : 6,
-                      child: _TypeBadge(text: card.type),
+                      bottom: card.isHd ? 26 : 6,
+                      child: PillTag(
+                        text: card.type,
+                        background: const Color(0xCC1C1C1F),
+                        foreground: R34Color.inkSecondary,
+                      ),
                     ),
-                  // 看过的话画一条进度
                   if (progress != null && progress.positionSeconds > 0)
                     Positioned(
                       left: 0,
@@ -63,15 +105,15 @@ class VideoCardTile extends ConsumerWidget {
                       bottom: 0,
                       child: LinearProgressIndicator(
                         value: progress.progress,
-                        minHeight: 3,
-                        backgroundColor: Colors.black38,
+                        minHeight: 2.5,
+                        backgroundColor: Colors.black45,
                       ),
                     ),
                 ],
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(6, 5, 6, 6),
+              padding: const EdgeInsets.fromLTRB(8, 7, 8, 9),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
@@ -80,26 +122,38 @@ class VideoCardTile extends ConsumerWidget {
                     card.title,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          fontSize: 11.5,
-                          height: 1.25,
-                        ),
+                    style: const TextStyle(
+                      fontFamily: 'NotoSansSC',
+                      fontSize: 12,
+                      height: 1.34,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 0.1,
+                      color: R34Color.ink,
+                    ),
                   ),
-                  const SizedBox(height: 3),
-                  // 三列时一行放不下两个指标，会溢出。用 FittedBox 收缩而不是让它报错。
+                  const SizedBox(height: 4),
+                  // 三列时一排放不下两个指标，用 FittedBox 收，而不是让它溢出。
                   FittedBox(
                     fit: BoxFit.scaleDown,
                     alignment: Alignment.centerLeft,
                     child: Row(
                       children: [
-                        Icon(Icons.visibility_outlined, size: 11, color: scheme.outline),
-                        const SizedBox(width: 2),
-                        Text(card.viewsText, style: _meta(context)),
+                        const Icon(
+                          Icons.visibility_outlined,
+                          size: 11,
+                          color: R34Color.inkFaint,
+                        ),
+                        const SizedBox(width: 3),
+                        Text(card.viewsText, style: _meta),
                         if (card.ratingPercent >= 0) ...[
-                          const SizedBox(width: 6),
-                          Icon(Icons.thumb_up_outlined, size: 11, color: scheme.outline),
-                          const SizedBox(width: 2),
-                          Text('${card.ratingPercent}%', style: _meta(context)),
+                          const SizedBox(width: 8),
+                          const Icon(
+                            Icons.thumb_up_outlined,
+                            size: 11,
+                            color: R34Color.inkFaint,
+                          ),
+                          const SizedBox(width: 3),
+                          Text('${card.ratingPercent}%', style: _meta),
                         ],
                       ],
                     ),
@@ -111,12 +165,17 @@ class VideoCardTile extends ConsumerWidget {
         ),
       ),
     );
+
+    if (!animateIn) return tile;
+    return RiseIn(index: index, child: tile);
   }
 
-  TextStyle? _meta(BuildContext context) => Theme.of(context)
-      .textTheme
-      .labelSmall
-      ?.copyWith(color: Theme.of(context).colorScheme.outline);
+  static const _meta = TextStyle(
+    fontFamily: 'NotoSansSC',
+    fontSize: 10.5,
+    height: 1.2,
+    color: R34Color.inkFaint,
+  );
 }
 
 /// 缩略图。
@@ -124,90 +183,38 @@ class VideoCardTile extends ConsumerWidget {
 /// 单独抽出来是因为测试要绕开网络：`imageProviderOverride` 一旦被设，
 /// 就用它代替 CachedNetworkImage。
 class _Thumb extends StatelessWidget {
-  const _Thumb({required this.url, required this.scheme});
+  const _Thumb({required this.url});
 
   final String url;
-  final ColorScheme scheme;
 
   @override
   Widget build(BuildContext context) {
-    final fallback = ColoredBox(
-      color: scheme.surfaceContainerHighest,
-      child: Icon(Icons.broken_image_outlined, color: scheme.outline),
-    );
+    const fallbackColor = ColoredBox(color: R34Color.surfaceHigh);
 
-    if (url.isEmpty) return fallback;
+    if (url.isEmpty) {
+      return const ColoredBox(
+        color: R34Color.surfaceHigh,
+        child: Icon(Icons.broken_image_outlined, color: R34Color.inkFaint),
+      );
+    }
 
     final override = VideoCardTile.imageProviderOverride;
     if (override != null) {
       return Image(
         image: override(url),
         fit: BoxFit.cover,
-        errorBuilder: (context, error, stack) => fallback,
+        errorBuilder: (context, error, stack) => fallbackColor,
       );
     }
 
     return CachedNetworkImage(
       imageUrl: url,
       fit: BoxFit.cover,
-      fadeInDuration: const Duration(milliseconds: 150),
-      // 不用转圈占位：那是个无限动画，会让 widget 测试永远等不到稳定帧
-      placeholder: (context, u) => ColoredBox(color: scheme.surfaceContainerHighest),
-      errorWidget: (context, u, e) => fallback,
-    );
-  }
-}
-
-class _Badge extends StatelessWidget {
-  const _Badge({required this.text, this.accent = false});
-
-  final String text;
-  final bool accent;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-      decoration: BoxDecoration(
-        color: accent
-            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.85)
-            : Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w600),
-      ),
-    );
-  }
-}
-
-
-/// 类型角标（Futa / Gay / Straight / Music / Iwara）。
-///
-/// 用琥珀色和 HD 的白色区分开：HD 是画质信息，类型是内容标记，
-/// 两者混在一起看不出重点。
-class _TypeBadge extends StatelessWidget {
-  const _TypeBadge({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-      decoration: BoxDecoration(
-        color: const Color(0xCCB8860B),
-        borderRadius: BorderRadius.circular(3),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 8.5,
-          fontWeight: FontWeight.w600,
-          height: 1.2,
-        ),
+      fadeInDuration: const Duration(milliseconds: 180),
+      placeholder: (context, u) => const ColoredBox(color: R34Color.surfaceHigh),
+      errorWidget: (context, u, e) => const ColoredBox(
+        color: R34Color.surfaceHigh,
+        child: Icon(Icons.broken_image_outlined, color: R34Color.inkFaint),
       ),
     );
   }

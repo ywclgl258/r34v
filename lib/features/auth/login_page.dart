@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../data/remote/auth_client.dart';
+import '../../ui/tokens.dart';
 
 /// 登录页。
 ///
@@ -58,25 +59,53 @@ class _LoginPageState extends ConsumerState<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(title: const Text('登录')),
       body: ListView(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(
+          R34Space.page + 4,
+          R34Space.x6,
+          R34Space.page + 4,
+          R34Space.x8,
+        ),
         children: [
-          Text(
-            '登录后可以用「为你推荐」、点赞、站内收藏和评论。',
-            style: Theme.of(context).textTheme.bodyMedium,
+          Container(
+            width: 52,
+            height: 52,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: R34Color.accentSoft,
+              borderRadius: BorderRadius.circular(R34Radius.md),
+              border: Border.all(
+                color: R34Color.accent.withValues(alpha: 0.45),
+              ),
+            ),
+            child: const Text(
+              'R34',
+              style: TextStyle(
+                fontFamily: 'NotoSansSC',
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+                color: R34Color.accentBright,
+              ),
+            ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: R34Space.x5),
           Text(
+            '登录站点账号',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: R34Space.x2),
+          Text(
+            '登录后可以用「为你推荐」、点赞、站内收藏和评论。\n'
             '账号密码只发给 rule34video.com，本应用不保存密码，只保存登录后的会话。',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: scheme.outline),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: R34Color.inkMuted,
+                  height: 1.6,
+                ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: R34Space.x6),
           TextField(
             controller: _user,
             autocorrect: false,
@@ -84,11 +113,10 @@ class _LoginPageState extends ConsumerState<LoginPage> {
             textInputAction: TextInputAction.next,
             decoration: const InputDecoration(
               labelText: '用户名或邮箱',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.person_outline),
+              prefixIcon: Icon(Icons.person_outline_rounded),
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: R34Space.x3),
           TextField(
             controller: _pass,
             obscureText: _obscure,
@@ -98,38 +126,53 @@ class _LoginPageState extends ConsumerState<LoginPage> {
             onSubmitted: (_) => _submit(),
             decoration: InputDecoration(
               labelText: '密码',
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.lock_outline),
+              prefixIcon: const Icon(Icons.lock_outline_rounded),
               suffixIcon: IconButton(
-                icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility),
+                icon: Icon(
+                  _obscure
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined,
+                ),
                 onPressed: () => setState(() => _obscure = !_obscure),
               ),
             ),
           ),
           if (_error != null) ...[
-            const SizedBox(height: 14),
+            const SizedBox(height: R34Space.x3),
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(R34Space.x3),
               decoration: BoxDecoration(
-                color: scheme.errorContainer.withValues(alpha: 0.35),
-                borderRadius: BorderRadius.circular(8),
+                color: R34Color.danger.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(R34Radius.sm),
+                border: Border.all(
+                  color: R34Color.danger.withValues(alpha: 0.35),
+                ),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.error_outline, size: 18, color: scheme.error),
-                  const SizedBox(width: 8),
+                  const Icon(
+                    Icons.error_outline_rounded,
+                    size: 18,
+                    color: R34Color.danger,
+                  ),
+                  const SizedBox(width: R34Space.x2),
                   Expanded(
                     child: Text(
                       _error!,
-                      style: TextStyle(color: scheme.error, fontSize: 13),
+                      style: const TextStyle(
+                        fontFamily: 'NotoSansSC',
+                        color: R34Color.danger,
+                        fontSize: 12.5,
+                        height: 1.5,
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
           ],
-          const SizedBox(height: 20),
+          const SizedBox(height: R34Space.x5),
           FilledButton(
             onPressed: _busy ? null : _submit,
             child: _busy
@@ -140,13 +183,12 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                   )
                 : const Text('登录'),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: R34Space.x4),
           Text(
             '没有账号？这个应用不提供注册入口，请到网站注册后再回来登录。',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: scheme.outline),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: R34Color.inkFaint,
+                ),
           ),
         ],
       ),

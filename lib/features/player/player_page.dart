@@ -12,6 +12,8 @@ import 'package:dio/dio.dart' show CancelToken;
 import '../../app/providers.dart';
 import '../../data/local/library_store.dart';
 import '../../data/local/video_cache.dart';
+import '../../ui/components.dart';
+import '../../ui/tokens.dart';
 import '../common/video_sections.dart';
 import '../feed/video_card_tile.dart';
 import '../../data/remote/stream_fetcher.dart';
@@ -782,21 +784,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     if (_error != null) {
       return Scaffold(
         appBar: AppBar(),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.error_outline, size: 48),
-                const SizedBox(height: 12),
-                Text(_error!, textAlign: TextAlign.center),
-                const SizedBox(height: 16),
-                FilledButton(onPressed: _load, child: const Text('重试')),
-              ],
-            ),
-          ),
-        ),
+        body: ErrorState(message: _error!, onRetry: _load),
       );
     }
 
@@ -853,11 +841,15 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                 : '收藏',
             icon: Icon(
               ref.watch(isFavoriteProvider(videoKey(d.id)))
-                  ? Icons.favorite
-                  : Icons.favorite_border,
+                  ? Icons.favorite_rounded
+                  : Icons.favorite_border_rounded,
+              color: ref.watch(isFavoriteProvider(videoKey(d.id)))
+                  ? R34Color.accentBright
+                  : null,
             ),
             onPressed: _toggleFavorite,
           ),
+          const SizedBox(width: R34Space.x1),
         ],
       ),
       body: Column(
@@ -922,20 +914,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
             // media_kit_video 2.x 不再提供 VideoProgressIndicator，
             // 自己用 Player.stream 画一条可拖动进度条，反而更好控制样式。
             _SeekBar(backend: _backend, durationFallback: d.durationSeconds),
+            // 上一行：时间 + 全屏，弱信息不抢戏。
             Row(
               children: [
-                StreamBuilder<bool>(
-                  stream: _backend.playing,
-                  initialData: _backend.isPlaying,
-                  builder: (context, snap) {
-                    final playing = snap.data ?? false;
-                    return IconButton(
-                      color: Colors.white,
-                      icon: Icon(playing ? Icons.pause : Icons.play_arrow),
-                      onPressed: () => playing ? _backend.pause() : _backend.resume(),
-                    );
-                  },
-                ),
                 StreamBuilder<Duration>(
                   stream: _backend.position,
                   initialData: _backend.currentPosition,
@@ -955,6 +936,63 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                   },
                 ),
                 const Spacer(),
+                IconButton(
+                  color: Colors.white,
+                  tooltip: _fullscreen ? '退出全屏' : '全屏',
+                  icon: Icon(
+                    _fullscreen
+                        ? Icons.fullscreen_exit_rounded
+                        : Icons.fullscreen_rounded,
+                  ),
+                  onPressed: () => _fullscreen ? _exitFullscreen() : _enterFullscreen(),
+                ),
+              ],
+            ),
+            // 下一行：快退 / 播放 / 快进是主控制，右边留给音量、清晰度、倍速。
+            Row(
+              children: [
+                IconButton(
+                  color: Colors.white,
+                  tooltip: '后退 10 秒',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.replay_10_rounded),
+                  onPressed: () => _seekRelative(-10),
+                ),
+                StreamBuilder<bool>(
+                  stream: _backend.playing,
+                  initialData: _backend.isPlaying,
+                  builder: (context, snap) {
+                    final playing = snap.data ?? false;
+                    return Material(
+                      color: Colors.white,
+                      shape: const CircleBorder(),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: () =>
+                            playing ? _backend.pause() : _backend.resume(),
+                        child: SizedBox(
+                          width: 46,
+                          height: 46,
+                          child: Icon(
+                            playing
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
+                            size: 26,
+                            color: Colors.black,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                IconButton(
+                  color: Colors.white,
+                  tooltip: '前进 10 秒',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.forward_10_rounded),
+                  onPressed: () => _seekRelative(10),
+                ),
+                const Spacer(),
                 // 音量：点开一个小面板拖滑块；长按直接静音。
                 StreamBuilder<double>(
                   stream: _backend.volume,
@@ -963,13 +1001,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                     final v = _muted ? 0.0 : (snap.data ?? _backend.currentVolume);
                     return IconButton(
                       color: Colors.white,
+                      visualDensity: VisualDensity.compact,
                       tooltip: _muted ? '取消静音' : '音量',
                       icon: Icon(
                         v <= 0
-                            ? Icons.volume_off
+                            ? Icons.volume_off_rounded
                             : v < 50
-                                ? Icons.volume_down
-                                : Icons.volume_up,
+                                ? Icons.volume_down_rounded
+                                : Icons.volume_up_rounded,
                       ),
                       onPressed: _showVolumeSheet,
                       onLongPress: _toggleMute,
@@ -979,7 +1018,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                 if (_detail?.streams != null)
                   PopupMenuButton<StreamVariant>(
                     color: Colors.black87,
-                    icon: const Icon(Icons.high_quality, color: Colors.white),
+                    padding: EdgeInsets.zero,
+                    iconSize: 22,
+                    icon: const Icon(Icons.high_quality_rounded, color: Colors.white),
                     tooltip: '清晰度',
                     onSelected: _switchQuality,
                     itemBuilder: (context) => [
@@ -989,7 +1030,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                           child: Text(
                             s.label,
                             style: TextStyle(
-                              color: s.label == _current?.label ? Colors.amber : Colors.white,
+                              color: s.label == _current?.label ? R34Color.accentBright : Colors.white,
                             ),
                           ),
                         ),
@@ -997,7 +1038,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                   ),
                 PopupMenuButton<double>(
                   color: Colors.black87,
-                  icon: const Icon(Icons.speed, color: Colors.white),
+                  padding: EdgeInsets.zero,
+                  iconSize: 22,
+                  icon: const Icon(Icons.speed_rounded, color: Colors.white),
                   tooltip: '倍速',
                   onSelected: (v) async {
                     setState(() => _speed = v);
@@ -1011,17 +1054,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
                         child: Text(
                           '${v}x',
                           style: TextStyle(
-                            color: v == _speed ? Colors.amber : Colors.white,
+                            color: v == _speed ? R34Color.accentBright : Colors.white,
                           ),
                         ),
                       ),
                   ],
-                ),
-                IconButton(
-                  color: Colors.white,
-                  tooltip: _fullscreen ? '退出全屏' : '全屏',
-                  icon: Icon(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
-                  onPressed: () => _fullscreen ? _exitFullscreen() : _enterFullscreen(),
                 ),
               ],
             ),
@@ -1033,18 +1070,25 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
 
   Widget _buildInfoPanel(VideoDetail d) {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(
+        R34Space.page,
+        R34Space.x4,
+        R34Space.page,
+        R34Space.x8,
+      ),
       children: [
         Text(d.title, style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
+        const SizedBox(height: R34Space.x2),
         Text(
           '${d.duration}  ·  ${d.viewsText}  ·  ${d.addedText}'
           '${_playingFromCache ? '  ·  本地播放' : ''}',
-          style: Theme.of(context).textTheme.bodySmall,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: R34Color.inkMuted,
+              ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: R34Space.x2 + 2),
         _buildCacheRow(d),
-        const SizedBox(height: 12),
+        const SizedBox(height: R34Space.x2 + 2),
 
         // 四组标签（角色/分类/作者/标签），与详情页一致：
         // 点进去看列表，长按收藏，跟随翻译开关。
@@ -1088,29 +1132,38 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         if (d.uploaderName.isNotEmpty)
           UploaderRow(name: d.uploaderName, id: d.uploaderId),
         if (d.downloads.isNotEmpty) ...[
-          const SizedBox(height: 20),
+          const SizedBox(height: R34Space.x5),
           DownloadSection(video: d),
         ],
         if (d.comments.isNotEmpty) ...[
-          const SizedBox(height: 20),
+          const SizedBox(height: R34Space.x5),
           CommentSection(comments: d.comments),
         ],
         if (d.description.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          Text('简介', style: Theme.of(context).textTheme.titleSmall),
-          const SizedBox(height: 8),
+          SectionHeader(
+            title: '简介',
+            padding: const EdgeInsets.only(
+              top: R34Space.x5,
+              bottom: R34Space.x2,
+            ),
+          ),
           SelectableText(d.description, style: Theme.of(context).textTheme.bodySmall),
         ],
         if (d.related.isNotEmpty) ...[
-          const SizedBox(height: 20),
-          Text('相关推荐', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
+          SectionHeader(
+            title: '相关推荐',
+            padding: const EdgeInsets.only(
+              top: R34Space.x5,
+              bottom: R34Space.x2 + 2,
+            ),
+          ),
           SizedBox(
-            height: 200,
+            height: 208,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
+              clipBehavior: Clip.none,
               itemCount: d.related.length,
-              separatorBuilder: (context, i) => const SizedBox(width: 8),
+              separatorBuilder: (context, i) => const SizedBox(width: R34Space.x3),
               itemBuilder: (context, i) {
                 final r = d.related[i];
                 return SizedBox(
@@ -1126,7 +1179,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
   }
 
   Widget _buildCacheRow(dynamic d) {
-    final scheme = Theme.of(context).colorScheme;
     // 还在边下边播：显示缓冲进度，比「缓存」按钮更有信息量
     if (_buffering) {
       final fraction =
@@ -1140,19 +1192,26 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         children: [
           Row(
             children: [
-              Icon(Icons.downloading, size: 16, color: scheme.primary),
-              const SizedBox(width: 6),
+              const Icon(
+                Icons.downloading_rounded,
+                size: 16,
+                color: R34Color.accentBright,
+              ),
+              const SizedBox(width: R34Space.x1 + 2),
               Text(
                 '缓冲中  $mb / $total',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: scheme.primary),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: R34Color.accentBright,
+                    ),
               ),
             ],
           ),
           const SizedBox(height: 4),
-          LinearProgressIndicator(value: fraction, minHeight: 3),
+          LinearProgressIndicator(
+            value: fraction,
+            minHeight: 4,
+            borderRadius: BorderRadius.circular(R34Radius.pill),
+          ),
         ],
       );
     }
@@ -1166,13 +1225,19 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
     if (cached && _cacheProgress == null) {
       return Row(
         children: [
-          Icon(Icons.offline_pin, size: 16, color: scheme.primary),
-          const SizedBox(width: 6),
+          const Icon(
+            Icons.offline_pin_rounded,
+            size: 16,
+            color: R34Color.accentBright,
+          ),
+          const SizedBox(width: R34Space.x1 + 2),
           Text(
             '已缓存 ${entry?.quality ?? ""}'
             '${entry == null ? "" : "（${entry.megabytes.toStringAsFixed(0)} MB）"}'
             '，本地播放',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.primary),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: R34Color.accentBright,
+                ),
           ),
         ],
       );
@@ -1190,8 +1255,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
         children: [
           Row(
             children: [
-              Icon(Icons.downloading, size: 16, color: scheme.outline),
-              const SizedBox(width: 6),
+              const Icon(
+                Icons.downloading_rounded,
+                size: 16,
+                color: R34Color.inkFaint,
+              ),
+              const SizedBox(width: R34Space.x1 + 2),
               Text(
                 '正在缓存${_cacheReason.isEmpty ? "" : "（$_cacheReason）"}  $mb / $total',
                 style: Theme.of(context).textTheme.bodySmall,
@@ -1209,15 +1278,23 @@ class _PlayerPageState extends ConsumerState<PlayerPage> with WidgetsBindingObse
               ),
             ],
           ),
-          LinearProgressIndicator(value: fraction, minHeight: 3),
+          LinearProgressIndicator(
+            value: fraction,
+            minHeight: 4,
+            borderRadius: BorderRadius.circular(R34Radius.pill),
+          ),
         ],
       );
     }
 
     return Row(
       children: [
-        Icon(Icons.cloud_download_outlined, size: 16, color: scheme.outline),
-        const SizedBox(width: 6),
+        const Icon(
+          Icons.cloud_download_outlined,
+          size: 16,
+          color: R34Color.inkFaint,
+        ),
+        const SizedBox(width: R34Space.x1 + 2),
         TextButton(
           style: TextButton.styleFrom(
             padding: const EdgeInsets.symmetric(horizontal: 8),

@@ -390,6 +390,12 @@ class LibraryStore {
 
   Future<void> setAutoFullscreen(bool v) => _prefs.setBool('${_kSettings}_auto_fullscreen', v);
 
+  /// 玻璃模糊开关。默认开启；关掉后所有玻璃退化成半透明色块，
+  /// 省掉最贵的那层 BackdropFilter。
+  bool get glassBlur => _prefs.getBool('${_kSettings}_glass_blur') ?? true;
+
+  Future<void> setGlassBlur(bool v) => _prefs.setBool('${_kSettings}_glass_blur', v);
+
   double get playbackSpeed => _prefs.getDouble('${_kSettings}_speed') ?? 1.0;
 
   Future<void> setPlaybackSpeed(double v) => _prefs.setDouble('${_kSettings}_speed', v);

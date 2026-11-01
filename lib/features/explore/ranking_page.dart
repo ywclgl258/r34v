@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../domain/ranked_entry.dart';
+import '../../ui/components.dart';
+import '../../ui/tokens.dart';
 
 /// 作者排行榜页（`/top-model/`）。
 ///
@@ -55,17 +57,26 @@ class _ArtistRankingPageState extends ConsumerState<ArtistRankingPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? _ErrorView(message: _error!, onRetry: _load)
+              ? ErrorState(message: _error!, onRetry: _load)
               : _items.isEmpty
-                  ? const _EmptyView(text: '没拿到排行数据，站点可能改版了')
+                  ? const EmptyState(
+                      icon: Icons.leaderboard_outlined,
+                      title: '没拿到排行数据',
+                      message: '站点可能改版了，稍后重试',
+                    )
                   : GridView.builder(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.fromLTRB(
+                        R34Space.page,
+                        R34Space.x3,
+                        R34Space.page,
+                        R34Space.x8,
+                      ),
                       gridDelegate:
                           const SliverGridDelegateWithMaxCrossAxisExtent(
-                        maxCrossAxisExtent: 130,
-                        childAspectRatio: 0.72,
-                        crossAxisSpacing: 10,
-                        mainAxisSpacing: 12,
+                        maxCrossAxisExtent: 140,
+                        childAspectRatio: 0.68,
+                        crossAxisSpacing: R34Space.grid,
+                        mainAxisSpacing: R34Space.x3,
                       ),
                       itemCount: _items.length,
                       itemBuilder: (context, i) =>
@@ -82,63 +93,81 @@ class _ArtistCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return InkWell(
       onTap: () =>
           context.push('/list/model/${Uri.encodeComponent(entry.slug)}'),
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(R34Radius.md),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: _Thumb(url: entry.thumb),
-                  ),
-                ),
-                // 前三名用不同颜色，一眼能看出头部
-                Positioned(
-                  left: 4,
-                  top: 4,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: switch (entry.rank) {
-                        1 => const Color(0xFFD4AF37),
-                        2 => const Color(0xFF9EA7AD),
-                        3 => const Color(0xFFB87333),
-                        _ => Colors.black54,
-                      },
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      '${entry.rank}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(R34Radius.md),
+                border: Border.all(color: R34Color.hairline),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _Thumb(url: entry.thumb),
+                  // 前三名用不同颜色，一眼能看出头部
+                  Positioned(
+                    left: R34Space.x1 + 2,
+                    top: R34Space.x1 + 2,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: switch (entry.rank) {
+                          1 => R34Color.gold,
+                          2 => R34Color.silver,
+                          3 => R34Color.bronze,
+                          _ => Colors.black54,
+                        },
+                        borderRadius: BorderRadius.circular(R34Radius.pill),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.14),
+                        ),
+                      ),
+                      child: Text(
+                        '${entry.rank}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10.5,
+                          height: 1.2,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-          const SizedBox(height: 5),
+          const SizedBox(height: R34Space.x2 - 2),
           Text(
             entry.name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+            style: const TextStyle(
+              fontFamily: 'NotoSansSC',
+              fontSize: 12.5,
+              height: 1.3,
+              fontWeight: FontWeight.w500,
+              color: R34Color.ink,
+            ),
           ),
           if (entry.viewsText.isNotEmpty)
             Text(
               entry.viewsText,
-              style: TextStyle(fontSize: 10.5, color: scheme.outline),
+              style: const TextStyle(
+                fontSize: 10.5,
+                height: 1.4,
+                color: R34Color.inkFaint,
+              ),
             ),
         ],
       ),
@@ -198,20 +227,61 @@ class _CharacterRankingPageState extends ConsumerState<CharacterRankingPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? _ErrorView(message: _error!, onRetry: _load)
+              ? ErrorState(message: _error!, onRetry: _load)
               : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(
+                    R34Space.page,
+                    R34Space.x3,
+                    R34Space.page,
+                    R34Space.x8,
+                  ),
                   itemCount: _works.length,
-                  separatorBuilder: (context, i) => const Divider(height: 1),
+                  separatorBuilder: (context, i) =>
+                      const SizedBox(height: R34Space.x2),
                   itemBuilder: (context, i) {
                     final w = _works[i];
-                    return ListTile(
-                      title: Text(_pretty(w.name)),
-                      subtitle: w.countText.isEmpty ? null : Text(w.countText),
-                      trailing: const Icon(Icons.chevron_right, size: 18),
+                    return SurfaceCard(
+                      radius: R34Radius.md,
+                      padding: const EdgeInsets.fromLTRB(
+                        R34Space.x4,
+                        R34Space.x3,
+                        R34Space.x3,
+                        R34Space.x3,
+                      ),
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (context) => CharacterWorkRankingPage(work: w),
                         ),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _pretty(w.name),
+                                  style: Theme.of(context).textTheme.titleSmall,
+                                ),
+                                if (w.countText.isNotEmpty) ...[
+                                  const SizedBox(height: R34Space.x1),
+                                  Text(
+                                    w.countText,
+                                    style: const TextStyle(
+                                      fontSize: 11.5,
+                                      color: R34Color.inkFaint,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          const Icon(
+                            Icons.chevron_right_rounded,
+                            size: 20,
+                            color: R34Color.inkFaint,
+                          ),
+                        ],
                       ),
                     );
                   },
@@ -273,12 +343,22 @@ class _CharacterWorkRankingPageState
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? _ErrorView(message: _error!, onRetry: _load)
+              ? ErrorState(message: _error!, onRetry: _load)
               : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(
+                    R34Space.page,
+                    R34Space.x3,
+                    R34Space.page,
+                    R34Space.x8,
+                  ),
                   itemCount: _items.length,
-                  separatorBuilder: (context, i) => const Divider(height: 1),
-                  itemBuilder: (context, i) =>
-                      _RankRow(entry: _items[i], maxRatio: 1),
+                  separatorBuilder: (context, i) =>
+                      const SizedBox(height: R34Space.x2),
+                  itemBuilder: (context, i) => SurfaceCard(
+                    radius: R34Radius.md,
+                    padding: EdgeInsets.zero,
+                    child: _RankRow(entry: _items[i], maxRatio: 1),
+                  ),
                 ),
     );
   }
@@ -293,38 +373,65 @@ class _RankRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final medal = switch (entry.rank) {
+      1 => R34Color.gold,
+      2 => R34Color.silver,
+      3 => R34Color.bronze,
+      _ => null,
+    };
+
     return InkWell(
       onTap: () {
         // 角色链接是 tag 页，作者链接是 model 页
         final segment = entry.isTag ? 'tag' : 'model';
         context.push('/list/$segment/${Uri.encodeComponent(entry.slug)}');
       },
+      borderRadius: BorderRadius.circular(R34Radius.md),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.fromLTRB(
+          R34Space.x3,
+          R34Space.x2 + 2,
+          R34Space.x3 + 2,
+          R34Space.x2 + 2,
+        ),
         child: Row(
           children: [
-            SizedBox(
-              width: 24,
+            Container(
+              width: 26,
+              height: 26,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: medal == null
+                    ? R34Color.surfaceHigh
+                    : medal.withValues(alpha: 0.16),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: medal == null
+                      ? R34Color.hairline
+                      : medal.withValues(alpha: 0.45),
+                ),
+              ),
               child: Text(
                 '${entry.rank}',
-                textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: entry.rank <= 3 ? scheme.primary : scheme.outline,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: medal ?? R34Color.inkMuted,
                 ),
               ),
             ),
-            const SizedBox(width: 8),
-            SizedBox(
+            const SizedBox(width: R34Space.x2 + 2),
+            Container(
               width: 64,
-              height: 36,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: _Thumb(url: entry.thumb),
+              height: 38,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(R34Radius.sm),
+                border: Border.all(color: R34Color.hairline),
               ),
+              clipBehavior: Clip.antiAlias,
+              child: _Thumb(url: entry.thumb),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: R34Space.x3),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -333,7 +440,13 @@ class _RankRow extends StatelessWidget {
                     entry.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13),
+                    style: const TextStyle(
+                      fontFamily: 'NotoSansSC',
+                      fontSize: 13,
+                      height: 1.3,
+                      fontWeight: FontWeight.w500,
+                      color: R34Color.ink,
+                    ),
                   ),
                   if (entry.fullName.isNotEmpty &&
                       entry.fullName.toLowerCase() !=
@@ -342,23 +455,27 @@ class _RankRow extends StatelessWidget {
                       entry.fullName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 10.5, color: scheme.outline),
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        height: 1.35,
+                        color: R34Color.inkFaint,
+                      ),
                     ),
-                  const SizedBox(height: 3),
+                  const SizedBox(height: R34Space.x1),
                   // 播放量相对榜首的横条，一眼看出差距
                   if (entry.viewsRatio > 0)
                     ClipRRect(
-                      borderRadius: BorderRadius.circular(2),
+                      borderRadius: BorderRadius.circular(R34Radius.pill),
                       child: LinearProgressIndicator(
                         value: entry.viewsRatio / (maxRatio <= 0 ? 1 : maxRatio),
                         minHeight: 3,
-                        backgroundColor: scheme.surfaceContainerHighest,
+                        backgroundColor: R34Color.surfaceHigh,
                       ),
                     ),
                 ],
               ),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: R34Space.x3),
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -368,17 +485,26 @@ class _RankRow extends StatelessWidget {
                     style: const TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
+                      color: R34Color.ink,
                     ),
                   ),
                 if (entry.favouritesText.isNotEmpty)
                   Text(
                     '♥ ${entry.favouritesText}',
-                    style: TextStyle(fontSize: 10, color: scheme.outline),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      height: 1.5,
+                      color: R34Color.accentBright,
+                    ),
                   ),
                 if (entry.videosText.isNotEmpty)
                   Text(
                     '${entry.videosText} 个',
-                    style: TextStyle(fontSize: 10, color: scheme.outline),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      height: 1.5,
+                      color: R34Color.inkFaint,
+                    ),
                   ),
               ],
             ),
@@ -396,14 +522,10 @@ class _Thumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ph = ColoredBox(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+    final ph = const ColoredBox(
+      color: R34Color.surfaceHigh,
       child: Center(
-        child: Icon(
-          Icons.image_outlined,
-          size: 16,
-          color: Theme.of(context).colorScheme.outline,
-        ),
+        child: Icon(Icons.image_outlined, size: 16, color: R34Color.inkFaint),
       ),
     );
     if (url.isEmpty) return ph;
@@ -413,44 +535,6 @@ class _Thumb extends StatelessWidget {
       errorBuilder: (context, e, s) => ph,
       loadingBuilder: (context, child, p) => p == null ? child : ph,
     );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cloud_off,
-                size: 40, color: Theme.of(context).colorScheme.outline),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            FilledButton(onPressed: onRetry, child: const Text('重试')),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _EmptyView extends StatelessWidget {
-  const _EmptyView({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(child: Text(text, textAlign: TextAlign.center));
   }
 }
 

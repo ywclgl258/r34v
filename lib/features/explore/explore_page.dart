@@ -5,6 +5,9 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../domain/feed_link.dart';
 import '../../domain/ranked_entry.dart';
+import '../../ui/components.dart';
+import '../../ui/glass.dart';
+import '../../ui/tokens.dart';
 import 'ranking_page.dart';
 
 /// 发现页：榜单入口 + 三类索引（角色/作者/标签）+ 分类。
@@ -104,14 +107,15 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
   Widget build(BuildContext context) {
     final session = ref.watch(authProvider);
     return Scaffold(
-      appBar: AppBar(
+      appBar: r34AppBar(
+        large: true,
         title: const Text('发现'),
         actions: [
           IconButton(
             tooltip: session == null ? '登录' : '已登录：${session.username}',
             icon: Icon(
-              session == null ? Icons.login : Icons.account_circle,
-              color: session == null ? null : Theme.of(context).colorScheme.primary,
+              session == null ? Icons.login_rounded : Icons.account_circle_rounded,
+              color: session == null ? null : R34Color.accentBright,
             ),
             onPressed: () {
               if (session == null) {
@@ -121,12 +125,19 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
               }
             },
           ),
+          const SizedBox(width: R34Space.x2),
         ],
       ),
       body: RefreshIndicator(
         onRefresh: _load,
+        color: R34Color.accent,
         child: ListView(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.fromLTRB(
+            R34Space.page,
+            R34Space.x2,
+            R34Space.page,
+            R34Space.x8,
+          ),
           children: [
             TextField(
               controller: _search,
@@ -134,31 +145,45 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
               onSubmitted: (_) => _doSearch(),
               decoration: InputDecoration(
                 hintText: '搜索视频、标签、作者',
-                prefixIcon: const Icon(Icons.search),
+                prefixIcon: const Icon(Icons.search_rounded, size: 20),
                 suffixIcon: IconButton(
-                  icon: const Icon(Icons.arrow_forward),
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 19),
+                  color: R34Color.accentBright,
                   onPressed: _doSearch,
                 ),
-                border: const OutlineInputBorder(),
+                border: const OutlineInputBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(R34Radius.pill)),
+                  borderSide: BorderSide(color: R34Color.hairline),
+                ),
+                enabledBorder: const OutlineInputBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(R34Radius.pill)),
+                  borderSide: BorderSide(color: R34Color.hairline),
+                ),
+                focusedBorder: const OutlineInputBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(R34Radius.pill)),
+                  borderSide: BorderSide(color: R34Color.accent, width: 1.4),
+                ),
               ),
             ),
 
             // ---- 为你推荐 ----
             if (session != null) ...[
-              const SizedBox(height: 16),
+              const SizedBox(height: R34Space.x4),
               _BigEntry(
-                icon: Icons.auto_awesome,
+                icon: Icons.auto_awesome_rounded,
                 title: '为你推荐',
                 subtitle: '基于你的收藏和观看记录',
                 onTap: () => context.push('/feed/forYou'),
               ),
             ],
 
-            const SizedBox(height: 20),
-            _sectionHeader(context, '排行榜'),
+            const SectionHeader(
+              title: '排行榜',
+              padding: EdgeInsets.fromLTRB(0, 28, 0, 12),
+            ),
             Wrap(
-              spacing: 8,
-              runSpacing: 8,
+              spacing: R34Space.x2,
+              runSpacing: R34Space.x2,
               children: [
                 _chip(context, '最新更新', () => context.push('/feed/latest')),
                 _chip(context, '高分榜', () => context.push('/feed/topRated')),
@@ -187,20 +212,21 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
             ),
 
             if (_loading) ...[
-              const SizedBox(height: 40),
+              const SizedBox(height: R34Space.x8),
               const Center(child: CircularProgressIndicator()),
             ] else if (_error != null) ...[
-              const SizedBox(height: 20),
+              const SizedBox(height: R34Space.x5),
               _ErrorBox(message: _error!, onRetry: _load),
             ] else ...[
               // ---- 分类 ----
               if (_categories.isNotEmpty) ...[
-                const SizedBox(height: 24),
-                _sectionHeader(
-                  context,
-                  '分类',
+                SectionHeader(
+                  title: '分类',
                   count: _categories.length,
-                  action: () => _openIndex('category', '全部分类', _categories),
+                  actionLabel: '全部',
+                  onAction: () =>
+                      _openIndex('category', '全部分类', _categories),
+                  padding: const EdgeInsets.fromLTRB(0, 28, 0, 12),
                 ),
                 _LinkGrid(
                   links: _categories.take(11).toList(),
@@ -212,25 +238,24 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
               // ---- 角色 ----
               // 站点没有角色总索引，入口是「作品」：点某部作品才看到它的角色榜。
               if (_works.isNotEmpty) ...[
-                const SizedBox(height: 24),
-                _sectionHeader(
-                  context,
-                  '角色',
+                SectionHeader(
+                  title: '角色',
                   count: _works.length,
-                  action: () => Navigator.of(context).push(
+                  actionLabel: '排行',
+                  onAction: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (context) => const CharacterRankingPage(),
                     ),
                   ),
+                  padding: const EdgeInsets.fromLTRB(0, 28, 0, 12),
                 ),
                 Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                  spacing: R34Space.x2,
+                  runSpacing: R34Space.x2,
                   children: [
                     for (final w in _works.take(15))
                       ActionChip(
                         label: Text(w.name),
-                        visualDensity: VisualDensity.compact,
                         onPressed: () => Navigator.of(context).push(
                           MaterialPageRoute<void>(
                             builder: (context) => CharacterWorkRankingPage(work: w),
@@ -243,12 +268,12 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
 
               // ---- 作者 ----
               if (_models.isNotEmpty) ...[
-                const SizedBox(height: 24),
-                _sectionHeader(
-                  context,
-                  '作者',
+                SectionHeader(
+                  title: '作者',
                   count: _models.length,
-                  action: () => _openIndex('model', '全部作者', _models),
+                  actionLabel: '全部',
+                  onAction: () => _openIndex('model', '全部作者', _models),
+                  padding: const EdgeInsets.fromLTRB(0, 28, 0, 12),
                 ),
                 _LinkGrid(
                   links: _models.take(11).toList(),
@@ -259,17 +284,16 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
 
               // ---- 标签 ----
               if (_tags.isNotEmpty) ...[
-                const SizedBox(height: 24),
-                _sectionHeader(
-                  context,
-                  '标签',
+                SectionHeader(
+                  title: '标签',
                   count: _tags.length,
-                  action: () => _openIndex('tag', '全部标签', _tags),
+                  actionLabel: '全部',
+                  onAction: () => _openIndex('tag', '全部标签', _tags),
+                  padding: const EdgeInsets.fromLTRB(0, 28, 0, 12),
                 ),
                 _TagCloud(links: _tags.take(40).toList()),
               ],
             ],
-            const SizedBox(height: 32),
           ],
         ),
       ),
@@ -331,49 +355,15 @@ class _ExplorePageState extends ConsumerState<ExplorePage> {
     ));
   }
 
-  Widget _sectionHeader(
-    BuildContext context,
-    String text, {
-    int? count,
-    VoidCallback? action,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        children: [
-          Text(text, style: Theme.of(context).textTheme.titleMedium),
-          if (count != null) ...[
-            const SizedBox(width: 6),
-            Text(
-              '$count',
-              style: Theme.of(context)
-                  .textTheme
-                  .labelSmall
-                  ?.copyWith(color: Theme.of(context).colorScheme.outline),
-            ),
-          ],
-          const Spacer(),
-          if (action != null)
-            TextButton(
-              onPressed: action,
-              style: TextButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-              ),
-              child: const Text('全部'),
-            ),
-        ],
-      ),
-    );
-  }
-
   Widget _chip(
     BuildContext context,
     String label,
     VoidCallback onTap, {
     IconData? icon,
   }) => ActionChip(
-        avatar: icon == null ? null : Icon(icon, size: 16),
+        avatar: icon == null
+            ? null
+            : Icon(icon, size: 15, color: R34Color.inkMuted),
         label: Text(label),
         onPressed: onTap,
       );
@@ -395,38 +385,39 @@ class _BigEntry extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return InkWell(
+    return SurfaceCard(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
-          gradient: LinearGradient(
-            colors: [
-              scheme.primary.withValues(alpha: 0.22),
-              scheme.primary.withValues(alpha: 0.06),
-            ],
-          ),
-          border: Border.all(color: scheme.primary.withValues(alpha: 0.3)),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, color: scheme.primary),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: Theme.of(context).textTheme.titleSmall),
-                  Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
-                ],
-              ),
+      padding: const EdgeInsets.all(R34Space.x4),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: R34Color.accentSoft,
+              borderRadius: BorderRadius.circular(R34Radius.md),
+              border: Border.all(color: R34Color.accent.withValues(alpha: 0.25)),
             ),
-            const Icon(Icons.chevron_right, size: 18),
-          ],
-        ),
+            child: Icon(icon, color: R34Color.accentBright, size: 21),
+          ),
+          const SizedBox(width: R34Space.x3),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: R34Color.inkMuted,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(Icons.chevron_right_rounded, size: 20, color: R34Color.inkFaint),
+        ],
       ),
     );
   }
@@ -442,31 +433,40 @@ class _LinkGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Wrap(
-      spacing: 8,
-      runSpacing: 8,
+      spacing: R34Space.x2,
+      runSpacing: R34Space.x3,
       children: [
         for (final l in links)
           SizedBox(
-            width: 104,
+            width: 106,
             child: InkWell(
               onTap: () => onTap(l),
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(R34Radius.md),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
+                  Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(R34Radius.md),
+                      border: Border.all(color: R34Color.hairline),
+                    ),
+                    clipBehavior: Clip.antiAlias,
                     child: AspectRatio(
                       aspectRatio: 16 / 9,
                       child: _Thumb(url: l.thumb, hasThumb: l.hasThumb),
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 6),
                   Text(
                     l.label,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11.5),
+                    style: const TextStyle(
+                      fontFamily: 'NotoSansSC',
+                      fontSize: 12,
+                      height: 1.35,
+                      color: R34Color.inkSecondary,
+                    ),
                   ),
                 ],
               ),
@@ -491,8 +491,7 @@ class _TagCloud extends StatelessWidget {
       children: [
         for (final l in links)
           ActionChip(
-            label: Text(l.label, style: const TextStyle(fontSize: 11)),
-            visualDensity: VisualDensity.compact,
+            label: Text(l.label),
             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             onPressed: () => context.push(
               '/list/tag/${Uri.encodeComponent(l.slug)}',
@@ -511,14 +510,10 @@ class _Thumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ph = ColoredBox(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+    const ph = ColoredBox(
+      color: R34Color.surfaceHigh,
       child: Center(
-        child: Icon(
-          Icons.image_outlined,
-          size: 20,
-          color: Theme.of(context).colorScheme.outline,
-        ),
+        child: Icon(Icons.image_outlined, size: 20, color: R34Color.inkFaint),
       ),
     );
     if (!hasThumb || url.isEmpty) return ph;
@@ -540,19 +535,26 @@ class _ErrorBox extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.errorContainer.withValues(alpha: 0.3),
-        borderRadius: BorderRadius.circular(8),
-      ),
+    return SurfaceCard(
+      padding: const EdgeInsets.all(R34Space.x4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('索引没加载出来', style: Theme.of(context).textTheme.titleSmall),
-          const SizedBox(height: 6),
-          Text(message, style: const TextStyle(fontSize: 12)),
-          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Icon(Icons.error_outline_rounded, size: 18, color: R34Color.danger),
+              const SizedBox(width: 8),
+              Text('索引没加载出来', style: Theme.of(context).textTheme.titleSmall),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            message,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: R34Color.inkMuted,
+                ),
+          ),
+          const SizedBox(height: 12),
           FilledButton.tonal(onPressed: onRetry, child: const Text('重试')),
         ],
       ),
@@ -584,31 +586,39 @@ class _IndexPageState extends State<_IndexPage> {
             .toList();
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: r34AppBar(
         title: Text('${widget.title}（${widget.links.length}）'),
       ),
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.fromLTRB(
+              R34Space.page,
+              R34Space.x2,
+              R34Space.page,
+              R34Space.x3,
+            ),
             child: TextField(
               decoration: const InputDecoration(
-                isDense: true,
                 hintText: '在本页筛选',
                 prefixIcon: Icon(Icons.filter_alt_outlined, size: 18),
-                border: OutlineInputBorder(),
               ),
               onChanged: (v) => setState(() => _q = v.trim()),
             ),
           ),
           Expanded(
             child: GridView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+              padding: const EdgeInsets.fromLTRB(
+                R34Space.page,
+                0,
+                R34Space.page,
+                R34Space.x6,
+              ),
               gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 110,
-                childAspectRatio: 0.78,
-                crossAxisSpacing: 8,
-                mainAxisSpacing: 8,
+                maxCrossAxisExtent: 112,
+                childAspectRatio: 0.8,
+                crossAxisSpacing: R34Space.grid,
+                mainAxisSpacing: R34Space.x3,
               ),
               itemCount: filtered.length,
               itemBuilder: (context, i) {
@@ -617,23 +627,33 @@ class _IndexPageState extends State<_IndexPage> {
                   onTap: () => context.push(
                     '/list/${widget.kind}/${Uri.encodeComponent(l.slug)}',
                   ),
+                  borderRadius: BorderRadius.circular(R34Radius.md),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(R34Radius.md),
+                            border: Border.all(color: R34Color.hairline),
+                          ),
+                          clipBehavior: Clip.antiAlias,
                           child: SizedBox.expand(
                             child: _Thumb(url: l.thumb, hasThumb: l.hasThumb),
                           ),
                         ),
                       ),
-                      const SizedBox(height: 3),
+                      const SizedBox(height: 6),
                       Text(
                         l.label,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11),
+                        style: const TextStyle(
+                          fontFamily: 'NotoSansSC',
+                          fontSize: 12,
+                          height: 1.35,
+                          color: R34Color.inkSecondary,
+                        ),
                       ),
                     ],
                   ),
