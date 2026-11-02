@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/constants.dart';
 import 'dio_proxy.dart';
@@ -50,7 +52,7 @@ import 'dio_proxy.dart';
 ///
 /// 所以 Referer 必须带，而且要用**真实视频页 URL**——这才是浏览器的行为。
 class StreamResolver {
-  StreamResolver({Dio? dio, String proxy = ''})
+  StreamResolver({Dio? dio, String proxy = '', this.prefs})
       : _dio = dio ??
             Dio(BaseOptions(
               connectTimeout: const Duration(seconds: 15),
@@ -66,11 +68,22 @@ class StreamResolver {
               validateStatus: (s) => s != null && s < 500,
             )) {
     applyProxyToDio(_dio, proxy);
+    _loadFromDisk();
   }
 
   final Dio _dio;
 
-  /// 会话内缓存：key 是「站点原始地址」，value 是解析出来的 CDN 地址。
+  /// 持久化用。为 null 时退化成纯内存缓存（测试环境常见）。
+  final SharedPreferences? prefs;
+
+  /// 磁盘缓存的 key 前缀。
+  static const String _diskKey = 'stream_resolver_v1';
+
+  /// 磁盘里最多存多少条。CDN 直链在 token 过期后就没用了，
+  /// 留太多只是占地方，还让读写变慢。
+  static const int _maxDiskEntries = 120;
+
+  /// 缓存：key 是「站点原始地址」，value 是解析出来的 CDN 地址。
   ///
   /// 用原始地址做 key 而不是 videoId，是因为原始地址里已经含 `v-acctoken`，
   /// 换清晰度、换链都会变成不同的 key，天然不会串。
@@ -78,13 +91,21 @@ class StreamResolver {
 
   /// CDN 直链的有效期。
   ///
-  /// 实测 CDN 的 `acctoken` 带时间戳，保守取 10 分钟：一段视频的连续观看
-  /// 基本都在这个窗口内，到期后重新解析一次即可。
-  static const Duration ttl = Duration(minutes: 10);
+  /// 实测 CDN 的 `acctoken` 带时间戳（`...|1793623019|2840000|...`），
+  /// 但**没有可靠的过期字段**。取 30 分钟是基于实测：
+  ///
+  /// - 同一链接连续取用（含 50MB 偏移的远端区间）稳定 206；
+  /// - CDN 层不校验 Referer / UA / Cookie，所以不存在「换了 client 就失效」；
+  /// - 太短会频繁回源（回源 = 打详情页，是最容易被限流的动作），
+  ///   太长则过期后白等一次失败再重试。
+  ///
+  /// 过期后 [resolve] 会重新解析，调用方不需要处理。
+  static const Duration ttl = Duration(minutes: 30);
 
   /// 解析出 CDN 直链。失败时返回 null（调用方回退到原始地址）。
   ///
-  /// [pageUrl] 是视频详情页地址，用作 Referer——与浏览器一致。
+  /// [pageUrl] 是视频详情页地址，用作 Referer——**站点那一层**需要它
+  /// （实测外站 Referer 直接 403）。CDN 那一层不校验，但带上无害。
   Future<String?> resolve(String url, {required String pageUrl}) async {
     final hit = _cache[url];
     if (hit != null && !hit.isExpired) return hit.cdnUrl;
@@ -93,6 +114,7 @@ class StreamResolver {
     if (cdn == null) return null;
 
     _cache[url] = _Resolved(cdn, DateTime.now());
+    _saveToDisk();
     return cdn;
   }
 
@@ -106,9 +128,61 @@ class StreamResolver {
   }
 
   /// 作废某个地址的缓存（CDN 返回 403 时调用）。
-  void invalidate(String url) => _cache.remove(url);
+  void invalidate(String url) {
+    if (_cache.remove(url) != null) _saveToDisk();
+  }
 
-  void clear() => _cache.clear();
+  void clear() {
+    _cache.clear();
+    _saveToDisk();
+  }
+
+  // ---------- 磁盘持久化 ----------
+
+  void _loadFromDisk() {
+    final prefs = this.prefs;
+    if (prefs == null) return;
+    final raw = prefs.getString(_diskKey);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      for (final e in list) {
+        if (e is! Map) continue;
+        final url = e['u'] as String? ?? '';
+        final cdn = e['c'] as String? ?? '';
+        final at = (e['t'] as num?)?.toInt() ?? 0;
+        if (url.isEmpty || cdn.isEmpty || at <= 0) continue;
+        final resolved = _Resolved(cdn, DateTime.fromMillisecondsSinceEpoch(at));
+        // 载入时就丢掉过期的，免得占着位置
+        if (resolved.isExpired) continue;
+        _cache[url] = resolved;
+      }
+    } catch (_) {
+      // 格式变了就重来，不值得为缓存崩一次
+      _cache.clear();
+    }
+  }
+
+  void _saveToDisk() {
+    final prefs = this.prefs;
+    if (prefs == null) return;
+    try {
+      // 先清掉过期的，再按时间倒序只留最近 N 条
+      _cache.removeWhere((_, v) => v.isExpired);
+      final entries = _cache.entries.toList()
+        ..sort((a, b) => b.value.at.compareTo(a.value.at));
+      final keep = entries.take(_maxDiskEntries);
+      final list = [
+        for (final e in keep)
+          {
+            'u': e.key,
+            'c': e.value.cdnUrl,
+            't': e.value.at.millisecondsSinceEpoch,
+          },
+      ];
+      unawaited(prefs.setString(_diskKey, jsonEncode(list)));
+    } catch (_) {}
+  }
 
   Future<String?> _probe(String url, {required String pageUrl}) async {
     try {
@@ -157,3 +231,5 @@ class _Resolved {
   bool get isExpired =>
       DateTime.now().difference(at) > StreamResolver.ttl;
 }
+
+

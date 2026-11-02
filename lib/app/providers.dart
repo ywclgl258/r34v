@@ -38,9 +38,15 @@ final streamFetcherProvider = Provider<StreamFetcher>((ref) {
 /// 全局单例：解析结果要在整个会话内复用，一次播放里 seek 几十次也只解析一次。
 /// 站点对 `/get_file/...` 回 302 跳 CDN，每个 Range 请求都重走一遍的话，
 /// 实测吞吐只有直链的四分之一。
+///
+/// 传入 prefs 是为了**跨启动复用**：已验证的 CDN 直链写到磁盘，
+/// 退出 App 再进来还能用，省掉一次 302。
 final streamResolverProvider = Provider<StreamResolver>((ref) {
-  final proxy = ref.watch(libraryStoreProvider).playerProxy;
-  return StreamResolver(proxy: proxy);
+  final store = ref.watch(libraryStoreProvider);
+  return StreamResolver(
+    proxy: store.playerProxy,
+    prefs: ref.watch(sharedPrefsProvider),
+  );
 });
 
 final videoCacheProvider = Provider<VideoCache>((ref) {

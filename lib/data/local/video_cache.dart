@@ -247,28 +247,58 @@ class VideoCache {
     final target = File(p.join(dir.path, '${videoId}_$safeQuality.mp4'));
     final part = File('${target.path}.part');
 
-    // 清掉上次中断留下的半截文件
-    if (await part.exists()) await part.delete();
+    // **断点续传：不删已有的半截文件。**
+    //
+    // 以前这里无条件 `part.delete()`，每次进来都从头下。而缓存任务已经
+    // 改成可以后台继续、也可以中途取消，用户取消/退出/切网之后重进，
+    // 之前下的全白费——等于把同一份内容重复拉了好几遍，
+    // 这是最容易招来限流的行为（流量几倍于视频本身）。
+    //
+    // 现在保留 .part，用 `Range: bytes=<已有长度>-` 接着下。
+    // 服务端不支持 Range（回 200 而非 206）时才退回整下。
+    var resumeFrom = 0;
+    if (await part.exists()) {
+      resumeFrom = await part.length();
+      // 半截文件小到没有意义（比如刚创建就失败），直接重来更省事
+      if (resumeFrom < 64 * 1024) {
+        await part.delete();
+        resumeFrom = 0;
+      }
+    }
 
     try {
       final res = await _dio.download(
         url,
         part.path,
         cancelToken: cancelToken,
-        deleteOnError: true,
+        deleteOnError: false,
         options: Options(
           headers: {
-            // 反盗链：必须带 Referer，且用视频页（与浏览器一致）。
+            // 反盗链：站点那一层会校验 Referer（实测外站直接 403）。
+            // CDN 那一层实测不校验，但带上无害。
             'Referer': pageUrl.isEmpty ? '${Site.base}/' : pageUrl,
+            if (resumeFrom > 0) 'Range': 'bytes=$resumeFrom-',
           },
         ),
         onReceiveProgress: (received, total) {
-          onProgress?.call(CacheProgress(received: received, total: total));
+          // received 是**本次**已接收的，要加上续传起点才是真实进度
+          onProgress?.call(CacheProgress(
+            received: resumeFrom + received,
+            total: total > 0 ? resumeFrom + total : -1,
+          ));
         },
       );
 
+      // 206 = 续传成功；200 = 服务端忽略了 Range，返回的是完整文件
+      final ranged = res.statusCode == 206;
       if (res.statusCode != 200 && res.statusCode != 206) {
         throw HttpException('下载失败：HTTP ${res.statusCode}');
+      }
+      if (resumeFrom > 0 && !ranged) {
+        // 服务端没按 Range 返回，我们往里追加会拼出坏文件。
+        // 这种情况只能整下重来——但至少已经浪费过一次，记下来。
+        await part.delete();
+        throw HttpException('服务端不支持断点续传，已重新开始');
       }
 
       final size = await part.length();
