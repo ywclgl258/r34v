@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app/providers.dart';
 import 'app/router.dart';
 import 'core/player_bootstrap.dart';
+import 'data/local/background_transfer.dart';
 import 'data/local/library_store.dart';
 import 'ui/glass.dart';
 import 'ui/theme.dart';
@@ -13,6 +14,10 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // media_kit 必须在 runApp 前初始化（libmpv 的 native 侧准备）
   await PlayerBootstrap.init();
+
+  // 后台传输（缓存/下载）的前台服务通道要在这里建好，
+  // 否则第一次 startService 会因为通道未注册而失败。
+  BackgroundTransfer.init();
 
   final prefs = await SharedPreferences.getInstance();
   // 恢复上次保存的播放器代理（libmpv 不认系统代理，必须每次启动告诉它）

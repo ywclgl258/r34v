@@ -9,6 +9,7 @@ import '../domain/video_card.dart';
 import '../data/local/video_cache.dart';
 import '../data/remote/auth_client.dart';
 import '../data/remote/stream_fetcher.dart';
+import '../data/remote/stream_resolver.dart';
 import '../data/remote/tag_translator.dart';
 import '../data/remote/rule34_api.dart';
 
@@ -30,6 +31,16 @@ final libraryStoreProvider = Provider<LibraryStore>((ref) {
 final streamFetcherProvider = Provider<StreamFetcher>((ref) {
   final proxy = ref.watch(libraryStoreProvider).playerProxy;
   return StreamFetcher(proxy: proxy);
+});
+
+/// 站点地址 → CDN 直链的解析器。
+///
+/// 全局单例：解析结果要在整个会话内复用，一次播放里 seek 几十次也只解析一次。
+/// 站点对 `/get_file/...` 回 302 跳 CDN，每个 Range 请求都重走一遍的话，
+/// 实测吞吐只有直链的四分之一。
+final streamResolverProvider = Provider<StreamResolver>((ref) {
+  final proxy = ref.watch(libraryStoreProvider).playerProxy;
+  return StreamResolver(proxy: proxy);
 });
 
 final videoCacheProvider = Provider<VideoCache>((ref) {

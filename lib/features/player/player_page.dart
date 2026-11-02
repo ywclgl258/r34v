@@ -10,9 +10,12 @@ import 'package:screen_brightness/screen_brightness.dart';
 
 import 'backends/backends.dart';
 import 'swipe_rate.dart';
+import 'playback_guards.dart';
 import 'package:dio/dio.dart' show CancelToken;
 
 import '../../app/providers.dart';
+import '../../core/constants.dart';
+import '../../data/local/background_transfer.dart';
 import '../../data/local/library_store.dart';
 import '../../data/local/video_cache.dart';
 import '../../ui/components.dart';
@@ -103,6 +106,16 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
   double _swipeRate = 1.0;
   double _rateBeforeDrag = 1.0;
 
+  /// 上次回源换链的时间，用来做节流（见 `_recoverStream`）。
+  DateTime? _lastRecoverAt;
+
+  /// 已经真正下发给播放器的倍速。
+  ///
+  /// 滑动是逐帧回调，但档位只有 8 档，同一档内不该重复下发：
+  /// 每次下发都要跨 platform channel 打到 ExoPlayer，逐帧发会把主线程
+  /// 和播放器都拖住，播放看起来就像卡住了。
+  late final RateApplyGate _rateGate = RateApplyGate(initial: _speed);
+
   /// 松手后收起临时倍速提示。
   Timer? _rateRestoreTimer;
 
@@ -120,7 +133,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
   int _fetchReceived = 0;
   int _fetchTotal = 0;
   StreamFetchHandle? _currentFetch;
-  StreamFetcher? _fetcher;
 
   /// 正在做后台缓存。
   bool _caching = false;
@@ -146,11 +158,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     // 这里再包一层兜底，保证任何引擎实现出错都不至于让整页打不开。
     try {
       _speed = _store.playbackSpeed;
-      _backend.setRate(_speed);
+      // 记下来，避免横滑时第一次就把同一个档位重复下发一遍。
+      _rateBeforeDrag = _speed;
+      _rateGate.reset(applied: _speed);
+      unawaited(_backend.setRate(_speed).catchError((Object _) {}));
       final savedVolume = _store.volume;
       if (savedVolume != null) {
         _volume = savedVolume < 10 ? 10 : savedVolume;
-        _backend.setVolume(_volume!);
+        unawaited(_backend.setVolume(_volume!).catchError((Object _) {}));
       }
     } catch (_) {
       // 引擎未就绪不该阻断页面；起播时还会再下发一次。
@@ -275,10 +290,15 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
       _persistProgressAt(posNow, durNow);
     } catch (_) {}
 
+    // 传输任务：**解绑而不是取消**。
+    //
+    // 之前这里直接 `_fetcher.cancel(...)`，退出页面 = 缓存/下载立刻中断。
+    // 现在改成 detach：进度回调不再 setState，但下载继续在后台跑，
+    // 由前台服务保活。用户显式取消才真的停（走 TransferRegistry.cancel）。
     final fetching = _currentFetch;
-    if (fetching != null && _fetcher != null) {
+    if (fetching != null) {
       try {
-        unawaited(_fetcher!.cancel(fetching.videoId));
+        TransferRegistry.instance.find(fetching.videoId)?.detach();
       } catch (_) {}
     }
 
@@ -350,9 +370,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     }));
   }
 
-  /// 错误信息里出现 401/403/410 才算 token 过期。
-  static bool _looksLikeTokenExpiry(String err) =>
-      err.contains('401') || err.contains('403') || err.contains('410');
+  /// 错误信息里是否真的表达了「HTTP 401/403/410」。
+  ///
+  /// 实现在 [looksLikeTokenExpiry]（可单独测试）。要点：**不能简单
+  /// `contains('403')`**，否则 `position 403000` 会被误判成过期，
+  /// 进而回源抓详情页——那是「线路被限流」的来源。
+  static bool _looksLikeTokenExpiry(String err) => looksLikeTokenExpiry(err);
 
   /// 不重回源，直接用当前链重开一次（从当前位置续）。
   /// 网络抖动类错误多半这样就好了。
@@ -463,19 +486,34 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
         return;
       }
 
-      // 先直接播远端。
+      // **优先多线程分段下载，而不是直连。**
       //
-      // 为什么优先直连而不是先下载：libmpv 自己支持 HTTP Range，拖动进度条会
-      // 按需请求对应区间，跳转是准确的。之前用「边下边播」读正在写入的 .part
-      // 文件，seek 到还没写到的位置时 mpv 会以为文件就到这里，进度条直接弹到结尾。
+      // 这是「缓冲比网页慢」和「线路被限流」两个问题的共同根因。
       //
-      // CA 证书和代理现在都在启动时配好了，直连具备条件。
+      // 直连时 ExoPlayer 对单个 mp4 只开**一条** HTTP 连接，而站点对
+      // 单连接有限速——这就是速度天花板，几倍于网页端（网页用 hls/多段
+      // 请求，天然多连接）。之前的顺序是「先直连，失败才退多线程」，
+      // 于是多线程这条路几乎从未被启用过。
+      //
+      // 反过来：提前走多线程也解决限流。反复直连探测失败会触发
+      // `_recoverStream` 回源重新抓详情页，一次播放能打好几次详情页，
+      // 那才是被判定成异常流量的原因。
+      //
+      // 代价：读正在写入的 `.partial` 文件时，seek 到未下载区间会被
+      // 当成文件末尾。缓解办法是设置里可切回直连（见播放设置），
+      // 且分段下载本身边下边播，起播只需 512KB。
+      final useFetch = ref.read(libraryStoreProvider).useChunkedStreaming;
+      if (useFetch) {
+        await _openViaFetch(d, s, resumeAt, revision);
+        return;
+      }
+
+      // 设置里关掉多线程时走直连（也可作为多线程出问题时的退路）。
       final ok = await _openRemoteDirect(s.url, resumeAt, revision);
       if (!_isCurrent(revision)) return;
       if (ok) return;
 
-      // 直连失败（代理只对 Dart 生效等情况），退回边下边播保底。
-      // 这条路能看，但拖动只在前端已下载范围内有效。
+      // 直连失败再退回多线程保底。
       await _openViaFetch(d, s, resumeAt, revision);
     } catch (e) {
       if (!_isCurrent(revision)) return;
@@ -486,10 +524,55 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     }
   }
 
+  /// 用作 Referer 的**视频详情页地址**。
+  ///
+  /// 站点有反盗链白名单，实测：
+  /// - 外站 Referer → **403 Forbidden**
+  /// - 站点根 `/` → 放行（但不是浏览器的行为）
+  /// - 视频页 URL → 放行（**这才是浏览器发的东西**）
+  ///
+  /// 所以这里拼真实页面地址，而不是用站点根。
+  String get _pageReferer {
+    final id = widget.videoId;
+    final slug = widget.slug;
+    return slug.isEmpty
+        ? '${Site.base}/video/$id/'
+        : '${Site.base}/video/$id/$slug/';
+  }
+
+  /// 把站点地址解析成 CDN 直链；解析不出来就用原地址。
+  ///
+  /// 解析失败不该阻断播放——原地址虽然慢（每次 Range 都要走 302），
+  /// 但能播。所以这里永不抛异常。
+  Future<String> _resolvePlaybackUrl(String url) async {
+    if (!url.startsWith('http')) return url;
+    try {
+      final resolver = ref.read(streamResolverProvider);
+      // 先看会话缓存：seek 重试路径上不该再等一次网络。
+      final cached = resolver.cachedFor(url);
+      if (cached != null) return cached;
+      final cdn = await resolver.resolve(url, pageUrl: _pageReferer);
+      return cdn ?? url;
+    } catch (_) {
+      return url;
+    }
+  }
+
   /// 直接打开远端地址，返回是否成功起播。
   ///
   /// media_kit 的 `open` 不会因为网络失败而抛异常，错误是从 `stream.error`
   /// 出来的，所以这里同时监听 duration（成功）和 error（失败），加超时兜底。
+  ///
+  /// **打开前先把站点地址解析成 CDN 直链。** 站点对 `/get_file/...` 回 302
+  /// 跳 CDN，播放器每发一个 Range 请求（首播 / 每次 seek / 每次重连）都要
+  /// 重走一遍这条链路。实测同一文件 20MB：
+  ///
+  /// | 请求方式 | 耗时 | 吞吐 |
+  /// |---|---|---|
+  /// | 每次 302 | 23.6s | 887 KB/s |
+  /// | CDN 直链 | 6.0s | 3.48 MB/s |
+  ///
+  /// 差 4 倍，这就是「浏览器很快、App 很卡」的原因。解析一次、整个会话复用。
   Future<bool> _openRemoteDirect(String url, int resumeAt, int revision) async {
     await _backend.configure();
     if (!_isCurrent(revision)) return false;
@@ -519,7 +602,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     });
 
     try {
-      await _backend.open(url, play: true);
+      final target = await _resolvePlaybackUrl(url);
+      if (!_isCurrent(revision)) return false;
+      await _backend.open(target, play: true, referer: _pageReferer);
       if (!_isCurrent(revision)) return false;
       // 站点实测首字节要 5–11 秒，给足余量；太短会把能直连的误判成失败，
       // 一退回边下边播拖动就又坏了。
@@ -563,7 +648,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
   Future<void> _openViaFetch(VideoDetail d, StreamVariant s, int resumeAt, int revision) async {
     if (!_isCurrent(revision)) return;
     final fetch = ref.read(streamFetcherProvider);
-    _fetcher = fetch;
     setState(() {
       _buffering = true;
       _cacheProgress = null;
@@ -576,6 +660,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
       videoId: d.id,
       url: s.url,
       quality: s.label,
+      // 并行连接数：设置里可调（1–8）。站点对单连接限速，
+      // 多连接并行是「缓冲比网页慢」的主要解法。
+      workers: ref.read(libraryStoreProvider).streamWorkers,
       // 分段下载中途 token 过期：回源换新链续传（换的是同清晰度的链）
       refreshUrl: () async {
         final api = ref.read(rule34ApiProvider);
@@ -674,7 +761,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     await _backend.configure();
     if (!_isCurrent(revision)) return;
     _listen();
-    await _backend.open(source, play: play);
+    // 本地文件（缓存）没有 302 可解析，只有远端地址才值得解析。
+    // _resolvePlaybackUrl 内部对非 http 地址直接原样返回。
+    final target = await _resolvePlaybackUrl(source);
+    if (!_isCurrent(revision)) return;
+    await _backend.open(target, play: play, referer: _pageReferer);
     if (!_isCurrent(revision)) return;
     if (resumeAt > 0) {
       // media_kit 在 open 后立刻 seek 有时会被忽略，等一小会儿再跳
@@ -694,7 +785,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     }
   }
 
-  void _startCache(VideoDetail d, StreamVariant s, {String reason = ''}) {
+  Future<void> _startCache(VideoDetail d, StreamVariant s, {String reason = ''}) async {
     if (_caching) return;
     // Web 预览下浏览器会拦跨域下载，这里先说清楚，别让人以为缓存坏了
     if (kIsWeb) {
@@ -714,22 +805,55 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     });
 
     final cache = ref.read(videoCacheProvider);
+    final label = '缓存：${d.title}';
+    // 缓存走 CDN 直链：站点对 /get_file/ 回 302，Dio 每次重定向都要重付
+    // 一次开销。实测直链比走 302 快 4 倍。
+    final cacheUrl = await _resolvePlaybackUrl(s.url);
+    if (!mounted) return;
+    // 注册到全局任务表 + 拉起前台服务：**退出页面后继续下**。
+    final session = TransferSession(
+      id: d.id,
+      label: label,
+      cancel: () async {
+        _cacheCancel?.cancel();
+      },
+    );
+    TransferRegistry.instance.add(session);
+    unawaited(BackgroundTransfer.begin(label));
+
+    var lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
     cache
         .cache(
       videoId: d.id,
       title: d.title,
-      url: s.url,
+      url: cacheUrl,
       quality: s.label,
       thumb: d.poster,
+      pageUrl: _pageReferer,
       durationSeconds: d.durationSeconds,
       cancelToken: _cacheCancel,
       onProgress: (prog) {
-        if (!mounted) return;
+        // 通知更新要节流：跨进程调用，每帧发会卡。
+        final now = DateTime.now();
+        if (now.difference(lastNotify) >= const Duration(seconds: 1)) {
+          lastNotify = now;
+          final pct = prog.total > 0
+              ? (prog.received * 100 ~/ prog.total)
+              : 0;
+          unawaited(BackgroundTransfer.update(
+            label,
+            '已下载 ${_fmtMb(prog.received)}'
+            '${prog.total > 0 ? ' / ${_fmtMb(prog.total)}（$pct%）' : ''}',
+          ));
+        }
+        // 页面已解绑（用户退出了）就不再 setState，但下载照跑。
+        if (!mounted || session.detached) return;
         setState(() => _cacheProgress = prog);
       },
     )
         .then((entry) {
-      if (!mounted) return;
+      unawaited(TransferRegistry.instance.finish(d.id));
+      if (!mounted || session.detached) return;
       setState(() {
         _caching = false;
         _cacheProgress = null;
@@ -743,7 +867,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
       );
     })
         .catchError((Object e) {
-      if (!mounted) return;
+      unawaited(TransferRegistry.instance.finish(d.id));
+      if (!mounted || session.detached) return;
       setState(() {
         _caching = false;
         _cacheProgress = null;
@@ -758,9 +883,24 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     });
   }
 
+  static String _fmtMb(int bytes) =>
+      '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+
   /// 直链过期时的恢复：回源详情页拿新链，从当前位置续播。
   Future<void> _recoverStream({required String reason}) async {
     if (_restoringStream || !_canPlay) return;
+    // 回源节流：两次回源之间至少隔 3 秒。
+    //
+    // 回源 = 重新抓一次详情页，是站点最容易被判定成异常流量的动作。
+    // 播放器偶尔会连续抛一串错误（解码重试、链路抖动），没有节流的话
+    // 就会连着打好几个详情页——这正是「线路被限流」的来源之一。
+    // 被节流时静默跳过：上层 `_listen` 还有重试计数兜底。
+    final now = DateTime.now();
+    if (_lastRecoverAt != null &&
+        now.difference(_lastRecoverAt!) < const Duration(seconds: 3)) {
+      return;
+    }
+    _lastRecoverAt = now;
     final revision = ++_playbackRevision;
     _pendingPlayback = true;
     _restoringStream = true;
@@ -1291,7 +1431,21 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
       _swipeRate = rate;
       _swipeRateVisible = true;
     });
-    _backend.setRate(rate);
+
+    // **只在档位真的变了时才下发，并且吞掉异常。**
+    //
+    // 这里曾经每帧都调一次 `_backend.setRate(rate)` 且不 await：
+    // - 拖动 200dp 会连续发出十几次 `setPlaybackSpeed`，
+    //   每次都跨 platform channel 打到底层 ExoPlayer；
+    // - 播放器尚未 open 完或已经释放时，底层会抛
+    //   `StateError('播放器已经释放')` / platform 异常；
+    // - 因为没 await，异常变成**未处理的 Future 错误**，
+    //   Flutter 会把它升级成致命错误，表现为播放中断甚至整页崩掉。
+    //
+    // 这正是「手势加速直接播放不了」的原因。现在两道保护：
+    // 档位没变就完全不下发（离散档位天然去重），下发的一律 catch。
+    if (!_rateGate.shouldApply(rate)) return;
+    unawaited(_backend.setRate(rate).catchError((Object _) {}));
   }
 
   /// 松手：提示留一会儿再消失，速度回到用户原本设定的值。
@@ -1308,7 +1462,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
 
     final restore = _rateBeforeDrag;
     _speed = restore;
-    _backend.setRate(restore);
+    if (_rateGate.shouldApply(restore)) {
+      unawaited(_backend.setRate(restore).catchError((Object _) {}));
+    }
 
     _rateRestoreTimer?.cancel();
     // 提示多留 500ms 再消失，让人看清刚才滑到了几倍。

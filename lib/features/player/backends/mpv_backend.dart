@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart' as mk;
 
+import '../../../core/constants.dart';
 import '../../../core/player_bootstrap.dart';
 import 'player_backend.dart';
 
@@ -81,13 +82,24 @@ class MpvBackend implements PlayerBackend {
   }
 
   @override
-  Future<void> open(String url, {required bool play}) async {
+  Future<void> open(String url, {required bool play, String? referer}) async {
     if (_disposed) throw StateError('播放器已经释放');
     final revision = ++_openRevision;
     _wantPlaying = play;
     final player = _p;
+    // Referer 用视频详情页地址（与 ExoBackend 一致：站点的反盗链
+    // 白名单认这个值，外站 Referer 会 403）。
+    // media_kit 的 `Media.httpHeaders` 会被转成 mpv 的
+    // `--http-header-fields`，所以直接传 map 即可。
+    final media = Media(
+      url,
+      httpHeaders: {
+        'User-Agent': Site.userAgent,
+        'Referer': referer ?? '${Site.base}/',
+      },
+    );
     // 起播意图可能在等待 open 时被 pause/dispose 改变。
-    await player.open(Media(url), play: false);
+    await player.open(media, play: false);
     if (!_isCurrent(revision)) return;
     // open 会重置倍速和音量，把这一轮记下的值补上
     await player.setRate(_rate);

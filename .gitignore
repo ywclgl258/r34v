@@ -39,3 +39,4 @@ Thumbs.db
 
 # 字体子集的源文件（1558KB），只在跑 tool/subset_font.py 时需要
 assets/fonts/NotoSansSC-Regular.woff2
+dist/

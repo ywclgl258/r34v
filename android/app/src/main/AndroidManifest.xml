@@ -4,6 +4,16 @@
     <!-- 播放时保持屏幕常亮 -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
+    <!--
+      后台传输（缓存 / 下载）：
+      前台服务 + 常驻通知，让退出播放页、切到后台、息屏之后任务继续跑。
+      没有这几条权限的话，进程会被系统回收，下载断在中间。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- Android 13+ 显示通知需要运行时授权，声明了才能弹系统询问 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <application
         android:label="R34V"
         android:name="${applicationName}"
@@ -31,6 +41,16 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!--
+          前台服务本体。flutter_foreground_task 的 service 要在应用节点里声明
+          才算数，写在别处不会生效（而且要 foregroundServiceType 匹配
+          FOREGROUND_SERVICE_DATA_SYNC，否则 Android 14+ 直接拒起）。
+        -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"/>
     </application>
 
     <queries>

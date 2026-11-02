@@ -180,7 +180,7 @@ void main() {
   test('ExoPlayer 初始化期间暂停，初始化完成保持暂停', () async {
     final ready = Completer<void>();
     final controller = _VideoController(ready);
-    final backend = ExoBackend(controllerFactory: (_) => controller);
+    final backend = ExoBackend(controllerFactory: (_, _) => controller);
     final opening = backend.open('https://example.invalid/a.mp4', play: true);
     await Future<void>.delayed(Duration.zero);
     await backend.pause();
@@ -194,7 +194,7 @@ void main() {
   test('ExoPlayer 初始化期间释放，初始化完成不能起播', () async {
     final ready = Completer<void>();
     final controller = _VideoController(ready);
-    final backend = ExoBackend(controllerFactory: (_) => controller);
+    final backend = ExoBackend(controllerFactory: (_, _) => controller);
     final opening = backend.open('https://example.invalid/a.mp4', play: true);
     await Future<void>.delayed(Duration.zero);
     await backend.dispose();
@@ -207,7 +207,7 @@ void main() {
   test('ExoPlayer 释放后拒绝打开，不再创建控制器', () async {
     var creations = 0;
     final backend = ExoBackend(
-      controllerFactory: (_) {
+      controllerFactory: (_, _) {
         creations++;
         return _VideoController(Completer<void>());
       },
@@ -221,3 +221,4 @@ void main() {
     await backend.dispose();
   });
 }
+

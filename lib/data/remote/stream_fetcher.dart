@@ -49,7 +49,14 @@ class StreamFetcher {
   /// 分段大小：文件大的分段大些，最多 4MB，至少 512KB。
   static const int _minChunk = 512 * 1024;
   static const int _maxChunk = 4 * 1024 * 1024;
-  static const int _maxWorkers = 6;
+
+  /// 并行连接数的默认上限与下限。
+  ///
+  /// 曾经写死 6。放到可配置里是因为「更多连接 = 更快」并不总成立：
+  /// 站点对总并发也有感知，开到 8 反而更容易被限流。默认 4 是
+  /// 「明显快于单连接、又不容易触发风控」的平衡点。
+  static const int _maxWorkers = 4;
+  static const int _hardWorkerCap = 8;
 
   /// 攒够这么多字节再通知可以播放：太少的话播放器可能还没拿到 moov 就报错。
   static const int _readyThreshold = 512 * 1024;
@@ -64,6 +71,7 @@ class StreamFetcher {
     required String quality,
     Future<String> Function()? refreshUrl,
     int? chunkSizeOverride,
+    int? workers,
     void Function(int received, int total)? onProgress,
     void Function(String filePath)? onReady,
     void Function(String? error)? onDone,
@@ -91,6 +99,7 @@ class StreamFetcher {
       url: url,
       refreshUrl: refreshUrl,
       chunkSizeOverride: chunkSizeOverride,
+      workers: workers,
       onProgress: onProgress,
       onReady: onReady,
       onDone: onDone,
@@ -123,6 +132,7 @@ class StreamFetcher {
     required String url,
     Future<String> Function()? refreshUrl,
     int? chunkSizeOverride,
+    int? workers,
     void Function(int received, int total)? onProgress,
     void Function(String filePath)? onReady,
     void Function(String? error)? onDone,
@@ -221,8 +231,9 @@ class StreamFetcher {
         throw HttpException('分段 $i 下载失败：$lastErr');
       }
 
-      final workerCount = chunkCount < _maxWorkers ? chunkCount : _maxWorkers;
-      final workers = <Future<void>>[
+      final requested = (workers ?? _maxWorkers).clamp(1, _hardWorkerCap);
+      final workerCount = chunkCount < requested ? chunkCount : requested;
+      final workersList = <Future<void>>[
         for (var w = 0; w < workerCount; w++)
           () async {
             while (true) {
@@ -271,7 +282,7 @@ class StreamFetcher {
       await raf.close();
 
       // 等所有 worker 退出（它们在已失败的组装后仍可能跑完手头的分段）
-      await Future.wait(workers).catchError((_) => <void>[]);
+      await Future.wait(workersList).catchError((_) => <void>[]);
 
       if (task.cancelled) {
         // 连 .partial 一起删掉（此时 raf 已关闭，句柄不再占着文件）

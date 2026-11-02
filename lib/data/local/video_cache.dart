@@ -218,12 +218,16 @@ class VideoCache {
   /// 缓存一个视频。返回落盘后的记录。
   ///
   /// [onProgress] 会被频繁调用，UI 侧自己节流。
+  ///
+  /// [pageUrl] 是视频详情页地址，用作 Referer——站点有反盗链白名单，
+  /// 实测外站 Referer 直接 403。传空时退回站点根（能过，但不是浏览器行为）。
   Future<CachedVideo> cache({
     required String videoId,
     required String title,
     required String url,
     required String quality,
     String thumb = '',
+    String pageUrl = '',
     int durationSeconds = 0,
     void Function(CacheProgress)? onProgress,
     CancelToken? cancelToken,
@@ -252,6 +256,12 @@ class VideoCache {
         part.path,
         cancelToken: cancelToken,
         deleteOnError: true,
+        options: Options(
+          headers: {
+            // 反盗链：必须带 Referer，且用视频页（与浏览器一致）。
+            'Referer': pageUrl.isEmpty ? '${Site.base}/' : pageUrl,
+          },
+        ),
         onReceiveProgress: (received, total) {
           onProgress?.call(CacheProgress(received: received, total: total));
         },

@@ -53,6 +53,7 @@ class _FailedFetcher extends StreamFetcher {
     required String quality,
     Future<String> Function()? refreshUrl,
     int? chunkSizeOverride,
+    int? workers,
     void Function(int, int)? onProgress,
     void Function(String)? onReady,
     void Function(String?)? onDone,
@@ -93,6 +94,7 @@ class _ReadyFetcher extends _FailedFetcher {
     required String quality,
     Future<String> Function()? refreshUrl,
     int? chunkSizeOverride,
+    int? workers,
     void Function(int, int)? onProgress,
     void Function(String)? onReady,
     void Function(String?)? onDone,
@@ -178,6 +180,18 @@ void main() {
     tester.view.physicalSize = const Size(1170, 2532);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
+
+    // **本文件验的是手势与生命周期，不是下载路径。**
+    //
+    // 生产默认走多线程分段下载（见 LibraryStore.useChunkedStreaming），
+    // 但这些用例注入的 fetcher 是 `_FailedFetcher`（它故意立刻报错），
+    // 以前只有在"直连失败"之后才会走到它，所以无关紧要；改成多线程优先后，
+    // 它一上来就把页面打进错误态，Slider 之类的控件根本不会出现。
+    //
+    // 所以这里显式关掉多线程，让这些用例回到"直连成功"的前提。
+    // 下载路径本身由 stream_fetcher_test 覆盖。
+    await prefs.setBool('settings_v1_chunked_stream', false);
+
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -414,6 +428,8 @@ void main() {
   });
 
   testWidgets('打开合并页后播放不新增路由，返回一次回到列表', (tester) async {
+    // 走直连路径（理由同 pump：本组不验下载器，且它注入的 fetcher 不存在）。
+    await prefs.setBool('settings_v1_chunked_stream', false);
     final container = ProviderContainer(
       overrides: [
         sharedPrefsProvider.overrideWithValue(prefs),
@@ -453,6 +469,8 @@ void main() {
     tester.view.physicalSize = const Size(1170, 2532);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
+    // 走直连路径（理由同 pump）。
+    await prefs.setBool('settings_v1_chunked_stream', false);
     final container = ProviderContainer(
       overrides: [
         sharedPrefsProvider.overrideWithValue(prefs),
@@ -641,3 +659,4 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 }
+

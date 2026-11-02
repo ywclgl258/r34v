@@ -25,17 +25,24 @@ import 'player_backend.dart';
 /// （release 下就是一块灰屏，看起来像「视频加载失败」而不是崩溃）。
 /// 现在倍速/音量先记着，open 成功后一次性应用。
 class ExoBackend implements PlayerBackend {
-  ExoBackend({VideoPlayerController Function(String)? controllerFactory})
+  ExoBackend({VideoPlayerController Function(String, String?)? controllerFactory})
     : _createController = controllerFactory ?? _networkController;
 
-  final VideoPlayerController Function(String) _createController;
+  final VideoPlayerController Function(String, String?) _createController;
   bool _disposed = false;
   int _openRevision = 0;
 
-  static VideoPlayerController _networkController(String url) =>
+  /// 构造网络控制器。
+  ///
+  /// [referer] 用**视频详情页地址**而不是站点根。实测站点的反盗链白名单：
+  /// 外站 Referer → 403，站点根 / 视频页 → 放行。视频页才等于浏览器。
+  static VideoPlayerController _networkController(String url, String? referer) =>
       VideoPlayerController.networkUrl(
         Uri.parse(url),
-        httpHeaders: {'User-Agent': Site.userAgent, 'Referer': '${Site.base}/'},
+        httpHeaders: {
+          'User-Agent': Site.userAgent,
+          'Referer': referer ?? '${Site.base}/',
+        },
       );
 
   bool _isCurrent(int revision) => !_disposed && revision == _openRevision;
@@ -82,13 +89,13 @@ class ExoBackend implements PlayerBackend {
   }
 
   @override
-  Future<void> open(String url, {required bool play}) async {
+  Future<void> open(String url, {required bool play, String? referer}) async {
     if (_disposed) throw StateError('播放器已经释放');
     final revision = ++_openRevision;
     _wantPlaying = play;
     await _teardown();
     if (!_isCurrent(revision)) return;
-    final c = _createController(url);
+    final c = _createController(url, referer);
     _c = c;
     // initialize 失败（网络/格式）会直接抛异常——调用方据此判失败
     try {
@@ -175,16 +182,27 @@ class ExoBackend implements PlayerBackend {
   Future<void> setRate(double rate) async {
     _rate = rate;
     final c = _c;
-    if (c == null) return;
-    await c.setPlaybackSpeed(rate);
+    // 已经 dispose 或还没 open：只记意图，不碰底层。
+    // 释放后调用底层会抛 StateError('Player released') 或 platform 异常，
+    // 而横滑调速是逐帧调用的高频路径——一次没兜住就会把未处理异常
+    // 升级成致命错误，表现为播放中断/页面崩掉。
+    if (c == null || _disposed) return;
+    try {
+      await c.setPlaybackSpeed(rate);
+    } catch (_) {
+      // 播放器正在被重建/已释放时设置倍速失败是可接受的，
+      // open 成功后会用 _rate 重新应用。
+    }
   }
 
   @override
   Future<void> setVolume(double volume) async {
     _volume = volume.clamp(0.0, 100.0);
     final c = _c;
-    if (c == null) return;
-    await c.setVolume((_volume / 100).clamp(0.0, 1.0));
+    if (c == null || _disposed) return;
+    try {
+      await c.setVolume((_volume / 100).clamp(0.0, 1.0));
+    } catch (_) {}
   }
 
   @override

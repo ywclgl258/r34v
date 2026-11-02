@@ -19,7 +19,11 @@ abstract class PlayerBackend {
 
   /// 打开一个远端地址。网络类失败请抛异常或推 [errors]，
   /// 调用方靠 [duration]/[position] 流判断起播成功。
-  Future<void> open(String url, {required bool play});
+  ///
+  /// [referer] 是**视频详情页地址**（不是站点根）。站点的反盗链白名单
+  /// 认这个值——实测外站 Referer 直接 403，而视频页 / 站点根都能过。
+  /// 用视频页是为了和浏览器发出的请求完全一致。
+  Future<void> open(String url, {required bool play, String? referer});
 
   Future<void> pause();
   Future<void> resume();

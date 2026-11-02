@@ -7,6 +7,9 @@ class FakePlayerBackend implements PlayerBackend {
   late final _duration = StreamController<Duration>.broadcast();
   late final _errors = StreamController<String>.broadcast();
   final opened = <String>[];
+
+  /// 每次 open 传入的 Referer，用来验证「用视频页而不是站点根」。
+  final referers = <String?>[];
   final rates = <double>[];
   bool failOpen = false;
   bool disposed = false;
@@ -26,8 +29,9 @@ class FakePlayerBackend implements PlayerBackend {
   @override
   Widget videoWidget() => const SizedBox.expand();
   @override
-  Future<void> open(String url, {required bool play}) async {
+  Future<void> open(String url, {required bool play, String? referer}) async {
     opened.add(url);
+    referers.add(referer);
     if (failOpen) throw StateError('test playback failure');
     isPlaying = play;
     _duration.add(currentDuration);
