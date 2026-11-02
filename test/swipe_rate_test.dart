@@ -53,14 +53,17 @@ void main() {
     });
 
     test('右滑与左滑的灵敏度分别按各自跨度映射', () {
-      // 1.0→3.0 跨度 2.0，1.0→0.5 跨度 0.5。
-      // 同样划半屏：右滑走到 1.0 + 0.5×2.0 = 2.0，左滑走到 1.0 - 0.5×0.5 = 0.75。
-      // 关键在于两侧都有反应；若用同一个系数（比如都按 2.0 算），
+      // 1.0→3.0 跨度 2.0，1.0→0.25 跨度 0.75（档位表补了 0.25 之后）。
+      // 同样划半屏：右滑走到 1.0 + 0.5×2.0 = 2.0；左滑走到 1.0 - 0.5×0.75 = 0.625，
+      // 取最近档位 → 0.5。
+      //
+      // 关键在两侧都有反应；若用同一个系数（比如都按 2.0 算），
       // 左滑半屏会算出 0.0，夹到最低档后"划一点点就到底"，手感很怪。
       expect(rateForDrag(w * 0.5, w), closeTo(2.0, 0.01));
-      expect(rateForDrag(-w * 0.5, w), closeTo(0.75, 0.01));
+      expect(rateForDrag(-w * 0.5, w), 0.5);
       // 左滑到底才到最低档
       expect(rateForDrag(-w, w), kSwipeRateSteps.first);
+      expect(kSwipeRateSteps.first, 0.25, reason: '最低档对齐官方 flowplayer speeds');
     });
 
     test('宽度非正时安全兜底', () {
@@ -102,7 +105,9 @@ void main() {
       expect(nearestStep(1.1), 1.0);
       expect(nearestStep(1.13), 1.25);
       expect(nearestStep(2.9), 3.0);
-      expect(nearestStep(0.1), 0.5);
+      // 档位表补了 0.25 之后，0.1 最近的是 0.25 而不是 0.5
+      expect(nearestStep(0.1), 0.25);
+      expect(nearestStep(0.4), 0.5);
     });
   });
 

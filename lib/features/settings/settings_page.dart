@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../core/player_bootstrap.dart';
+import '../../data/local/apk_installer.dart';
 import '../../ui/components.dart';
 import '../../ui/glass.dart';
 import '../../ui/tokens.dart';
+import 'update_controller.dart';
 
 /// 设置页。首版只有播放偏好、历史控制与诊断信息。
 class SettingsPage extends ConsumerWidget {
@@ -114,6 +116,10 @@ class SettingsPage extends ConsumerWidget {
             children: const [_ProxyTile()],
           ),
           _Group(
+            title: '关于',
+            children: const [_UpdateTile()],
+          ),
+          _Group(
             title: '诊断',
             children: const [_DiagnosticsTile()],
           ),
@@ -205,6 +211,138 @@ class _DiagnosticsTile extends ConsumerWidget {
         ),
       ],
     );
+  }
+}
+
+/// 「检查更新」。
+///
+/// 数据源是 GitHub Releases：CI 每次构建都会把签名过的 arm64 APK 传上去，
+/// 所以这里能拿到和 CI 产物完全一致的包，不需要额外的更新服务器。
+///
+/// 状态机在 [UpdateController]，这里只负责展示和转发动作。
+class _UpdateTile extends ConsumerWidget {
+  const _UpdateTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final st = ref.watch(updateControllerProvider);
+    final ctrl = ref.read(updateControllerProvider.notifier);
+    final cur = st.currentVersion.isEmpty ? '…' : st.currentVersion;
+
+    final (IconData icon, String subtitle, Color? color) = switch (st.phase) {
+      UpdatePhase.checking => (
+          Icons.sync_rounded,
+          '正在检查…',
+          R34Color.inkSecondary,
+        ),
+      UpdatePhase.upToDate => (
+          Icons.check_circle_rounded,
+          '已是最新版本',
+          R34Color.accentBright,
+        ),
+      UpdatePhase.available => (
+          Icons.system_update_rounded,
+          '发现 ${st.info?.version}，点右侧下载',
+          R34Color.accentBright,
+        ),
+      UpdatePhase.downloading => (
+          Icons.downloading_rounded,
+          st.progress < 0
+              ? '正在下载…'
+              : '正在下载 ${(st.progress * 100).toStringAsFixed(0)}%',
+          R34Color.accentBright,
+        ),
+      UpdatePhase.readyToInstall => (
+          Icons.install_mobile_rounded,
+          '已下载完成，点右侧安装',
+          R34Color.accentBright,
+        ),
+      UpdatePhase.failed => (
+          Icons.error_outline_rounded,
+          st.error.isEmpty ? '检查失败' : st.error,
+          R34Color.inkSecondary,
+        ),
+      UpdatePhase.idle => (
+          Icons.system_update_rounded,
+          '当前 v$cur',
+          null,
+        ),
+    };
+
+    return ListTile(
+      leading: Icon(icon, size: 21),
+      title: const Text('检查更新'),
+      subtitle: st.phase == UpdatePhase.downloading
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(subtitle, style: TextStyle(color: color)),
+                const SizedBox(height: 6),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    value: st.progress < 0 ? null : st.progress,
+                    minHeight: 3,
+                  ),
+                ),
+              ],
+            )
+          : Text(
+              subtitle,
+              style: color == null ? null : TextStyle(color: color),
+            ),
+      trailing: _updateAction(context, st, ctrl),
+    );
+  }
+
+  Widget _updateAction(
+    BuildContext context,
+    UpdateState st,
+    UpdateController ctrl,
+  ) {
+    switch (st.phase) {
+      case UpdatePhase.checking:
+        return const SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        );
+      case UpdatePhase.downloading:
+        return TextButton(
+          onPressed: ctrl.cancelDownload,
+          child: const Text('取消'),
+        );
+      case UpdatePhase.readyToInstall:
+        return FilledButton(
+          onPressed: () async {
+            final err = await ctrl.install();
+            if (err.isEmpty || !context.mounted) return;
+            // 装不了最常见的原因是没开「安装未知应用」，给出直接入口
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(err),
+                action: SnackBarAction(
+                  label: '去设置',
+                  onPressed: () => ApkInstaller.openUnknownSourcesSettings(),
+                ),
+              ),
+            );
+          },
+          child: const Text('安装'),
+        );
+      case UpdatePhase.available:
+        return FilledButton(
+          onPressed: ctrl.download,
+          child: const Text('下载'),
+        );
+      case UpdatePhase.upToDate:
+      case UpdatePhase.failed:
+      case UpdatePhase.idle:
+        return TextButton(
+          onPressed: () => ctrl.check(),
+          child: const Text('检查'),
+        );
+    }
   }
 }
 

@@ -442,5 +442,24 @@ class LibraryStore {
 
   Future<void> setStreamWorkers(int v) =>
       _prefs.setInt('${_kSettings}_stream_workers', v.clamp(1, 8));
+
+  // ---------- 更新检查 ----------
+
+  /// 启动时是否自动检查新版本（默认开）。
+  bool get autoCheckUpdate =>
+      _prefs.getBool('${_kSettings}_auto_update') ?? true;
+
+  Future<void> setAutoCheckUpdate(bool v) =>
+      _prefs.setBool('${_kSettings}_auto_update', v);
+
+  /// 上次检查更新的时间。用来避免每次冷启动都打一次 GitHub。
+  DateTime? get lastUpdateCheckAt {
+    final ms = _prefs.getInt('${_kSettings}_update_at');
+    if (ms == null || ms <= 0) return null;
+    return DateTime.fromMillisecondsSinceEpoch(ms);
+  }
+
+  Future<void> setLastUpdateCheckAt(DateTime t) =>
+      _prefs.setInt('${_kSettings}_update_at', t.millisecondsSinceEpoch);
 }
 

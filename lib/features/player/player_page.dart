@@ -109,6 +109,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
   /// 上次回源换链的时间，用来做节流（见 `_recoverStream`）。
   DateTime? _lastRecoverAt;
 
+  /// 双击落点所属的分区（back / center / forward）。
+  DoubleTapZone _doubleTapZone = DoubleTapZone.center;
+
+  /// 双击前的播放状态，用于双击后纠正（官方 restorePlay 的做法）。
+  bool _wasPlayingBeforeDoubleTap = false;
+
   /// 已经真正下发给播放器的倍速。
   ///
   /// 滑动是逐帧回调，但档位只有 8 档，同一档内不该重复下发：
@@ -1150,8 +1156,57 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     ]);
   }
 
-  void _toggleControls() {
-    setState(() => _controlsVisible = !_controlsVisible);
+  /// 单击视频区：显隐控制栏。
+  ///
+  /// **不要在这里做去抖。**
+  ///
+  /// 曾经试过用 Timer 把单击延迟一个双击窗口，想避免「双击的第一下
+  /// 让控制栏闪一下」。实测发现这是错的：
+  ///
+  /// Flutter 的 `GestureDetector` 同时挂了 `onTap` 和 `onDoubleTap` 时，
+  /// 框架**自己就会把 onTap 推迟到双击窗口结束**——双击成立时 onTap 根本
+  /// 不会触发，所谓"闪一下"并不存在。我们再加一层 Timer 等于把延迟
+  /// 从 ~300ms 叠到 ~560ms，单击发闷。
+  ///
+  /// 所以单击直接转发给 [_toggleControls]，仲裁交给框架。
+  void _onSurfaceTap() => _toggleControls();
+
+  /// 双击视频区。
+  ///
+  /// 分区行为（对齐官方 kt_seek.js）：
+  /// - 左 40%：后退 10 秒
+  /// - 右 40%：前进 10 秒
+  /// - 中间 20%：**不 seek，切全屏**——官方把中央留给播放器自己的
+  ///   「双击全屏」，这才是用户预期。
+  void _onDoubleTapSurface() {
+    final zone = _doubleTapZone;
+    if (zone == DoubleTapZone.center) {
+      if (_fullscreen) {
+        unawaited(_exitFullscreen());
+      } else {
+        unawaited(_enterFullscreen());
+      }
+      return;
+    }
+
+    final wasPlaying = _wasPlayingBeforeDoubleTap;
+    _seekRelative(_doubleTapSeconds);
+
+    // 官方 restorePlay：双击前在播、双击后被系统 toggle 暂停了，
+    // 延迟 80ms 纠正回来（等原生副作用落定）。只 resume，从不 pause。
+    Timer(kRestorePlayingDelay, () {
+      if (!mounted) return;
+      if (!shouldRestorePlaying(
+        wasPlaying: wasPlaying,
+        nowPaused: !_backend.isPlaying,
+      )) {
+        return;
+      }
+      unawaited(_backend.resume().catchError((Object _) {}));
+    });
+  }
+
+  void _toggleControls() {    setState(() => _controlsVisible = !_controlsVisible);
     _hideTimer?.cancel();
     if (_controlsVisible) {
       _hideTimer = Timer(const Duration(seconds: 4), () {
@@ -1216,10 +1271,18 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
               key: _gestureKey,
               behavior: HitTestBehavior.opaque,
               dragStartBehavior: DragStartBehavior.down,
-              onTap: _toggleControls,
-              onDoubleTapDown: (details) => _doubleTapSeconds =
-                  details.localPosition.dx < _gestureWidth / 2 ? -10 : 10,
-              onDoubleTap: () => _seekRelative(_doubleTapSeconds),
+              onTap: _onSurfaceTap,
+              onDoubleTapDown: (details) {
+                // 分区对齐官方 kt_seek.js：左 40% 后退、右 40% 前进、
+                // 中间 20% 是安全带（不接管双击 → 留给全屏）。
+                final zone =
+                    doubleTapZoneFor(details.localPosition.dx, _gestureWidth);
+                _doubleTapZone = zone;
+                _doubleTapSeconds = seekSecondsForZone(zone);
+                // 记下双击前的播放状态：暂停时双击不该把视频播起来。
+                _wasPlayingBeforeDoubleTap = _backend.isPlaying;
+              },
+              onDoubleTap: _onDoubleTapSurface,
               onVerticalDragStart: _onVerticalDragStart,
               onVerticalDragUpdate: _onVerticalDragUpdate,
               onVerticalDragEnd: (_) => _onVerticalDragEnd(),

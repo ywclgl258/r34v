@@ -14,6 +14,9 @@
     <!-- Android 13+ 显示通知需要运行时授权，声明了才能弹系统询问 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
+    <!-- 应用内更新：允许本应用拉起安装器（真正安装仍需用户在系统弹窗里确认） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+
     <application
         android:label="R34V"
         android:name="${applicationName}"
@@ -51,6 +54,21 @@
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+
+        <!--
+          应用内更新：把私有目录里的 APK 以 content:// 交给系统安装器。
+          Android 7+ 不再允许直接传 file://。
+          authority 必须和 MainActivity.kt 里的 `$packageName.fileprovider` 一致。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
     </application>
 
     <queries>

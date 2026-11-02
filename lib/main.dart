@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -7,6 +9,7 @@ import 'app/router.dart';
 import 'core/player_bootstrap.dart';
 import 'data/local/background_transfer.dart';
 import 'data/local/library_store.dart';
+import 'features/settings/update_controller.dart';
 import 'ui/glass.dart';
 import 'ui/theme.dart';
 
@@ -33,12 +36,40 @@ Future<void> main() async {
     ),
   );
 }
-
-class R34vApp extends ConsumerWidget {
+class R34vApp extends ConsumerStatefulWidget {
   const R34vApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<R34vApp> createState() => _R34vAppState();
+}
+
+class _R34vAppState extends ConsumerState<R34vApp> {
+  @override
+  void initState() {
+    super.initState();
+    // 启动后**延迟**检查一次更新：不跟首屏抢网络，失败也不打扰。
+    //
+    // 只在距上次检查超过 12 小时才查，避免频繁冷启动反复打 GitHub
+    // （未认证接口有 60 次/小时的限流，共用出口 IP 时很容易撞上）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final store = ref.read(libraryStoreProvider);
+      if (!store.autoCheckUpdate) return;
+      final last = store.lastUpdateCheckAt;
+      if (last != null &&
+          DateTime.now().difference(last) < const Duration(hours: 12)) {
+        return;
+      }
+      unawaited(
+        Future<void>.delayed(
+          const Duration(seconds: 3),
+          () => ref.read(updateControllerProvider.notifier).check(silent: true),
+        ),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final router = ref.watch(routerProvider);
     return MaterialApp.router(
       title: 'R34V',

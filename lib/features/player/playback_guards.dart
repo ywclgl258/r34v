@@ -31,6 +31,63 @@ class RateApplyGate {
   void reset({required double applied}) => _applied = applied;
 }
 
+/// 双击落点属于哪个区域。
+///
+/// 对齐 kt_player 的 `kt_seek.js`（站点官方播放器脚本）：
+///
+/// ```js
+/// var SIDE_LEFT  = 0.40;    // 左边缘到 40% 是「后退」区
+/// var SIDE_RIGHT = 0.60;    // 60% 往右是「前进」区
+/// ```
+///
+/// **中间留 20% 安全带是关键。** 之前我们是 `dx < width/2` 的二分，
+/// 中央零宽度——手指落在正中间稍微偏一点就误触发快进或后退。
+/// 官方给中央留了一条不接管双击的地带，交给播放器自己做「双击全屏」。
+enum DoubleTapZone { back, center, forward }
+
+const double kSideLeft = 0.40;
+const double kSideRight = 0.60;
+
+DoubleTapZone doubleTapZoneFor(double dx, double width) {
+  if (width <= 0) return DoubleTapZone.center;
+  final rel = dx / width;
+  if (rel < kSideLeft) return DoubleTapZone.back;
+  if (rel > kSideRight) return DoubleTapZone.forward;
+  return DoubleTapZone.center;
+}
+
+/// 双击的跳转秒数（官方 TAP_SKIP = 10）。中央返回 0 表示不 seek。
+int seekSecondsForZone(DoubleTapZone zone) => switch (zone) {
+      DoubleTapZone.back => -10,
+      DoubleTapZone.forward => 10,
+      DoubleTapZone.center => 0,
+    };
+
+/// 双击判定窗口的参考值。官方 `kt_seek.js` 的 `DOUBLE_MS = 300`。
+///
+/// 注意：**Flutter 侧的实际仲裁由框架自己做**（`GestureDetector` 同时挂
+/// onTap/onDoubleTap 时会自动把单击推迟到双击窗口结束）。这个常量只用于
+/// 文档对照和测试，不用来自己实现去抖——试过，会把单击延迟叠成两倍。
+const Duration kDoubleTapWindow = Duration(milliseconds: 300);
+
+/// 双击后要不要把播放状态纠正回来。
+///
+/// 官方 `kt_seek.js` 的 `restorePlay`：
+/// - 双击前若是**暂停**，双击后不能自己播起来（用户只是想看看那一段）；
+/// - 双击前若是**播放中**，双击可能被系统 click 副作用暂停，要纠正回来。
+///
+/// 所以返回值是「是否需要 resume」，且**只 resume、从不 pause**。
+bool shouldRestorePlaying({
+  required bool wasPlaying,
+  required bool nowPaused,
+}) => wasPlaying && nowPaused;
+
+/// 双击 seek 后延迟多久做状态纠正。
+///
+/// 官方用 80ms：等原生 click/tap 的副作用落定再纠正，
+/// 太早纠正会被后面的 toggle 覆盖掉。
+const Duration kRestorePlayingDelay = Duration(milliseconds: 80);
+
 /// 判断错误信息是否真的表示「直链 token 过期」（HTTP 401/403/410）。
 ///
 /// **不能写成 `contains('403')`。**
