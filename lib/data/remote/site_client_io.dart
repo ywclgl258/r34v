@@ -10,6 +10,25 @@ import 'doh_connector.dart';
 import 'host_router.dart';
 import 'site_client_base.dart';
 
+/// 合并站点 Cookie jar 与调用方会话 Cookie。
+///
+/// 同名项由调用方优先，避免 jar 里的旧 PHPSESSID 覆盖刚登录的会话；
+/// 不同名项（例如 ddos-guard 与 PHPSESSID）必须同时保留。
+String mergeCookieHeaders(String siteCookies, String callerCookies) {
+  final merged = <String, String>{};
+  for (final source in [siteCookies, callerCookies]) {
+    for (final item in source.split(';')) {
+      final part = item.trim();
+      final eq = part.indexOf('=');
+      if (eq <= 0) continue;
+      final name = part.substring(0, eq).trim();
+      if (name.isEmpty) continue;
+      merged[name] = part.substring(eq + 1).trim();
+    }
+  }
+  return merged.entries.map((e) => '${e.key}=${e.value}').join('; ');
+}
+
 /// 原生实现（Android / Windows）：直接用 `dart:io` 的 HttpClient。
 ///
 /// 相比 Web 版，这里能：
@@ -27,8 +46,8 @@ class SiteClientImpl implements SiteClient {
     this.connector,
     this._proxy,
     this._prefs,
-  })  : _timeout = timeout ?? const Duration(seconds: 20),
-        _retryBaseDelay = retryBaseDelay ?? const Duration(milliseconds: 600) {
+  }) : _timeout = timeout ?? const Duration(seconds: 20),
+       _retryBaseDelay = retryBaseDelay ?? const Duration(milliseconds: 600) {
     _loadCookies();
   }
 
@@ -122,7 +141,8 @@ class SiteClientImpl implements SiteClient {
     } catch (_) {}
   }
 
-  void _record(String line) {    final t = DateTime.now();
+  void _record(String line) {
+    final t = DateTime.now();
     String p(int v) => v.toString().padLeft(2, '0');
     _log.add('${p(t.hour)}:${p(t.minute)}:${p(t.second)}  $line');
     if (_log.length > 50) _log.removeAt(0);
@@ -172,10 +192,7 @@ class SiteClientImpl implements SiteClient {
   ///
   /// 返回 null 表示拿不到（HTTP 非 2xx 或网络全挂），调用方按破图处理。
   @override
-  Future<Uint8List?> getBytes(
-    String url, {
-    String? referer,
-  }) async {
+  Future<Uint8List?> getBytes(String url, {String? referer}) async {
     final buf = <int>[];
     try {
       final r = await _request(
@@ -215,7 +232,9 @@ class SiteClientImpl implements SiteClient {
         if (attempt == maxRetries) break;
       }
       final delay = _retryBaseDelay * (1 << attempt);
-      _record('retry ${attempt + 1}/$maxRetries 等 ${delay.inMilliseconds}ms：$lastError');
+      _record(
+        'retry ${attempt + 1}/$maxRetries 等 ${delay.inMilliseconds}ms：$lastError',
+      );
       await Future<void>.delayed(delay);
     }
     if (lastError is HttpException) throw lastError;
@@ -356,6 +375,7 @@ class SiteClientImpl implements SiteClient {
     String? referer,
     String accept = 'text/html',
     Map<String, String>? headers,
+
     /// 非 null 时把响应正文按字节塞进它，不尝试当文本解码。
     ///
     /// 图片走这条路：先按 UTF-8 解码再编码回去会破坏字节，
@@ -378,10 +398,15 @@ class SiteClientImpl implements SiteClient {
       raw.connectionFactory = (uri, proxyHost, proxyPort) async {
         // 走代理时不接管；HTTPS 代理要的是 CONNECT 域名。
         if (proxyHost != null) {
-          final s = await io.Socket.connect(proxyHost, proxyPort ?? 443,
-              timeout: _timeout);
+          final s = await io.Socket.connect(
+            proxyHost,
+            proxyPort ?? 443,
+            timeout: _timeout,
+          );
           return io.ConnectionTask.fromSocket<io.Socket>(
-              Future.value(s), () {});
+            Future.value(s),
+            () {},
+          );
         }
         final secure = await connectViaIp(
           attempt.ip!,
@@ -390,7 +415,9 @@ class SiteClientImpl implements SiteClient {
           connectTimeout: _timeout,
         );
         return io.ConnectionTask.fromSocket<io.SecureSocket>(
-            Future.value(secure), () {});
+          Future.value(secure),
+          () {},
+        );
       };
     } else {
       // 系统 DNS：不接管，但要显式声明直连，否则 HttpClient 会自动套用
@@ -408,10 +435,19 @@ class SiteClientImpl implements SiteClient {
         req.headers.set(io.HttpHeaders.userAgentHeader, Site.userAgent);
         req.headers.set(io.HttpHeaders.acceptHeader, accept);
         req.headers.set('accept-language', 'en-US,en;q=0.9');
-        if (referer != null) req.headers.set(io.HttpHeaders.refererHeader, referer);
+        if (referer != null) {
+          req.headers.set(io.HttpHeaders.refererHeader, referer);
+        }
         headers?.forEach((k, v) => req.headers.set(k, v));
-        final cookie = _cookieHeader(current.host);
-        if (cookie.isNotEmpty) req.headers.set(io.HttpHeaders.cookieHeader, cookie);
+        final callerCookie =
+            req.headers.value(io.HttpHeaders.cookieHeader) ?? '';
+        final cookie = mergeCookieHeaders(
+          _cookieHeader(current.host),
+          callerCookie,
+        );
+        if (cookie.isNotEmpty) {
+          req.headers.set(io.HttpHeaders.cookieHeader, cookie);
+        }
 
         final res = await req.close().timeout(_timeout);
         _absorbCookies(res, current.host);
@@ -435,9 +471,11 @@ class SiteClientImpl implements SiteClient {
         // 二进制直出：不解码、不建字符串。
         if (rawOut != null) {
           rawOut.addAll(bytes);
-          _record('${res.statusCode} ${bytes.length}B '
-              '${sw.elapsedMilliseconds}ms '
-              '${attempt.ip ?? attempt.label} $current');
+          _record(
+            '${res.statusCode} ${bytes.length}B '
+            '${sw.elapsedMilliseconds}ms '
+            '${attempt.ip ?? attempt.label} $current',
+          );
           return HttpResult(
             status: res.statusCode,
             body: '',
@@ -453,9 +491,11 @@ class SiteClientImpl implements SiteClient {
           url: current.toString(),
           elapsed: sw.elapsed,
         );
-        _record('${result.status} ${result.body.length}B '
-            '${result.elapsed.inMilliseconds}ms '
-            '${attempt.ip ?? attempt.label} $current');
+        _record(
+          '${result.status} ${result.body.length}B '
+          '${result.elapsed.inMilliseconds}ms '
+          '${attempt.ip ?? attempt.label} $current',
+        );
         if (result.looksLikeChallenge) {
           _record('  ⚠ 疑似 ddos-guard 挑战页（${result.body.length}B）');
         }
@@ -555,13 +595,9 @@ enum _AttemptKind {
 }
 
 class _Attempt {
-  const _Attempt.direct()
-      : kind = _AttemptKind.direct,
-        ip = null;
+  const _Attempt.direct() : kind = _AttemptKind.direct, ip = null;
 
-  const _Attempt.proxy()
-      : kind = _AttemptKind.proxy,
-        ip = null;
+  const _Attempt.proxy() : kind = _AttemptKind.proxy, ip = null;
 
   const _Attempt.ip(String this.ip) : kind = _AttemptKind.ip;
 
@@ -569,10 +605,10 @@ class _Attempt {
   final String? ip;
 
   String get label => switch (kind) {
-        _AttemptKind.direct => '系统DNS',
-        _AttemptKind.proxy => '代理',
-        _AttemptKind.ip => 'IP',
-      };
+    _AttemptKind.direct => '系统DNS',
+    _AttemptKind.proxy => '代理',
+    _AttemptKind.ip => 'IP',
+  };
 }
 
 /// 平台工厂：原生实现。
@@ -616,14 +652,14 @@ class DomainCookie {
 
   /// 序列化（用于持久化到 prefs）。
   Map<String, dynamic> toJson() => {
-        'n': name,
-        'v': value,
-        if (expiresAt != null) 'e': expiresAt!.millisecondsSinceEpoch,
-        if (path != null) 'p': path,
-        if (domain != null) 'd': domain,
-        if (secure) 's': 1,
-        if (httpOnly) 'h': 1,
-      };
+    'n': name,
+    'v': value,
+    if (expiresAt != null) 'e': expiresAt!.millisecondsSinceEpoch,
+    if (path != null) 'p': path,
+    if (domain != null) 'd': domain,
+    if (secure) 's': 1,
+    if (httpOnly) 'h': 1,
+  };
 
   static DomainCookie? fromJson(Map<String, dynamic> m) {
     final n = m['n'] as String?;
@@ -722,17 +758,3 @@ class DomainCookie {
     }
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../domain/ranked_entry.dart';
 import '../../ui/components.dart';
+import '../../ui/net_image.dart';
 import '../../ui/tokens.dart';
 
 /// 作者排行榜页（`/top-model/`）。
@@ -57,31 +58,29 @@ class _ArtistRankingPageState extends ConsumerState<ArtistRankingPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? ErrorState(message: _error!, onRetry: _load)
-              : _items.isEmpty
-                  ? const EmptyState(
-                      icon: Icons.leaderboard_outlined,
-                      title: '没拿到排行数据',
-                      message: '站点可能改版了，稍后重试',
-                    )
-                  : GridView.builder(
-                      padding: const EdgeInsets.fromLTRB(
-                        R34Space.page,
-                        R34Space.x3,
-                        R34Space.page,
-                        R34Space.x8,
-                      ),
-                      gridDelegate:
-                          const SliverGridDelegateWithMaxCrossAxisExtent(
-                        maxCrossAxisExtent: 140,
-                        childAspectRatio: 0.68,
-                        crossAxisSpacing: R34Space.grid,
-                        mainAxisSpacing: R34Space.x3,
-                      ),
-                      itemCount: _items.length,
-                      itemBuilder: (context, i) =>
-                          _ArtistCard(entry: _items[i]),
-                    ),
+          ? ErrorState(message: _error!, onRetry: _load)
+          : _items.isEmpty
+          ? const EmptyState(
+              icon: Icons.leaderboard_outlined,
+              title: '没拿到排行数据',
+              message: '站点可能改版了，稍后重试',
+            )
+          : GridView.builder(
+              padding: const EdgeInsets.fromLTRB(
+                R34Space.page,
+                R34Space.x3,
+                R34Space.page,
+                R34Space.x8,
+              ),
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 140,
+                childAspectRatio: 0.68,
+                crossAxisSpacing: R34Space.grid,
+                mainAxisSpacing: R34Space.x3,
+              ),
+              itemCount: _items.length,
+              itemBuilder: (context, i) => _ArtistCard(entry: _items[i]),
+            ),
     );
   }
 }
@@ -227,65 +226,65 @@ class _CharacterRankingPageState extends ConsumerState<CharacterRankingPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? ErrorState(message: _error!, onRetry: _load)
-              : ListView.separated(
+          ? ErrorState(message: _error!, onRetry: _load)
+          : ListView.separated(
+              padding: const EdgeInsets.fromLTRB(
+                R34Space.page,
+                R34Space.x3,
+                R34Space.page,
+                R34Space.x8,
+              ),
+              itemCount: _works.length,
+              separatorBuilder: (context, i) =>
+                  const SizedBox(height: R34Space.x2),
+              itemBuilder: (context, i) {
+                final w = _works[i];
+                return SurfaceCard(
+                  radius: R34Radius.md,
                   padding: const EdgeInsets.fromLTRB(
-                    R34Space.page,
+                    R34Space.x4,
                     R34Space.x3,
-                    R34Space.page,
-                    R34Space.x8,
+                    R34Space.x3,
+                    R34Space.x3,
                   ),
-                  itemCount: _works.length,
-                  separatorBuilder: (context, i) =>
-                      const SizedBox(height: R34Space.x2),
-                  itemBuilder: (context, i) {
-                    final w = _works[i];
-                    return SurfaceCard(
-                      radius: R34Radius.md,
-                      padding: const EdgeInsets.fromLTRB(
-                        R34Space.x4,
-                        R34Space.x3,
-                        R34Space.x3,
-                        R34Space.x3,
-                      ),
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (context) => CharacterWorkRankingPage(work: w),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (context) => CharacterWorkRankingPage(work: w),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _pretty(w.name),
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            if (w.countText.isNotEmpty) ...[
+                              const SizedBox(height: R34Space.x1),
+                              Text(
+                                w.countText,
+                                style: const TextStyle(
+                                  fontSize: 11.5,
+                                  color: R34Color.inkFaint,
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  _pretty(w.name),
-                                  style: Theme.of(context).textTheme.titleSmall,
-                                ),
-                                if (w.countText.isNotEmpty) ...[
-                                  const SizedBox(height: R34Space.x1),
-                                  Text(
-                                    w.countText,
-                                    style: const TextStyle(
-                                      fontSize: 11.5,
-                                      color: R34Color.inkFaint,
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                          const Icon(
-                            Icons.chevron_right_rounded,
-                            size: 20,
-                            color: R34Color.inkFaint,
-                          ),
-                        ],
+                      const Icon(
+                        Icons.chevron_right_rounded,
+                        size: 20,
+                        color: R34Color.inkFaint,
                       ),
-                    );
-                  },
-                ),
+                    ],
+                  ),
+                );
+              },
+            ),
     );
   }
 }
@@ -343,23 +342,23 @@ class _CharacterWorkRankingPageState
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? ErrorState(message: _error!, onRetry: _load)
-              : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(
-                    R34Space.page,
-                    R34Space.x3,
-                    R34Space.page,
-                    R34Space.x8,
-                  ),
-                  itemCount: _items.length,
-                  separatorBuilder: (context, i) =>
-                      const SizedBox(height: R34Space.x2),
-                  itemBuilder: (context, i) => SurfaceCard(
-                    radius: R34Radius.md,
-                    padding: EdgeInsets.zero,
-                    child: _RankRow(entry: _items[i], maxRatio: 1),
-                  ),
-                ),
+          ? ErrorState(message: _error!, onRetry: _load)
+          : ListView.separated(
+              padding: const EdgeInsets.fromLTRB(
+                R34Space.page,
+                R34Space.x3,
+                R34Space.page,
+                R34Space.x8,
+              ),
+              itemCount: _items.length,
+              separatorBuilder: (context, i) =>
+                  const SizedBox(height: R34Space.x2),
+              itemBuilder: (context, i) => SurfaceCard(
+                radius: R34Radius.md,
+                padding: EdgeInsets.zero,
+                child: _RankRow(entry: _items[i], maxRatio: 1),
+              ),
+            ),
     );
   }
 }
@@ -449,8 +448,7 @@ class _RankRow extends StatelessWidget {
                     ),
                   ),
                   if (entry.fullName.isNotEmpty &&
-                      entry.fullName.toLowerCase() !=
-                          entry.name.toLowerCase())
+                      entry.fullName.toLowerCase() != entry.name.toLowerCase())
                     Text(
                       entry.fullName,
                       maxLines: 1,
@@ -467,7 +465,8 @@ class _RankRow extends StatelessWidget {
                     ClipRRect(
                       borderRadius: BorderRadius.circular(R34Radius.pill),
                       child: LinearProgressIndicator(
-                        value: entry.viewsRatio / (maxRatio <= 0 ? 1 : maxRatio),
+                        value:
+                            entry.viewsRatio / (maxRatio <= 0 ? 1 : maxRatio),
                         minHeight: 3,
                         backgroundColor: R34Color.surfaceHigh,
                       ),
@@ -529,12 +528,7 @@ class _Thumb extends StatelessWidget {
       ),
     );
     if (url.isEmpty) return ph;
-    return Image.network(
-      url,
-      fit: BoxFit.cover,
-      errorBuilder: (context, e, s) => ph,
-      loadingBuilder: (context, child, p) => p == null ? child : ph,
-    );
+    return NetImage(url: url, showBroken: false, fadeIn: Duration.zero);
   }
 }
 

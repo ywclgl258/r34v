@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app/providers.dart';
@@ -11,6 +13,7 @@ import 'data/local/background_transfer.dart';
 import 'data/local/library_store.dart';
 import 'features/settings/update_controller.dart';
 import 'ui/glass.dart';
+import 'ui/net_image.dart';
 import 'ui/theme.dart';
 
 Future<void> main() async {
@@ -21,6 +24,20 @@ Future<void> main() async {
   // 后台传输（缓存/下载）的前台服务通道要在这里建好，
   // 否则第一次 startService 会因为通道未注册而失败。
   BackgroundTransfer.init();
+
+  // 封面磁盘缓存。
+  //
+  // 内存 LRU 一重启就空了，二进 App 又要重新拉一遍封面。这里挂一个
+  // 磁盘层：URL → 文件，最多占 200MB，超出按最后访问时间淘汰。
+  // 失败不阻断启动（拿不到目录就一直用内存缓存）。
+  try {
+    final cacheDir = await getApplicationCacheDirectory();
+    ImageByteCache.instance.attachDisk(
+      ImageDiskCache(Directory('${cacheDir.path}/covers')),
+    );
+  } catch (_) {
+    // Web 或权限异常时没有磁盘缓存，功能不受影响
+  }
 
   final prefs = await SharedPreferences.getInstance();
   // 恢复上次保存的播放器代理（libmpv 不认系统代理，必须每次启动告诉它）

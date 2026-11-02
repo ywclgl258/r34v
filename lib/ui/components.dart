@@ -10,7 +10,12 @@ class SectionHeader extends StatelessWidget {
     this.count,
     this.actionLabel,
     this.onAction,
-    this.padding = const EdgeInsets.fromLTRB(R34Space.page, 28, R34Space.page, 12),
+    this.padding = const EdgeInsets.fromLTRB(
+      R34Space.page,
+      28,
+      R34Space.page,
+      12,
+    ),
   });
 
   final String title;
@@ -26,21 +31,21 @@ class SectionHeader extends StatelessWidget {
       child: Row(
         children: [
           Text(
-            title.toUpperCase(),
-            style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.6,
-                  color: R34Color.inkMuted,
-                ),
+            title,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontSize: 17,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0,
+              color: R34Color.ink,
+            ),
           ),
           if (count != null) ...[
             const SizedBox(width: 8),
             Text(
               '$count',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: R34Color.inkFaint,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: R34Color.inkFaint),
             ),
           ],
           const Spacer(),
@@ -226,9 +231,9 @@ class EmptyState extends StatelessWidget {
                   message!,
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: R34Color.inkMuted,
-                        height: 1.55,
-                      ),
+                    color: R34Color.inkMuted,
+                    height: 1.55,
+                  ),
                 ),
               ),
             ],
@@ -307,7 +312,7 @@ class PillTag extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
       decoration: BoxDecoration(
         color: background,
-        borderRadius: BorderRadius.circular(R34Radius.pill),
+        borderRadius: BorderRadius.circular(R34Radius.sm),
         border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
       ),
       child: Text(
@@ -397,7 +402,7 @@ class _PillTab extends StatelessWidget {
       curve: R34Motion.easeOut,
       decoration: BoxDecoration(
         color: selected ? R34Color.ink : R34Color.surface,
-        borderRadius: BorderRadius.circular(R34Radius.pill),
+        borderRadius: BorderRadius.circular(R34Radius.sm),
         border: Border.all(
           color: selected ? Colors.transparent : R34Color.hairline,
         ),
@@ -416,7 +421,9 @@ class _PillTab extends StatelessWidget {
       child: Material(
         type: MaterialType.transparency,
         child: InkWell(
-          customBorder: const StadiumBorder(),
+          customBorder: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(R34Radius.sm),
+          ),
           onTap: onTap,
           splashColor: selected ? Colors.black26 : R34Color.accentSoft,
           highlightColor: Colors.transparent,
@@ -462,9 +469,9 @@ class MetaItem extends StatelessWidget {
         const SizedBox(width: 4),
         Text(
           text,
-          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: R34Color.inkMuted,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.labelMedium?.copyWith(color: R34Color.inkMuted),
         ),
       ],
     );

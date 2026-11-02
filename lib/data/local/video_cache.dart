@@ -44,29 +44,32 @@ class CachedVideo {
   bool get fileExists => File(filePath).existsSync();
 
   Map<String, dynamic> toJson() => {
-        'id': videoId,
-        'title': title,
-        'path': filePath,
-        'bytes': bytes,
-        'q': quality,
-        'at': createdAt.millisecondsSinceEpoch,
-        'thumb': thumb,
-        'dur': durationSeconds,
-      };
+    'id': videoId,
+    'title': title,
+    'path': filePath,
+    'bytes': bytes,
+    'q': quality,
+    'at': createdAt.millisecondsSinceEpoch,
+    'thumb': thumb,
+    'dur': durationSeconds,
+  };
 
   static CachedVideo fromJson(Map<String, dynamic> j) => CachedVideo(
-        videoId: j['id'] as String? ?? '',
-        title: j['title'] as String? ?? '',
-        filePath: j['path'] as String? ?? '',
-        bytes: (j['bytes'] as num?)?.toInt() ?? 0,
-        quality: j['q'] as String? ?? '',
-        createdAt: DateTime.fromMillisecondsSinceEpoch((j['at'] as num?)?.toInt() ?? 0),
-        thumb: j['thumb'] as String? ?? '',
-        durationSeconds: (j['dur'] as num?)?.toInt() ?? 0,
-      );
+    videoId: j['id'] as String? ?? '',
+    title: j['title'] as String? ?? '',
+    filePath: j['path'] as String? ?? '',
+    bytes: (j['bytes'] as num?)?.toInt() ?? 0,
+    quality: j['q'] as String? ?? '',
+    createdAt: DateTime.fromMillisecondsSinceEpoch(
+      (j['at'] as num?)?.toInt() ?? 0,
+    ),
+    thumb: j['thumb'] as String? ?? '',
+    durationSeconds: (j['dur'] as num?)?.toInt() ?? 0,
+  );
 
   @override
-  String toString() => 'CachedVideo($videoId, $quality, ${megabytes.toStringAsFixed(0)}MB)';
+  String toString() =>
+      'CachedVideo($videoId, $quality, ${megabytes.toStringAsFixed(0)}MB)';
 }
 
 /// 缓存进度。
@@ -93,29 +96,36 @@ class CacheProgress {
 /// 视频缓存。
 ///
 /// 设计取向是「**自动、无感**」而不是「手动下载」：
-/// - 看过一段时间的视频，自动缓存本次播放的清晰度；
-/// - 收藏的视频，自动缓存；
+/// - 自动缓存开启时，边下边播完整抓取的视频会入库；
+/// - 也可在播放页手动缓存本次播放的清晰度；
 /// - 播放时优先用本地文件，没有才走网络。
 ///
 /// 为什么不直接边播边缓存：站点直链带 `v-acctoken`，用 `Range` 分片抓很容易
-/// 在 token 过期时拿到半截脏文件。干脆整段下载到 `.part`，校验大小后再改名，
-/// 失败就删掉重来——宁可多花一次流量，也不要一个播到一半坏掉的文件。
+/// 在 token 过期时拿到半截脏文件。整段下载到 `.part`，校验完整后再改名；
+/// 失败或取消时保留 `.part`，下次通过 Range 断点续传。
 class VideoCache {
-  VideoCache(this._prefs, {DnsOverHttpsConnector? connector}) {
-    _dio = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 20),
-      receiveTimeout: const Duration(minutes: 10),
-      headers: {
-        'User-Agent': Site.userAgent,
-        'Referer': '${Site.base}/',
-      },
-    ));
+  VideoCache(
+    this._prefs, {
+    DnsOverHttpsConnector? connector,
+    Dio? dio,
+    Directory? cacheDirectory,
+  }) : _cacheDirectoryOverride = cacheDirectory {
+    _dio =
+        dio ??
+        Dio(
+          BaseOptions(
+            connectTimeout: const Duration(seconds: 20),
+            receiveTimeout: const Duration(minutes: 10),
+            headers: {'User-Agent': Site.userAgent, 'Referer': '${Site.base}/'},
+          ),
+        );
     // 装上 DoH 连接器后，缓存下载和页面浏览走同一套解析，
-    // 不会出现「页面能开、下载连不上」这种割裂。
-    applyProxyToDio(_dio, '', connector: connector);
+    // 不会出现「页面能开、下载连不上」这种割裂。测试注入 Dio 时不改其配置。
+    if (dio == null) applyProxyToDio(_dio, '', connector: connector);
   }
 
   final SharedPreferences _prefs;
+  final Directory? _cacheDirectoryOverride;
 
   static const _kIndex = 'video_cache_v1';
   static const _kAutoCache = 'cache_auto_enabled';
@@ -154,8 +164,10 @@ class VideoCache {
     }
   }
 
-  Future<void> _saveIndex(List<CachedVideo> list) =>
-      _prefs.setString(_kIndex, jsonEncode(list.map((e) => e.toJson()).toList()));
+  Future<void> _saveIndex(List<CachedVideo> list) => _prefs.setString(
+    _kIndex,
+    jsonEncode(list.map((e) => e.toJson()).toList()),
+  );
 
   CachedVideo? find(String videoId) {
     for (final e in loadIndex()) {
@@ -240,11 +252,13 @@ class VideoCache {
   }) async {
     if (isCached(videoId)) {
       final existing = find(videoId)!;
-      onProgress?.call(CacheProgress(
-        received: existing.bytes,
-        total: existing.bytes,
-        done: true,
-      ));
+      onProgress?.call(
+        CacheProgress(
+          received: existing.bytes,
+          total: existing.bytes,
+          done: true,
+        ),
+      );
       return existing;
     }
 
@@ -273,12 +287,11 @@ class VideoCache {
     }
 
     try {
-      final res = await _dio.download(
+      final res = await _dio.get<ResponseBody>(
         url,
-        part.path,
         cancelToken: cancelToken,
-        deleteOnError: false,
         options: Options(
+          responseType: ResponseType.stream,
           headers: {
             // 反盗链：站点那一层会校验 Referer（实测外站直接 403）。
             // CDN 那一层实测不校验，但带上无害。
@@ -286,39 +299,56 @@ class VideoCache {
             if (resumeFrom > 0) 'Range': 'bytes=$resumeFrom-',
           },
         ),
-        onReceiveProgress: (received, total) {
-          // received 是**本次**已接收的，要加上续传起点才是真实进度
-          onProgress?.call(CacheProgress(
-            received: resumeFrom + received,
-            total: total > 0 ? resumeFrom + total : -1,
-          ));
-        },
       );
 
-      // 206 = 续传成功；200 = 服务端忽略了 Range，返回的是完整文件
-      final ranged = res.statusCode == 206;
-      if (res.statusCode != 200 && res.statusCode != 206) {
+      final ranged = res.statusCode == HttpStatus.partialContent;
+      if (res.statusCode != HttpStatus.ok && !ranged) {
         throw HttpException('下载失败：HTTP ${res.statusCode}');
       }
-      if (resumeFrom > 0 && !ranged) {
-        // 服务端没按 Range 返回，我们往里追加会拼出坏文件。
-        // 这种情况只能整下重来——但至少已经浪费过一次，记下来。
-        await part.delete();
-        throw HttpException('服务端不支持断点续传，已重新开始');
+      // 服务端忽略 Range 时返回的是完整文件，必须覆盖旧 part，不能追加。
+      if (!ranged) resumeFrom = 0;
+
+      final body = res.data;
+      if (body == null) throw const HttpException('下载响应为空');
+      final responseBytes = int.tryParse(
+        res.headers.value(HttpHeaders.contentLengthHeader) ?? '',
+      );
+      final contentRange =
+          res.headers.value(HttpHeaders.contentRangeHeader) ?? '';
+      final totalFromRange = int.tryParse(
+        RegExp(r'/(\d+)\s*$').firstMatch(contentRange)?.group(1) ?? '',
+      );
+      final expectedSize = ranged
+          ? (totalFromRange ??
+                (responseBytes == null ? null : resumeFrom + responseBytes))
+          : responseBytes;
+
+      final raf = await part.open(
+        mode: ranged ? FileMode.writeOnlyAppend : FileMode.writeOnly,
+      );
+      var received = 0;
+      try {
+        await for (final chunk in body.stream) {
+          await raf.writeFrom(chunk);
+          received += chunk.length;
+          onProgress?.call(
+            CacheProgress(
+              received: resumeFrom + received,
+              total: expectedSize ?? -1,
+            ),
+          );
+        }
+        await raf.flush();
+      } finally {
+        await raf.close();
       }
 
       final size = await part.length();
       if (size <= 0) {
-        throw HttpException('下载得到的文件是空的');
+        throw const HttpException('下载得到的文件是空的');
       }
-
-      // 有 Content-Length 时校验一下，防止半截文件被当成完整缓存
-      final expected = res.headers.value('content-length');
-      if (expected != null) {
-        final want = int.tryParse(expected);
-        if (want != null && want != size) {
-          throw HttpException('文件不完整：期望 $want 字节，实际 $size');
-        }
+      if (expectedSize != null && expectedSize != size) {
+        throw HttpException('文件不完整：期望 $expectedSize 字节，实际 $size');
       }
 
       if (await target.exists()) await target.delete();
@@ -342,8 +372,8 @@ class VideoCache {
 
       onProgress?.call(CacheProgress(received: size, total: size, done: true));
       return entry;
-    } catch (e) {
-      if (await part.exists()) await part.delete();
+    } catch (_) {
+      // 网络失败、取消和短响应都保留 .part，下次用 Range 继续。
       rethrow;
     }
   }
@@ -371,7 +401,9 @@ class VideoCache {
 
     // 同 id 同清晰度已有正式缓存就不动
     final existing = find(videoId);
-    if (existing != null && existing.fileExists && existing.filePath == target.path) {
+    if (existing != null &&
+        existing.fileExists &&
+        existing.filePath == target.path) {
       return existing;
     }
 
@@ -405,8 +437,12 @@ class VideoCache {
   }
 
   Future<Directory> _cacheDir() async {
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory(p.join(base.path, 'video_cache'));
+    final override = _cacheDirectoryOverride;
+    final dir =
+        override ??
+        Directory(
+          p.join((await getApplicationSupportDirectory()).path, 'video_cache'),
+        );
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
   }
@@ -425,4 +461,3 @@ class VideoCache {
     }
   }
 }
-

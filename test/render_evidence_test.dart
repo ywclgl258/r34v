@@ -14,6 +14,10 @@ import 'package:r34v/domain/video_card.dart';
 import 'package:r34v/domain/video_detail.dart';
 import 'package:r34v/features/player/player_page.dart';
 import 'package:r34v/features/feed/feed_page.dart';
+import 'package:r34v/features/library/library_page.dart';
+import 'package:r34v/features/search/search_page.dart';
+import 'package:r34v/features/settings/settings_page.dart';
+import 'package:r34v/features/shell/root_shell.dart';
 import 'package:r34v/ui/net_image.dart';
 import 'package:r34v/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -43,15 +47,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 无输出、不超时。golden matcher 内部对此做了处理，是这里唯一能用的路。
 class _FakeApi extends Rule34Api {
   @override
-  Future<VideoDetail> fetchDetail(String p) async => const DetailParser()
-      .parse(File('test/fixtures/video-4703101.html').readAsStringSync())!;
+  Future<VideoDetail> fetchDetail(String p) async => const DetailParser().parse(
+    File('test/fixtures/video-4703101.html').readAsStringSync(),
+  )!;
 
   @override
-  Future<FeedPage> fetchFeed(FeedRequest request) async =>
-      const ListingParser().parse(
-        File('test/fixtures/latest-p1.html').readAsStringSync(),
-        request,
-      );
+  Future<FeedPage> fetchFeed(FeedRequest request) async => const ListingParser()
+      .parse(File('test/fixtures/latest-p1.html').readAsStringSync(), request);
 
   @override
   Future<List<FeedLink>> fetchCategories() async => const [];
@@ -84,8 +86,10 @@ Uint8List _pngFrom(int w, int h, List<int> rgb) {
     final last = i + take >= rgb.length ? 1 : 0;
     z.addAll([
       last,
-      take & 0xFF, (take >> 8) & 0xFF,
-      (~take) & 0xFF, ((~take) >> 8) & 0xFF,
+      take & 0xFF,
+      (take >> 8) & 0xFF,
+      (~take) & 0xFF,
+      ((~take) >> 8) & 0xFF,
     ]);
     z.addAll(rgb.sublist(i, i + take));
     i += take;
@@ -96,8 +100,12 @@ Uint8List _pngFrom(int w, int h, List<int> rgb) {
   return Uint8List.fromList(out);
 }
 
-List<int> _be32(int v) =>
-    [(v >> 24) & 0xFF, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF];
+List<int> _be32(int v) => [
+  (v >> 24) & 0xFF,
+  (v >> 16) & 0xFF,
+  (v >> 8) & 0xFF,
+  v & 0xFF,
+];
 
 int _crc32(List<int> data) {
   var c = 0xFFFFFFFF;
@@ -139,8 +147,8 @@ void main() {
   var counter = 0;
 
   setUpAll(() {
-    NetImage.imageOverride =
-        (url) => MemoryImage(cache.putIfAbsent(url, () => stripedPng(counter++)));
+    NetImage.imageOverride = (url) =>
+        MemoryImage(cache.putIfAbsent(url, () => stripedPng(counter++)));
   });
   tearDownAll(() => NetImage.imageOverride = null);
 
@@ -157,25 +165,30 @@ void main() {
     tester.view.devicePixelRatio = 3.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(ProviderScope(
-      overrides: [
-        rule34ApiProvider.overrideWithValue(_FakeApi()),
-        sharedPrefsProvider.overrideWithValue(prefs),
-      ],
-      child: MaterialApp(theme: buildAppTheme(), home: home),
-    ));
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          rule34ApiProvider.overrideWithValue(_FakeApi()),
+          sharedPrefsProvider.overrideWithValue(prefs),
+        ],
+        child: MaterialApp(theme: buildAppTheme(), home: home),
+      ),
+    );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 800));
   }
 
-  testWidgets('渲染列表页截图', (tester) async {
+  testWidgets('渲染新首页与导航截图', (tester) async {
     await pumpAt(
       tester,
-      const FeedPageTab(kind: FeedKind.latest, showBackButton: false),
+      const RootShell(
+        location: '/feed/latest',
+        child: FeedPageTab(kind: FeedKind.latest, showBackButton: false),
+      ),
     );
     await expectLater(
-      find.byType(FeedPageTab),
-      matchesGoldenFile('../evidence/preview/06-feed-2col.png'),
+      find.byType(RootShell),
+      matchesGoldenFile('../evidence/preview/06-home-redesign.png'),
     );
   }, skip: !_enabled);
 
@@ -184,6 +197,30 @@ void main() {
     await expectLater(
       find.byType(PlayerPage),
       matchesGoldenFile('../evidence/preview/07-detail.png'),
+    );
+  }, skip: !_enabled);
+
+  testWidgets('渲染片库截图', (tester) async {
+    await pumpAt(tester, const LibraryPage());
+    await expectLater(
+      find.byType(LibraryPage),
+      matchesGoldenFile('../evidence/preview/08-library-redesign.png'),
+    );
+  }, skip: !_enabled);
+
+  testWidgets('渲染搜索截图', (tester) async {
+    await pumpAt(tester, const SearchPage());
+    await expectLater(
+      find.byType(SearchPage),
+      matchesGoldenFile('../evidence/preview/09-search-redesign.png'),
+    );
+  }, skip: !_enabled);
+
+  testWidgets('渲染设置截图', (tester) async {
+    await pumpAt(tester, const SettingsPage());
+    await expectLater(
+      find.byType(SettingsPage),
+      matchesGoldenFile('../evidence/preview/10-settings-redesign.png'),
     );
   }, skip: !_enabled);
 }

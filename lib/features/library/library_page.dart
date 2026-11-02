@@ -32,7 +32,9 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
   Widget build(BuildContext context) {
     final history = ref.watch(historyProvider);
     final videos = ref.watch(favoritesOfKindProvider(FavoriteKind.video));
-    final characters = ref.watch(favoritesOfKindProvider(FavoriteKind.character));
+    final characters = ref.watch(
+      favoritesOfKindProvider(FavoriteKind.character),
+    );
     final models = ref.watch(favoritesOfKindProvider(FavoriteKind.model));
     final tags = ref.watch(favoritesOfKindProvider(FavoriteKind.tag));
     final cached = ref.watch(cacheIndexProvider);
@@ -134,13 +136,20 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
     );
   }
 
-  static Future<bool> _confirm(BuildContext context, String msg) async {    final r = await showDialog<bool>(
+  static Future<bool> _confirm(BuildContext context, String msg) async {
+    final r = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         content: Text(msg),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('确定')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确定'),
+          ),
         ],
       ),
     );
@@ -205,8 +214,7 @@ class _HistoryList extends ConsumerWidget {
     }
     return ListView.separated(
       itemCount: entries.length,
-      separatorBuilder: (context, index) =>
-          const _RowDivider(),
+      separatorBuilder: (context, index) => const _RowDivider(),
       itemBuilder: (context, i) {
         final e = entries[i];
         final finished = e.isFinished;
@@ -232,7 +240,8 @@ class _HistoryList extends ConsumerWidget {
             tooltip: '从记录里移除',
             icon: const Icon(Icons.close_rounded, size: 18),
             color: R34Color.inkFaint,
-            onPressed: () => ref.read(historyProvider.notifier).remove(e.videoId),
+            onPressed: () =>
+                ref.read(historyProvider.notifier).remove(e.videoId),
           ),
           // e.path 是 /video/id/slug/ 形式，换成直达播放页
           onTap: () => context.push(e.path.replaceFirst('/video/', '/play/')),
@@ -258,22 +267,21 @@ class _FavoriteVideoList extends ConsumerWidget {
     }
     return ListView.separated(
       itemCount: entries.length,
-      separatorBuilder: (context, index) =>
-          const _RowDivider(),
+      separatorBuilder: (context, index) => const _RowDivider(),
       itemBuilder: (context, i) {
         final e = entries[i];
         return _MediaRow(
           thumb: e.thumb,
           title: e.title,
-          subtitle: [e.subtitle, _ago(e.addedAt)]
-              .where((s) => s.isNotEmpty)
-              .join('  ·  '),
+          subtitle: [
+            e.subtitle,
+            _ago(e.addedAt),
+          ].where((s) => s.isNotEmpty).join('  ·  '),
           trailing: IconButton(
             tooltip: '取消收藏',
             icon: const Icon(Icons.bookmark_rounded, size: 19),
             color: R34Color.accentBright,
-            onPressed: () =>
-                ref.read(favoritesProvider.notifier).toggle(e),
+            onPressed: () => ref.read(favoritesProvider.notifier).toggle(e),
           ),
           // e.path 是 /video/id/slug/ 形式，换成直达播放页
           onTap: () => context.push(e.path.replaceFirst('/video/', '/play/')),
@@ -433,9 +441,11 @@ class _FavoriteChipList extends ConsumerWidget {
         Text(
           kind == FavoriteKind.tag
               ? '提示：点标签看这个标签下的视频。标签规模很大（最热的有近两千页），'
-                  '收藏它比收藏单个视频更有用。'
+                    '收藏它比收藏单个视频更有用。'
               : '提示：点作者看他的全部作品。',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.outline),
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: scheme.outline),
         ),
       ],
     );
@@ -504,7 +514,7 @@ class _CachedList extends ConsumerWidget {
     if (entries.isEmpty) {
       return const _EmptyHint(
         icon: Icons.offline_pin_outlined,
-        text: '还没有缓存的视频\n收藏的视频和看过的长视频会自动缓存到本地',
+        text: '还没有缓存的视频\n可在播放页手动缓存；开启自动缓存后，完整抓取的视频会保存到本地',
       );
     }
 
@@ -524,9 +534,9 @@ class _CachedList extends ConsumerWidget {
             children: [
               Text(
                 '共 ${entries.length} 个 · ${totalMb.toStringAsFixed(0)} MB',
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: R34Color.inkMuted,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.labelMedium?.copyWith(color: R34Color.inkMuted),
               ),
               const Spacer(),
               TextButton(
@@ -560,7 +570,8 @@ class _CachedList extends ConsumerWidget {
           _MediaRow(
             thumb: e.thumb,
             title: e.title,
-            subtitle: '${e.megabytes.toStringAsFixed(0)} MB  ·  ${_ago(e.createdAt)}'
+            subtitle:
+                '${e.megabytes.toStringAsFixed(0)} MB  ·  ${_ago(e.createdAt)}'
                 '${e.fileExists ? "" : "  ·  文件已丢失"}',
             subtitleColor: e.fileExists ? R34Color.inkFaint : scheme.error,
             overlay: Positioned(

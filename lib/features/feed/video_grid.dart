@@ -13,7 +13,7 @@ import '../../ui/tokens.dart';
 /// 比通用 [R34Space.grid]（10）再收 2dp：两列后卡片本身变宽，
 /// 同样 10dp 的缝在视觉上会显得比三列时更松。横向纵向用同一个值，
 /// 免得又出现「横向紧、纵向松」这种说不清的不齐。
-const double videoGridGap = 8.0;
+const double videoGridGap = R34Space.grid;
 
 /// 按屏宽决定每行几个视频。
 ///
@@ -67,7 +67,11 @@ double videoTileExtentFor(
 }
 
 /// 网格单元高度（按当前屏宽与列数推算）。
-double videoGridExtentFor(BuildContext context, double viewportWidth, int cols) {
+double videoGridExtentFor(
+  BuildContext context,
+  double viewportWidth,
+  int cols,
+) {
   final tileWidth =
       (viewportWidth - R34Space.page * 2 - videoGridGap * (cols - 1)) / cols;
   return videoTileExtentFor(context, tileWidth);

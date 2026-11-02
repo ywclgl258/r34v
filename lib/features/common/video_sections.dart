@@ -41,7 +41,6 @@ String fmtDuration(int seconds) {
   return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
 }
 
-
 /// 标签 chip：点进去看这个标签下的视频，长按收藏/取消收藏。
 ///
 /// 用长按而不是在 chip 上加一个小星标，是因为详情页标签有 20 多个，
@@ -72,10 +71,16 @@ class TagChip extends ConsumerWidget {
                 return Tooltip(
                   message: zh.isEmpty ? slug : '$zh · $slug',
                   child: ActionChip(
-                    avatar: fav ? const Icon(Icons.star_rounded, size: 15, color: R34Color.accentBright) : null,
+                    avatar: fav
+                        ? const Icon(
+                            Icons.star_rounded,
+                            size: 15,
+                            color: R34Color.accentBright,
+                          )
+                        : null,
                     label: Text(label),
-                    onPressed: () => context
-                        .push('/list/tag/${Uri.encodeComponent(slug)}'),
+                    onPressed: () =>
+                        context.push('/list/tag/${Uri.encodeComponent(slug)}'),
                   ),
                 );
               },
@@ -83,7 +88,13 @@ class TagChip extends ConsumerWidget {
           : Tooltip(
               message: slug,
               child: ActionChip(
-                avatar: fav ? const Icon(Icons.star_rounded, size: 15, color: R34Color.accentBright) : null,
+                avatar: fav
+                    ? const Icon(
+                        Icons.star_rounded,
+                        size: 15,
+                        color: R34Color.accentBright,
+                      )
+                    : null,
                 label: Text(original),
                 onPressed: () =>
                     context.push('/list/tag/${Uri.encodeComponent(slug)}'),
@@ -107,9 +118,16 @@ class ModelChip extends ConsumerWidget {
     return GestureDetector(
       onLongPress: () => toggleGroupFavorite(context, ref, key),
       child: ActionChip(
-        avatar: fav ? const Icon(Icons.star_rounded, size: 15, color: R34Color.accentBright) : null,
+        avatar: fav
+            ? const Icon(
+                Icons.star_rounded,
+                size: 15,
+                color: R34Color.accentBright,
+              )
+            : null,
         label: Text(prettySlug(slug)),
-        onPressed: () => context.push('/list/model/${Uri.encodeComponent(slug)}'),
+        onPressed: () =>
+            context.push('/list/model/${Uri.encodeComponent(slug)}'),
       ),
     );
   }
@@ -129,13 +147,17 @@ Future<void> toggleGroupFavorite(
     FavoriteKind.tag => 'tag',
     FavoriteKind.video => 'video',
   };
-  final now = await ref.read(favoritesProvider.notifier).toggle(FavoriteEntry(
-        kind: key.kind,
-        target: key.target,
-        title: prettySlug(key.target),
-        path: '/list/$segment/${Uri.encodeComponent(key.target)}',
-        addedAt: DateTime.now(),
-      ));
+  final now = await ref
+      .read(favoritesProvider.notifier)
+      .toggle(
+        FavoriteEntry(
+          kind: key.kind,
+          target: key.target,
+          title: prettySlug(key.target),
+          path: '/list/$segment/${Uri.encodeComponent(key.target)}',
+          addedAt: DateTime.now(),
+        ),
+      );
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
@@ -159,11 +181,7 @@ String prettySlug(String slug) => slug
 /// 抽出来是因为详情页有四组（角色/分类/作者/标签），
 /// 每组的排版完全一样，重复四遍既啰嗦又容易改漏。
 class GroupSection extends StatelessWidget {
-  const GroupSection({
-    required this.title,
-    required this.children,
-    this.hint,
-  });
+  const GroupSection({required this.title, required this.children, this.hint});
 
   final String title;
   final String? hint;
@@ -183,15 +201,19 @@ class GroupSection extends StatelessWidget {
                 const SizedBox(width: R34Space.x2 - 2),
                 Text(
                   hint!,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: R34Color.inkFaint,
-                      ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelSmall?.copyWith(color: R34Color.inkFaint),
                 ),
               ],
             ],
           ),
           const SizedBox(height: R34Space.x2 + 2),
-          Wrap(spacing: R34Space.x2, runSpacing: R34Space.x2, children: children),
+          Wrap(
+            spacing: R34Space.x2,
+            runSpacing: R34Space.x2,
+            children: children,
+          ),
         ],
       ),
     );
@@ -216,8 +238,16 @@ class CharacterChip extends ConsumerWidget {
       onLongPress: () => toggleGroupFavorite(context, ref, key),
       child: ActionChip(
         avatar: fav
-            ? const Icon(Icons.star_rounded, size: 15, color: R34Color.accentBright)
-            : const Icon(Icons.person_pin_outlined, size: 15, color: R34Color.inkFaint),
+            ? const Icon(
+                Icons.star_rounded,
+                size: 15,
+                color: R34Color.accentBright,
+              )
+            : const Icon(
+                Icons.person_pin_outlined,
+                size: 15,
+                color: R34Color.inkFaint,
+              ),
         label: Text(prettySlug(slug)),
         onPressed: () =>
             context.push('/list/character/${Uri.encodeComponent(slug)}'),
@@ -240,13 +270,17 @@ class UploaderRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        const Icon(Icons.cloud_upload_outlined, size: 16, color: R34Color.inkFaint),
+        const Icon(
+          Icons.cloud_upload_outlined,
+          size: 16,
+          color: R34Color.inkFaint,
+        ),
         const SizedBox(width: R34Space.x2 - 2),
         Text(
           '上传者',
-          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: R34Color.inkFaint,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.labelMedium?.copyWith(color: R34Color.inkFaint),
         ),
         const SizedBox(width: R34Space.x2 - 2),
         Flexible(
@@ -286,16 +320,27 @@ class DownloadSectionState extends ConsumerState<DownloadSection> {
     });
 
     final downloader = ref.read(videoDownloaderProvider);
-    final name = downloader.suggestedName(
-      title: widget.video.title,
-      quality: opt.label,
-      fileName: opt.fileName,
-    );
 
     try {
+      // 下载 token 会过期；即使用户在详情页停留很久，也以点击时的最新链接为准。
+      final fresh = await ref
+          .read(rule34ApiProvider)
+          .refreshStreams(widget.video);
+      if (!mounted) return;
+      final freshOpt = fresh.downloads
+          .where((x) => x.label == opt.label)
+          .firstOrNull;
+      if (freshOpt == null) {
+        throw StateError('${opt.label} 下载链接已不可用，请刷新详情');
+      }
+      final name = downloader.suggestedName(
+        title: fresh.title,
+        quality: freshOpt.label,
+        fileName: freshOpt.fileName,
+      );
       await downloader.start(
         videoId: widget.video.id,
-        url: opt.url,
+        url: freshOpt.url,
         suggestedName: name,
         onProgress: (received, total) {
           if (!mounted) return;
@@ -317,17 +362,17 @@ class DownloadSectionState extends ConsumerState<DownloadSection> {
         onError: (err) {
           if (!mounted) return;
           setState(() => _activeLabel = null);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('下载失败：$err')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('下载失败：$err')));
         },
       );
     } catch (e) {
       if (!mounted) return;
       setState(() => _activeLabel = null);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('下载失败：$e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('下载失败：$e')));
     }
   }
 
@@ -344,9 +389,9 @@ class DownloadSectionState extends ConsumerState<DownloadSection> {
             const SizedBox(width: R34Space.x2 - 2),
             Text(
               '存到设备下载目录',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: R34Color.inkFaint,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: R34Color.inkFaint),
             ),
           ],
         ),
@@ -380,11 +425,11 @@ class DownloadSectionState extends ConsumerState<DownloadSection> {
           Text(
             _total > 0
                 ? '${(_received / 1048576).toStringAsFixed(1)} / '
-                    '${(_total / 1048576).toStringAsFixed(1)} MB'
+                      '${(_total / 1048576).toStringAsFixed(1)} MB'
                 : '${(_received / 1048576).toStringAsFixed(1)} MB',
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: R34Color.inkFaint,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.labelSmall?.copyWith(color: R34Color.inkFaint),
           ),
         ],
       ],
@@ -409,9 +454,9 @@ class CommentSection extends StatelessWidget {
             const SizedBox(width: R34Space.x2 - 2),
             Text(
               '${comments.length}',
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: R34Color.inkFaint,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.labelMedium?.copyWith(color: R34Color.inkFaint),
             ),
           ],
         ),
@@ -428,8 +473,9 @@ class CommentSection extends StatelessWidget {
                   CircleAvatar(
                     radius: 13,
                     backgroundColor: R34Color.surfaceHigh,
-                    backgroundImage:
-                        c.avatarUrl.isEmpty ? null : NetworkImage(c.avatarUrl),
+                    backgroundImage: c.avatarUrl.isEmpty
+                        ? null
+                        : NetworkImage(c.avatarUrl),
                     child: c.avatarUrl.isEmpty
                         ? Text(
                             c.author.isEmpty ? '?' : c.author[0].toUpperCase(),

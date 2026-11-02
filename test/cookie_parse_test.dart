@@ -59,8 +59,11 @@ void main() {
       final c = DomainCookie.parse(
         'x=1; Max-Age=3600; Expires=Mon, 01 Jan 2001 00:00:00 GMT',
       );
-      expect(c!.isExpired(DateTime.now()), isFalse,
-          reason: 'Max-Age 是未来，应盖过已过的 Expires');
+      expect(
+        c!.isExpired(DateTime.now()),
+        isFalse,
+        reason: 'Max-Age 是未来，应盖过已过的 Expires',
+      );
     });
 
     test('Max-Age<=0 表示立刻失效', () {
@@ -92,6 +95,27 @@ void main() {
       final c = DomainCookie.parse('k=a=b=c; Path=/');
       expect(c!.name, 'k');
       expect(c.value, 'a=b=c');
+    });
+  });
+
+  group('请求 Cookie 合并', () {
+    test('保留 ddos-guard 与登录会话', () {
+      expect(
+        mergeCookieHeaders('__ddg1_=guard', 'PHPSESSID=session'),
+        '__ddg1_=guard; PHPSESSID=session',
+      );
+    });
+
+    test('同名 Cookie 由调用方会话优先', () {
+      expect(
+        mergeCookieHeaders('__ddg1_=guard; PHPSESSID=old', 'PHPSESSID=new'),
+        '__ddg1_=guard; PHPSESSID=new',
+      );
+    });
+
+    test('空输入与带等号的值不会损坏', () {
+      expect(mergeCookieHeaders('', 'token=a=b=c'), 'token=a=b=c');
+      expect(mergeCookieHeaders('', ''), isEmpty);
     });
   });
 

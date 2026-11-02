@@ -38,7 +38,9 @@ class FakeApi extends Rule34Api {
       lastSearchTarget = request.target;
       return parser.parse(fixture('search-zelda-p2.html'), request);
     }
-    final html = request.page <= 1 ? fixture('latest-p1.html') : fixture('latest-p2.html');
+    final html = request.page <= 1
+        ? fixture('latest-p1.html')
+        : fixture('latest-p2.html');
     return parser.parse(html, request);
   }
 
@@ -73,7 +75,8 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     prefs = await SharedPreferences.getInstance();
     // 不连网络图
-    VideoCardTile.imageProviderOverride = (url) => const AssetImage('assets/icon.png');
+    VideoCardTile.imageProviderOverride = (url) =>
+        const AssetImage('assets/icon.png');
   });
 
   tearDownAll(() {
@@ -103,29 +106,37 @@ void main() {
   });
 
   group('首页搜索入口', () {
-    testWidgets('首页标题栏直接有搜索框，不用先去发现页', (tester) async {
-      await tester.pumpWidget(wrap(
-        const FeedPageTab(kind: FeedKind.latest, showBackButton: false),
-        api: FakeApi(),
-        prefs: prefs,
-      ));
+    testWidgets('首页大封面提供搜索入口，不用先去发现页', (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          const FeedPageTab(kind: FeedKind.latest, showBackButton: false),
+          api: FakeApi(),
+          prefs: prefs,
+        ),
+      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.text('搜索视频、标签、作者'), findsOneWidget);
-      expect(find.widgetWithIcon(InkWell, Icons.search), findsOneWidget);
+      expect(find.text('R34V'), findsOneWidget);
+      expect(find.byTooltip('搜索'), findsOneWidget);
+      expect(
+        find.widgetWithIcon(IconButton, Icons.search_rounded),
+        findsOneWidget,
+      );
     });
 
     testWidgets('非首页列表不带搜索框（标题要放别的内容）', (tester) async {
-      await tester.pumpWidget(wrap(
-        const FeedPageTab(
-          kind: FeedKind.tag,
-          target: 'sex',
-          showBackButton: false,
+      await tester.pumpWidget(
+        wrap(
+          const FeedPageTab(
+            kind: FeedKind.tag,
+            target: 'sex',
+            showBackButton: false,
+          ),
+          api: FakeApi(),
+          prefs: prefs,
         ),
-        api: FakeApi(),
-        prefs: prefs,
-      ));
+      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -151,14 +162,18 @@ void main() {
     });
 
     testWidgets('未搜索时显示引导文案', (tester) async {
-      await tester.pumpWidget(wrap(const SearchPage(), api: FakeApi(), prefs: prefs));
+      await tester.pumpWidget(
+        wrap(const SearchPage(), api: FakeApi(), prefs: prefs),
+      );
       await tester.pump();
 
       expect(find.textContaining('输入关键词开始搜索'), findsOneWidget);
     });
 
     testWidgets('搜过的词进历史，清空后消失', (tester) async {
-      await tester.pumpWidget(wrap(const SearchPage(), api: FakeApi(), prefs: prefs));
+      await tester.pumpWidget(
+        wrap(const SearchPage(), api: FakeApi(), prefs: prefs),
+      );
       await tester.pump();
 
       await tester.enterText(find.byType(TextField), 'kirby');
@@ -173,7 +188,11 @@ void main() {
     testWidgets('带初始词进来会直接搜', (tester) async {
       final api = FakeApi();
       await tester.pumpWidget(
-        wrap(const SearchPage(initialQuery: 'zelda'), api: api, prefs: prefs),
+        wrap(
+          const SearchPage(initialQuery: 'zelda'),
+          api: api,
+          prefs: prefs,
+        ),
       );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
@@ -182,11 +201,13 @@ void main() {
     });
 
     testWidgets('搜索失败有提示与重试', (tester) async {
-      await tester.pumpWidget(wrap(
-        const SearchPage(initialQuery: 'x'),
-        api: FakeApi(failWith: HttpException('请求超时（20s）')),
-        prefs: prefs,
-      ));
+      await tester.pumpWidget(
+        wrap(
+          const SearchPage(initialQuery: 'x'),
+          api: FakeApi(failWith: HttpException('请求超时（20s）')),
+          prefs: prefs,
+        ),
+      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -197,10 +218,12 @@ void main() {
 
   group('片库分三类', () {
     testWidgets('四个分页：观看记录 / 视频 / 作者 / 标签', (tester) async {
-      await tester.pumpWidget(ProviderScope(
-        overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
-        child: const MaterialApp(home: LibraryPage()),
-      ));
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
+          child: const MaterialApp(home: LibraryPage()),
+        ),
+      );
       await tester.pump();
 
       // 页签名从「继续观看」改成「观看记录」：现在这一页列的是**全部**
@@ -213,25 +236,31 @@ void main() {
 
     testWidgets('收藏的分类各自显示，不混在一起', (tester) async {
       final store = LibraryStore(prefs);
-      await store.toggleFavorite(FavoriteEntry(
-        kind: FavoriteKind.model,
-        target: 'derpixon',
-        title: 'Derpixon',
-        path: '/list/model/derpixon',
-        addedAt: DateTime.now(),
-      ));
-      await store.toggleFavorite(FavoriteEntry(
-        kind: FavoriteKind.tag,
-        target: 'big-breasts',
-        title: 'Big Breasts',
-        path: '/list/tag/big-breasts',
-        addedAt: DateTime.now(),
-      ));
+      await store.toggleFavorite(
+        FavoriteEntry(
+          kind: FavoriteKind.model,
+          target: 'derpixon',
+          title: 'Derpixon',
+          path: '/list/model/derpixon',
+          addedAt: DateTime.now(),
+        ),
+      );
+      await store.toggleFavorite(
+        FavoriteEntry(
+          kind: FavoriteKind.tag,
+          target: 'big-breasts',
+          title: 'Big Breasts',
+          path: '/list/tag/big-breasts',
+          addedAt: DateTime.now(),
+        ),
+      );
 
-      await tester.pumpWidget(ProviderScope(
-        overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
-        child: const MaterialApp(home: LibraryPage()),
-      ));
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
+          child: const MaterialApp(home: LibraryPage()),
+        ),
+      );
       await tester.pump();
 
       // 计数出现在 tab 上
@@ -242,18 +271,22 @@ void main() {
 
     testWidgets('切到作者页能看到收藏的作者 chip', (tester) async {
       final store = LibraryStore(prefs);
-      await store.toggleFavorite(FavoriteEntry(
-        kind: FavoriteKind.model,
-        target: 'derpixon',
-        title: 'Derpixon',
-        path: '/list/model/derpixon',
-        addedAt: DateTime.now(),
-      ));
+      await store.toggleFavorite(
+        FavoriteEntry(
+          kind: FavoriteKind.model,
+          target: 'derpixon',
+          title: 'Derpixon',
+          path: '/list/model/derpixon',
+          addedAt: DateTime.now(),
+        ),
+      );
 
-      await tester.pumpWidget(ProviderScope(
-        overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
-        child: const MaterialApp(home: LibraryPage()),
-      ));
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
+          child: const MaterialApp(home: LibraryPage()),
+        ),
+      );
       await tester.pump();
 
       await tester.tap(find.text('作者 1'));
@@ -265,10 +298,12 @@ void main() {
     });
 
     testWidgets('作者页为空时给引导', (tester) async {
-      await tester.pumpWidget(ProviderScope(
-        overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
-        child: const MaterialApp(home: LibraryPage()),
-      ));
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
+          child: const MaterialApp(home: LibraryPage()),
+        ),
+      );
       await tester.pump();
 
       await tester.tap(find.text('作者 0'));

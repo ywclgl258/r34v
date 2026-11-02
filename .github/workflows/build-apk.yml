@@ -112,7 +112,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           HAVE_KEY: ${{ steps.signing.outputs.have_key }}
         run: |
-          # 只出 arm64 与 armv7：覆盖近十年的手机，省一半构建时间
+          # 只出 arm64：覆盖近十年的绝大多数手机，控制构建体积与时间
           if [ "$HAVE_KEY" = "true" ]; then
             flutter build apk --release \
               --target-platform android-arm64 \

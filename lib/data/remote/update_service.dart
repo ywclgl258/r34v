@@ -54,14 +54,16 @@ class UpdateException implements Exception {
   final String detail;
 
   /// 用户能看懂的一句话。
-  String get userMessage => message.isNotEmpty ? message : switch (failure) {
-        UpdateFailure.network => '网络不通，稍后再试',
-        UpdateFailure.rateLimited => 'GitHub 限流了，等几分钟再试',
-        UpdateFailure.badCredentials => '授权失效，请重新安装正式版',
-        UpdateFailure.forbidden => '没有访问权限（可能是仓库状态变化）',
-        UpdateFailure.noRelease => '暂时没有可用版本',
-        UpdateFailure.server => 'GitHub 服务异常，稍后再试',
-      };
+  String get userMessage => message.isNotEmpty
+      ? message
+      : switch (failure) {
+          UpdateFailure.network => '网络不通，稍后再试',
+          UpdateFailure.rateLimited => 'GitHub 限流了，等几分钟再试',
+          UpdateFailure.badCredentials => '授权失效，请重新安装正式版',
+          UpdateFailure.forbidden => '没有访问权限（可能是仓库状态变化）',
+          UpdateFailure.noRelease => '暂时没有可用版本',
+          UpdateFailure.server => 'GitHub 服务异常，稍后再试',
+        };
 
   @override
   String toString() => 'UpdateException($failure, $userMessage)';
@@ -69,8 +71,8 @@ class UpdateException implements Exception {
 
 /// 检查并下载 App 自身的新版本。
 ///
-/// 数据源是 GitHub Releases（仓库 `ywclgl258/r34v`）。每次 CI 构建都会把
-/// 签名过的 arm64 APK 传成 release asset，文件名形如 `R34V-v1.10.0.apk`。
+/// 数据源是 GitHub Releases（仓库 `ywclgl258/r34v`）。Release 中的 arm64 APK
+/// 文件名形如 `R34V-v1.10.0.apk`；CI 工作流本身只上传 Actions Artifact。
 ///
 /// ## 为什么不用 GitHub API 的 `/releases/latest`
 ///
@@ -82,8 +84,10 @@ class UpdateException implements Exception {
 /// 请求都带 `Accept: application/vnd.github+json`，不带的话老端点返回格式不同。
 class UpdateService {
   UpdateService({Dio? dio})
-      : _dio = dio ??
-            Dio(BaseOptions(
+    : _dio =
+          dio ??
+          Dio(
+            BaseOptions(
               connectTimeout: const Duration(seconds: 15),
               receiveTimeout: const Duration(seconds: 30),
               headers: {
@@ -91,7 +95,8 @@ class UpdateService {
                 'User-Agent': 'r34v-updater',
               },
               validateStatus: (s) => s != null && s < 500,
-            ));
+            ),
+          );
 
   final Dio _dio;
 
@@ -133,40 +138,40 @@ class UpdateService {
     }
 
     for (final raw in list) {
-        if (raw is! Map) continue;
-        // draft 是草稿、prerelease 是预发布，都不该推给普通用户
-        if (raw['draft'] == true || raw['prerelease'] == true) continue;
+      if (raw is! Map) continue;
+      // draft 是草稿、prerelease 是预发布，都不该推给普通用户
+      if (raw['draft'] == true || raw['prerelease'] == true) continue;
 
-        final tag = (raw['tag_name'] as String? ?? '').trim();
-        if (tag.isEmpty) continue;
+      final tag = (raw['tag_name'] as String? ?? '').trim();
+      if (tag.isEmpty) continue;
 
-        final version = _normalizeVersion(tag);
-        if (version == null) continue;
+      final version = _normalizeVersion(tag);
+      if (version == null) continue;
 
-        String? url;
-        int bytes = 0;
-        final assets = raw['assets'];
-        if (assets is List) {
-          for (final a in assets) {
-            if (a is! Map) continue;
-            final name = (a['name'] as String? ?? '').toLowerCase();
-            if (!name.endsWith('.apk')) continue;
-            url = (a['browser_download_url'] as String? ?? '').trim();
-            bytes = (a['size'] as num?)?.toInt() ?? 0;
-            break;
-          }
+      String? url;
+      int bytes = 0;
+      final assets = raw['assets'];
+      if (assets is List) {
+        for (final a in assets) {
+          if (a is! Map) continue;
+          final name = (a['name'] as String? ?? '').toLowerCase();
+          if (!name.endsWith('.apk')) continue;
+          url = (a['browser_download_url'] as String? ?? '').trim();
+          bytes = (a['size'] as num?)?.toInt() ?? 0;
+          break;
         }
-        if (url == null || url.isEmpty) continue;
-
-        return UpdateInfo(
-          version: version,
-          tag: tag,
-          apkUrl: url,
-          sizeBytes: bytes,
-          notes: (raw['body'] as String? ?? '').trim(),
-          publishedAt: DateTime.tryParse(raw['published_at'] as String? ?? ''),
-        );
       }
+      if (url == null || url.isEmpty) continue;
+
+      return UpdateInfo(
+        version: version,
+        tag: tag,
+        apkUrl: url,
+        sizeBytes: bytes,
+        notes: (raw['body'] as String? ?? '').trim(),
+        publishedAt: DateTime.tryParse(raw['published_at'] as String? ?? ''),
+      );
+    }
 
     // 接口正常但没有任何可用的 release（全是草稿/预发布/没有 apk）。
     return null;
@@ -192,7 +197,8 @@ class UpdateService {
       429 => UpdateFailure.rateLimited,
       401 => UpdateFailure.badCredentials,
       // 403 两种含义，靠响应体区分
-      403 => looksRateLimited ? UpdateFailure.rateLimited : UpdateFailure.forbidden,
+      403 =>
+        looksRateLimited ? UpdateFailure.rateLimited : UpdateFailure.forbidden,
       404 || 410 => UpdateFailure.noRelease,
       >= 500 => UpdateFailure.server,
       _ => UpdateFailure.server,
@@ -201,7 +207,8 @@ class UpdateService {
     return UpdateException(
       failure,
       // 诊断信息里保留响应体片段，方便排查。截断避免刷屏。
-      detail: 'HTTP $code${body.isEmpty ? '' : '  ${body.length > 200 ? '${body.substring(0, 200)}…' : body}'}',
+      detail:
+          'HTTP $code${body.isEmpty ? '' : '  ${body.length > 200 ? '${body.substring(0, 200)}…' : body}'}',
     );
   }
 
@@ -356,6 +363,7 @@ class UpdateInfo {
   final String notes;
   final DateTime? publishedAt;
 
-  String get sizeLabel =>
-      sizeBytes > 0 ? '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB' : '';
+  String get sizeLabel => sizeBytes > 0
+      ? '${(sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB'
+      : '';
 }

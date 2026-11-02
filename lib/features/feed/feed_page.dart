@@ -1,6 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../core/constants.dart';
 import '../../data/parsing/parse_exception.dart';
@@ -10,8 +11,11 @@ import '../../app/providers.dart';
 import '../../ui/components.dart';
 import '../../ui/glass.dart';
 import '../../ui/tokens.dart';
+import 'hot_carousel.dart';
 import 'video_card_tile.dart';
 import 'video_grid.dart';
+
+export 'hot_carousel.dart' show HotCarousel;
 
 export 'video_grid.dart' show feedColumnsFor, videoGridDelegateFor;
 
@@ -38,6 +42,7 @@ class FeedReady extends FeedState {
     required this.page,
     required this.loadingMore,
     this.moreError,
+    this.fromCache = false,
   });
 
   final List<VideoCard> cards;
@@ -45,6 +50,9 @@ class FeedReady extends FeedState {
   final int page;
   final bool loadingMore;
   final String? moreError;
+
+  /// 当前内容来自本地缓存，后台刷新还没回来。
+  final bool fromCache;
 
   bool get hasMore => pager.total == 0 || page < pager.total;
 
@@ -54,6 +62,7 @@ class FeedReady extends FeedState {
     int? page,
     bool? loadingMore,
     String? moreError,
+    bool? fromCache,
   }) =>
       FeedReady(
         cards: cards ?? this.cards,
@@ -61,6 +70,7 @@ class FeedReady extends FeedState {
         page: page ?? this.page,
         loadingMore: loadingMore ?? this.loadingMore,
         moreError: moreError,
+        fromCache: fromCache ?? this.fromCache,
       );
 }
 
@@ -76,16 +86,44 @@ class FeedController extends Notifier<FeedState> {
 
   @override
   FeedState build() {
-    // 首次进入自动拉第 1 页
-    Future.microtask(loadFirst);
+    // 首次进入：先同步吐出缓存（如果有），再后台拉新。
+    //
+    // 这是「每次点进来都要等」的主要解法。站点是纯 HTML，一轮 200KB+
+    // 解析下来 1–3 秒；有缓存时用户几乎立刻看到内容，新数据到了再替换。
+    final cached = ref.read(feedCacheProvider).read(_cacheKey);
+    Future.microtask(() => _revalidate(hadCache: cached != null));
+    if (cached != null) {
+      _accumulated
+        ..clear()
+        ..addAll(cached.cards);
+      return FeedReady(
+        cards: List.unmodifiable(_accumulated),
+        // 缓存只存第 1 页，分页器未知；用 unknown 让「到底了」不误判。
+        pager: Pager.unknown,
+        page: 1,
+        loadingMore: false,
+        fromCache: true,
+      );
+    }
     return const FeedLoading();
   }
 
+  /// 缓存键：能唯一标识这一页列表（种类 + 目标 + 排序）。
+  /// 不含页码——只缓存第 1 页。
+  String get _cacheKey =>
+      '${request.kind.name}:${request.target}:${request.sort.param}';
+
   final List<VideoCard> _accumulated = [];
 
-  Future<void> loadFirst() async {
-    _accumulated.clear();
-    state = const FeedLoading();
+  /// 拉第 1 页。
+  ///
+  /// [hadCache] 为 true 时**不清空当前内容、不进入 loading**：用户正在看的
+  /// 缓存不应该在刷新瞬间消失。拿到新数据后整页替换。
+  Future<void> _revalidate({bool hadCache = false}) async {
+    if (!hadCache) {
+      _accumulated.clear();
+      state = const FeedLoading();
+    }
     try {
       final api = ref.read(rule34ApiProvider);
       final page = await api.fetchFeed(request.copyWith(page: 1));
@@ -94,27 +132,53 @@ class FeedController extends Notifier<FeedState> {
       // 站点在「随机」「最高评分」这类排序下偶尔会把同一个视频吐两次，
       // 一旦重复进入列表，ListView 的 key 冲突会直接抛
       // `Key "..." was already used`（参考项目在 Compose 上踩过同样的坑）。
-      // loadMore 里已经按 id 去过重，首屏这条路径之前漏了。
       final seen = <String>{};
-      _accumulated.addAll(page.cards.where((c) => seen.add(c.id)));
+      final fresh = page.cards.where((c) => seen.add(c.id)).toList();
+
+      _accumulated
+        ..clear()
+        ..addAll(fresh);
       state = FeedReady(
         cards: List.unmodifiable(_accumulated),
         pager: page.pager,
         page: 1,
         loadingMore: false,
       );
+      // 写缓存不 await：UI 不该等磁盘
+      unawaited(ref.read(feedCacheProvider).write(_cacheKey, fresh));
     } on HttpException catch (e) {
+      if (_keepStaleOnError(hadCache, '更新失败：${_humanizeHttp(e)}')) return;
       state = FeedError(
         _humanizeHttp(e),
         isChallenge: e.message.contains('人机验证'),
         canRetry: true,
       );
     } on ParseException catch (e) {
+      if (_keepStaleOnError(hadCache, '站点结构变了：${e.message}')) return;
       state = FeedError('站点结构变了：${e.message}', canRetry: false);
     } catch (e) {
+      if (_keepStaleOnError(hadCache, '更新失败：$e')) return;
       state = FeedError('加载失败：$e');
     }
   }
+
+  /// 有缓存时刷新失败：保留已有内容，只在顶部挂一条提示。
+  ///
+  /// 直接把用户正在看的内容换成错误页是最糟的处理——他明明有东西可看。
+  bool _keepStaleOnError(bool hadCache, String message) {
+    if (!hadCache || _accumulated.isEmpty) return false;
+    state = FeedReady(
+      cards: List.unmodifiable(_accumulated),
+      pager: Pager.unknown,
+      page: 1,
+      loadingMore: false,
+      fromCache: true,
+      moreError: message,
+    );
+    return true;
+  }
+
+  Future<void> loadFirst() => _revalidate();
 
   Future<void> loadMore() async {
     final cur = state;
@@ -145,8 +209,8 @@ class FeedController extends Notifier<FeedState> {
     }
   }
 
-  /// 下拉刷新：回到第 1 页重新拉。
-  Future<void> refresh() => loadFirst();
+  /// 下拉刷新：明确要新数据，走无缓存的完整重载。
+  Future<void> refresh() => _revalidate();
 }
 
 /// 按屏宽决定每行几个视频。实现见 `video_grid.dart`。
@@ -233,40 +297,50 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
     // 顶部栏高度（含状态栏）：内容从栏底下穿过去，滚动时才看得见磨砂。
     final topInset = MediaQuery.paddingOf(context).top + 64 + R34Space.x2;
 
+    // 首页（最新更新）顶部换成热门视频轮播。
+    //
+    // 轮播展示的就是热门榜，所以下方不再单独排一个「热门视频」栏目——
+    // 那是重复信息。
+    final isHome = showSearch;
+
     return Scaffold(
       extendBodyBehindAppBar: true,
-      appBar: r34AppBar(
-        large: true,
-        leading: widget.showBackButton && Navigator.canPop(context)
-            ? const BackButton()
-            : null,
-        title: Text(widget.headingOverride ?? _titleFor()),
-        titleSpacing: widget.showBackButton && Navigator.canPop(context)
-            ? 0
-            : R34Space.page,
-        actions: [
-          PopupMenuButton<FeedSort>(
-            icon: const Icon(Icons.sort_rounded, size: 21),
-            tooltip: '排序',
-            initialValue: _sort,
-            onSelected: (s) {
-              setState(() => _sort = s);
-              // 换排序等于换数据源，重建 controller
-              ref.read(feedControllerProvider(_request).notifier).loadFirst();
-            },
-            itemBuilder: (context) => [
-              for (final s in FeedSort.values)
-                PopupMenuItem(value: s, child: Text(s.label)),
-            ],
-          ),
-          IconButton(
-            tooltip: '刷新',
-            icon: const Icon(Icons.refresh_rounded, size: 21),
-            onPressed: controller.refresh,
-          ),
-          const SizedBox(width: R34Space.x2),
-        ],
-      ),
+      appBar: isHome
+          ? null
+          : r34AppBar(
+              large: true,
+              leading: widget.showBackButton && Navigator.canPop(context)
+                  ? const BackButton()
+                  : null,
+              title: Text(widget.headingOverride ?? _titleFor()),
+              titleSpacing: widget.showBackButton && Navigator.canPop(context)
+                  ? 0
+                  : R34Space.page,
+              actions: [
+                PopupMenuButton<FeedSort>(
+                  icon: const Icon(Icons.sort_rounded, size: 21),
+                  tooltip: '排序',
+                  initialValue: _sort,
+                  onSelected: (s) {
+                    setState(() => _sort = s);
+                    // 换排序等于换数据源，重建 controller
+                    ref
+                        .read(feedControllerProvider(_request).notifier)
+                        .loadFirst();
+                  },
+                  itemBuilder: (context) => [
+                    for (final s in FeedSort.values)
+                      PopupMenuItem(value: s, child: Text(s.label)),
+                  ],
+                ),
+                IconButton(
+                  tooltip: '刷新',
+                  icon: const Icon(Icons.refresh_rounded, size: 21),
+                  onPressed: controller.refresh,
+                ),
+                const SizedBox(width: R34Space.x2),
+              ],
+            ),
       body: switch (state) {
         FeedLoading() => const Center(child: CircularProgressIndicator()),
         FeedError(:final message, :final isChallenge, :final canRetry) => ErrorState(
@@ -279,25 +353,59 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
             icon: Icons.search_off_rounded,
             title: '这里没有内容',
             message: '换个标签或排序再看看。',
-          ),
-        FeedReady(:final cards, :final loadingMore, :final moreError, :final hasMore) =>
+          ),        FeedReady(:final cards, :final loadingMore, :final moreError, :final hasMore) =>
           RefreshIndicator(
             onRefresh: controller.refresh,
             color: R34Color.accent,
             child: CustomScrollView(
               controller: _scroll,
               slivers: [
-                SliverToBoxAdapter(child: SizedBox(height: topInset)),
-                if (showSearch)
-                  const SliverToBoxAdapter(
+                if (isHome)
+                  SliverToBoxAdapter(
+                    child: HotCarousel(
+                      cards: HotCarousel.topViewed(cards, 6),
+                    ),
+                  )
+                else
+                  SliverToBoxAdapter(child: SizedBox(height: topInset)),
+                if (isHome)
+                  SliverToBoxAdapter(
                     child: Padding(
-                      padding: EdgeInsets.fromLTRB(
-                        R34Space.page,
-                        R34Space.x2,
+                      padding: const EdgeInsets.fromLTRB(
                         R34Space.page,
                         R34Space.x3,
+                        R34Space.page,
+                        R34Space.x2,
                       ),
-                      child: _InlineSearchBar(),
+                      child: Row(
+                        children: [
+                          Text(
+                            '最新更新',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const Spacer(),
+                          PopupMenuButton<FeedSort>(
+                            icon: const Icon(Icons.sort_rounded, size: 20),
+                            tooltip: '排序',
+                            initialValue: _sort,
+                            onSelected: (s) {
+                              setState(() => _sort = s);
+                              ref
+                                  .read(feedControllerProvider(_request).notifier)
+                                  .loadFirst();
+                            },
+                            itemBuilder: (context) => [
+                              for (final s in FeedSort.values)
+                                PopupMenuItem(value: s, child: Text(s.label)),
+                            ],
+                          ),
+                          IconButton(
+                            tooltip: '刷新',
+                            icon: const Icon(Icons.refresh_rounded, size: 20),
+                            onPressed: controller.refresh,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 SliverPadding(
@@ -419,47 +527,3 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
 ///
 /// 首页直接可搜，不用先进「发现」再点一下。点它跳搜索页并自动聚焦输入框，
 /// 这样「点开就打字」，比在首页里塞个输入框再原地换列表要顺手。
-class _InlineSearchBar extends StatelessWidget {
-  const _InlineSearchBar();
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: R34Color.surfaceRaised,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(R34Radius.md),
-        side: const BorderSide(color: R34Color.hairlineSoft),
-      ),
-      child: InkWell(
-        customBorder: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(R34Radius.md),
-        ),
-        onTap: () => context.push('/search'),
-        child: Container(
-          height: 44,
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Row(
-            children: [
-              const Icon(Icons.search, size: 18, color: R34Color.inkFaint),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '搜索视频、标签、作者',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        fontSize: 13.5,
-                        color: R34Color.inkFaint,
-                      ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-
-

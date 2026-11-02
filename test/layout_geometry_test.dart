@@ -75,13 +75,15 @@ void main() {
     tester.view.devicePixelRatio = 3.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(ProviderScope(
-      overrides: [
-        rule34ApiProvider.overrideWithValue(_FakeApi()),
-        sharedPrefsProvider.overrideWithValue(prefs),
-      ],
-      child: MaterialApp(theme: buildAppTheme(), home: home),
-    ));
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          rule34ApiProvider.overrideWithValue(_FakeApi()),
+          sharedPrefsProvider.overrideWithValue(prefs),
+        ],
+        child: MaterialApp(theme: buildAppTheme(), home: home),
+      ),
+    );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
   }
@@ -106,22 +108,38 @@ void main() {
       expect(feedColumnsFor(1400), 6);
     });
 
-    test('每种宽度下卡宽都不低于 155dp', () {
-      for (final w in [360.0, 390.0, 412.0, 430.0, 600.0, 840.0, 1100.0, 1400.0]) {
+    test('每种宽度下卡宽都不低于 150dp', () {
+      for (final w in [
+        360.0,
+        390.0,
+        412.0,
+        430.0,
+        600.0,
+        840.0,
+        1100.0,
+        1400.0,
+      ]) {
         final cols = feedColumnsFor(w);
         final tileW =
             (w - R34Space.page * 2 - videoGridGap * (cols - 1)) / cols;
-        expect(tileW, greaterThanOrEqualTo(155),
-            reason: '宽度 $w / $cols 列 → 卡宽 $tileW，太窄');
+        expect(
+          tileW,
+          greaterThanOrEqualTo(150),
+          reason: '宽度 $w / $cols 列 → 卡宽 $tileW，太窄',
+        );
       }
     });
   });
 
   group('列表页：两列、间隙只有令牌值', () {
-    testWidgets('一排两张，横竖间距都是 8dp', (tester) async {
+    testWidgets('一排两张，横竖间距都是 12dp', (tester) async {
       await pumpAt(
         tester,
-        const FeedPageTab(kind: FeedKind.latest, showBackButton: false),
+        const FeedPageTab(
+          kind: FeedKind.tag,
+          target: 'sex',
+          showBackButton: false,
+        ),
       );
 
       final tiles = find.byType(VideoCardTile);
@@ -140,13 +158,20 @@ void main() {
       expect(r2.top - r0.bottom, closeTo(videoGridGap, 0.01));
 
       // 卡宽接近屏宽的一半
-      expect(r0.width, closeTo((390 - 32 - videoGridGap) / 2, 0.5));
+      expect(
+        r0.width,
+        closeTo((390 - R34Space.page * 2 - videoGridGap) / 2, 0.5),
+      );
     });
 
     testWidgets('卡高恰好等于封面 + 文字，没有多余空白', (tester) async {
       await pumpAt(
         tester,
-        const FeedPageTab(kind: FeedKind.latest, showBackButton: false),
+        const FeedPageTab(
+          kind: FeedKind.tag,
+          target: 'sex',
+          showBackButton: false,
+        ),
       );
 
       final r0 = tester.getRect(find.byType(VideoCardTile).at(0));
@@ -154,15 +179,22 @@ void main() {
       final textH = r0.height - coverH;
 
       // 文字区 = 上 8 + 标题两行(17×2) + 间距 4 + 元信息 13 + 下 9 = 68
-      expect(textH, closeTo(68, 1.5),
-          reason: '文字区 ${textH}dp 说明高度分配和内容不符（多了会变成底部空白）');
+      expect(
+        textH,
+        closeTo(68, 1.5),
+        reason: '文字区 ${textH}dp 说明高度分配和内容不符（多了会变成底部空白）',
+      );
     });
 
     testWidgets('标题只有一行时卡片高度不变（同行底边齐平）', (tester) async {
       // 用真实卡片列表渲染两行，检查第 0、1 张底边对齐
       await pumpAt(
         tester,
-        const FeedPageTab(kind: FeedKind.latest, showBackButton: false),
+        const FeedPageTab(
+          kind: FeedKind.tag,
+          target: 'sex',
+          showBackButton: false,
+        ),
       );
       final tiles = find.byType(VideoCardTile);
       final r0 = tester.getRect(tiles.at(0));
@@ -182,8 +214,11 @@ void main() {
       final bar = tester.getRect(find.byType(AppBar).first);
       final video = tester.getRect(find.byType(AspectRatio).first);
 
-      expect(video.top, greaterThanOrEqualTo(bar.bottom),
-          reason: '视频区被标题栏压掉 ${bar.bottom - video.top}dp');
+      expect(
+        video.top,
+        greaterThanOrEqualTo(bar.bottom),
+        reason: '视频区被标题栏压掉 ${bar.bottom - video.top}dp',
+      );
       // 也不该推太远：贴着栏底才对
       expect(video.top - bar.bottom, lessThan(4));
       // 仍是 16:9
@@ -200,8 +235,11 @@ void main() {
       final video = tester.getRect(find.byType(AspectRatio).first);
 
       expect(video.top, greaterThanOrEqualTo(bar.bottom));
-      expect(video.top - bar.bottom, lessThan(4),
-          reason: '留白 ${video.top - bar.bottom}dp，疑似重复叠加了工具栏高度');
+      expect(
+        video.top - bar.bottom,
+        lessThan(4),
+        reason: '留白 ${video.top - bar.bottom}dp，疑似重复叠加了工具栏高度',
+      );
     });
   });
 

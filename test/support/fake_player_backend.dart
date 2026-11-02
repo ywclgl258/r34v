@@ -70,4 +70,10 @@ class FakePlayerBackend implements PlayerBackend {
   Stream<bool> get completed => const Stream.empty();
   @override
   Stream<bool> get playing => const Stream.empty();
+
+  /// 全屏朝向测试用：可自由设定，模拟竖屏（<1）或横屏（>1）视频。
+  double? fakeAspectRatio;
+
+  @override
+  double? get aspectRatio => fakeAspectRatio;
 }

@@ -57,7 +57,8 @@ class UpdateState {
   /// 当前安装包的版本号。
   final String currentVersion;
 
-  bool get hasUpdate => phase == UpdatePhase.available ||
+  bool get hasUpdate =>
+      phase == UpdatePhase.available ||
       phase == UpdatePhase.downloading ||
       phase == UpdatePhase.readyToInstall;
 
@@ -68,15 +69,14 @@ class UpdateState {
     String? error,
     String? localPath,
     String? currentVersion,
-  }) =>
-      UpdateState(
-        phase: phase ?? this.phase,
-        info: info ?? this.info,
-        progress: progress ?? this.progress,
-        error: error ?? this.error,
-        localPath: localPath ?? this.localPath,
-        currentVersion: currentVersion ?? this.currentVersion,
-      );
+  }) => UpdateState(
+    phase: phase ?? this.phase,
+    info: info ?? this.info,
+    progress: progress ?? this.progress,
+    error: error ?? this.error,
+    localPath: localPath ?? this.localPath,
+    currentVersion: currentVersion ?? this.currentVersion,
+  );
 }
 
 class UpdateController extends Notifier<UpdateState> {
@@ -148,11 +148,17 @@ class UpdateController extends Notifier<UpdateState> {
     if (state.phase == UpdatePhase.downloading) return;
 
     _cancelToken = CancelToken();
-    state = state.copyWith(phase: UpdatePhase.downloading, progress: 0, error: '');
+    state = state.copyWith(
+      phase: UpdatePhase.downloading,
+      progress: 0,
+      error: '',
+    );
 
     final String path;
     try {
-      path = await ref.read(updateServiceProvider).download(
+      path = await ref
+          .read(updateServiceProvider)
+          .download(
             info,
             cancelToken: _cancelToken,
             onProgress: (v) {
@@ -160,14 +166,26 @@ class UpdateController extends Notifier<UpdateState> {
               state = state.copyWith(progress: v);
             },
           );
+    } on DioException catch (e) {
+      if (CancelToken.isCancel(e)) {
+        // cancelDownload 已恢复 available；取消是用户动作，不是失败。
+        state = state.copyWith(
+          phase: UpdatePhase.available,
+          progress: 0,
+          error: '',
+        );
+      } else {
+        state = state.copyWith(
+          phase: UpdatePhase.failed,
+          error: '下载失败：${e.message}',
+        );
+      }
+      return;
     } on UpdateException catch (e) {
       state = state.copyWith(phase: UpdatePhase.failed, error: e.userMessage);
       return;
     } catch (e) {
-      state = state.copyWith(
-        phase: UpdatePhase.failed,
-        error: '下载失败：$e',
-      );
+      state = state.copyWith(phase: UpdatePhase.failed, error: '下载失败：$e');
       return;
     }
 

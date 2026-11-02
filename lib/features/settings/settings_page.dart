@@ -37,6 +37,7 @@ class SettingsPage extends ConsumerWidget {
             title: '显示',
             children: const [_TranslateTagsTile(), _GlassBlurTile()],
           ),
+          const _Group(title: '内容过滤', children: [_BlockedTagsSection()]),
           _Group(
             title: '播放',
             children: [
@@ -85,7 +86,8 @@ class SettingsPage extends ConsumerWidget {
                               content: const Text('清空全部观看记录？'),
                               actions: [
                                 TextButton(
-                                  onPressed: () => Navigator.pop(context, false),
+                                  onPressed: () =>
+                                      Navigator.pop(context, false),
                                   child: const Text('取消'),
                                 ),
                                 FilledButton(
@@ -122,10 +124,7 @@ class SettingsPage extends ConsumerWidget {
               _ProxyTile(),
             ],
           ),
-          _Group(
-            title: '关于',
-            children: const [_UpdateTile()],
-          ),
+          _Group(title: '关于', children: const [_UpdateTile()]),
           _Group(
             title: '诊断',
             children: const [_NetDiagnoseTile(), _DiagnosticsTile()],
@@ -140,7 +139,7 @@ class SettingsPage extends ConsumerWidget {
             child: Text(
               '这是一个第三方客户端，与 rule34video.com 无关联。\n'
               '应用不托管任何内容，所有视频均来自原站。\n'
-              '仅读取公开页面，不做登录、上传、评论或评分。',
+              '支持登录读取会员内容；不上传、评论或评分。',
               style: const TextStyle(
                 fontFamily: 'NotoSansSC',
                 fontSize: 11.5,
@@ -167,13 +166,15 @@ class _Group extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SectionHeader(
-          title: title,
-          padding: const EdgeInsets.fromLTRB(
-            R34Space.x1 + 2,
-            R34Space.x5,
-            R34Space.x1,
-            R34Space.x2 + 2,
+        Padding(
+          padding: const EdgeInsets.fromLTRB(2, 22, 4, 10),
+          child: Text(
+            title,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: R34Color.inkMuted,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.3,
+            ),
           ),
         ),
         SurfaceCard(
@@ -296,8 +297,8 @@ class _NetDiagnoseTileState extends ConsumerState<_NetDiagnoseTile> {
                                 color: p.ok
                                     ? R34Color.inkMuted
                                     : (p.error.isNotEmpty
-                                        ? Theme.of(context).colorScheme.error
-                                        : R34Color.inkMuted),
+                                          ? Theme.of(context).colorScheme.error
+                                          : R34Color.inkMuted),
                               ),
                             ),
                           ],
@@ -318,7 +319,11 @@ class _NetDiagnoseTileState extends ConsumerState<_NetDiagnoseTile> {
                 const Text(
                   '提示：如果「TCP」全绿但「HTTP via」全红，说明能连上但服务端不回数据；'
                   '如果「系统 DNS」解析出的 IP 和「DoH 解析」不同，说明本地 DNS 被污染。',
-                  style: TextStyle(fontSize: 10.5, color: R34Color.inkMuted, height: 1.5),
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: R34Color.inkMuted,
+                    height: 1.5,
+                  ),
                 ),
               ],
             ],
@@ -346,42 +351,38 @@ class _UpdateTile extends ConsumerWidget {
 
     final (IconData icon, String subtitle, Color? color) = switch (st.phase) {
       UpdatePhase.checking => (
-          Icons.sync_rounded,
-          '正在检查…',
-          R34Color.inkSecondary,
-        ),
+        Icons.sync_rounded,
+        '正在检查…',
+        R34Color.inkSecondary,
+      ),
       UpdatePhase.upToDate => (
-          Icons.check_circle_rounded,
-          '已是最新版本',
-          R34Color.accentBright,
-        ),
+        Icons.check_circle_rounded,
+        '已是最新版本',
+        R34Color.accentBright,
+      ),
       UpdatePhase.available => (
-          Icons.system_update_rounded,
-          '发现 ${st.info?.version}，点右侧下载',
-          R34Color.accentBright,
-        ),
+        Icons.system_update_rounded,
+        '发现 ${st.info?.version}，点右侧下载',
+        R34Color.accentBright,
+      ),
       UpdatePhase.downloading => (
-          Icons.downloading_rounded,
-          st.progress < 0
-              ? '正在下载…'
-              : '正在下载 ${(st.progress * 100).toStringAsFixed(0)}%',
-          R34Color.accentBright,
-        ),
+        Icons.downloading_rounded,
+        st.progress < 0
+            ? '正在下载…'
+            : '正在下载 ${(st.progress * 100).toStringAsFixed(0)}%',
+        R34Color.accentBright,
+      ),
       UpdatePhase.readyToInstall => (
-          Icons.install_mobile_rounded,
-          '已下载完成，点右侧安装',
-          R34Color.accentBright,
-        ),
+        Icons.install_mobile_rounded,
+        '已下载完成，点右侧安装',
+        R34Color.accentBright,
+      ),
       UpdatePhase.failed => (
-          Icons.error_outline_rounded,
-          st.error.isEmpty ? '检查失败' : st.error,
-          R34Color.inkSecondary,
-        ),
-      UpdatePhase.idle => (
-          Icons.system_update_rounded,
-          '当前 v$cur',
-          null,
-        ),
+        Icons.error_outline_rounded,
+        st.error.isEmpty ? '检查失败' : st.error,
+        R34Color.inkSecondary,
+      ),
+      UpdatePhase.idle => (Icons.system_update_rounded, '当前 v$cur', null),
     };
 
     return ListTile(
@@ -446,10 +447,7 @@ class _UpdateTile extends ConsumerWidget {
           child: const Text('安装'),
         );
       case UpdatePhase.available:
-        return FilledButton(
-          onPressed: ctrl.download,
-          child: const Text('下载'),
-        );
+        return FilledButton(onPressed: ctrl.download, child: const Text('下载'));
       case UpdatePhase.upToDate:
       case UpdatePhase.failed:
       case UpdatePhase.idle:
@@ -479,9 +477,7 @@ class _DohTile extends ConsumerWidget {
       secondary: const Icon(Icons.travel_explore_rounded, size: 21),
       title: const Text('DoH 域名解析'),
       subtitle: Text(
-        on
-            ? '每次请求前查询真实 IP，不怕地址过期或 DNS 污染'
-            : '用固定 IP 列表和系统 DNS，地址变了可能连不上',
+        on ? '每次请求前查询真实 IP，不怕地址过期或 DNS 污染' : '用固定 IP 列表和系统 DNS，地址变了可能连不上',
       ),
       value: on,
       onChanged: (v) async {
@@ -536,9 +532,7 @@ class _CdnDirectTile extends ConsumerWidget {
       secondary: const Icon(Icons.bolt_rounded, size: 21),
       title: const Text('CDN 直链'),
       subtitle: Text(
-        on
-            ? '播放前先解析出 CDN 地址，缓冲更快（实测快 4 倍）'
-            : '直接连站点地址，每个请求都走一次 302 跳转',
+        on ? '播放前先解析出 CDN 地址，缓冲更快（实测快 4 倍）' : '直接连站点地址，每个请求都走一次 302 跳转',
       ),
       value: on,
       onChanged: (v) async {
@@ -554,8 +548,8 @@ class _CdnDirectTile extends ConsumerWidget {
 
 /// 「自动缓存」开关。
 ///
-/// 默认开启：收藏的视频与看过的长视频自动存到本地，下次秒开。
-/// 关掉后只有在播放页手动点「缓存到本地」才下载。
+/// 默认关闭。开启后，边下边播完整抓取的视频自动入库，下次秒开。
+/// 关闭时仍可在播放页手动点「缓存到本地」下载。
 class _AutoCacheTile extends ConsumerWidget {
   const _AutoCacheTile();
 
@@ -565,7 +559,7 @@ class _AutoCacheTile extends ConsumerWidget {
     return SwitchListTile(
       secondary: const Icon(Icons.download_for_offline_outlined, size: 21),
       title: const Text('自动缓存'),
-      subtitle: const Text('收藏的视频、看过的长视频自动存到本地，下次不用重新缓冲'),
+      subtitle: const Text('完整抓取的视频自动存到本地，下次不用重新缓冲'),
       value: on,
       onChanged: (v) => ref.read(autoCacheProvider.notifier).set(v),
     );
@@ -633,7 +627,10 @@ class _CacheUsageTile extends ConsumerWidget {
           trailing: DropdownButton<int>(
             value: budget,
             underline: const SizedBox.shrink(),
-            items: [for (final mb in const [1024, 2048, 4096, 8192, 16384]) DropdownMenuItem(value: mb, child: Text('${mb ~/ 1024} GB'))],
+            items: [
+              for (final mb in const [1024, 2048, 4096, 8192, 16384])
+                DropdownMenuItem(value: mb, child: Text('${mb ~/ 1024} GB')),
+            ],
             onChanged: (v) async {
               if (v == null) return;
               await ref.read(videoCacheProvider).setBudgetMb(v);
@@ -674,6 +671,8 @@ class _ProxyTileState extends ConsumerState<_ProxyTile> {
     final v = _c.text.trim();
     await ref.read(libraryStoreProvider).setPlayerProxy(v);
     PlayerBootstrap.setProxy(v);
+    // 让 API、流抓取、下载器和翻译器都使用新代理，而不是等下次冷启动。
+    ref.invalidate(libraryStoreProvider);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -696,8 +695,8 @@ class _ProxyTileState extends ConsumerState<_ProxyTile> {
             '只影响视频流。网页数据走系统代理/VPN，不用填这里。\n'
             '填 host:port，例如 127.0.0.1:7897。留空表示直连。',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.outline,
-                ),
+              color: Theme.of(context).colorScheme.outline,
+            ),
           ),
           const SizedBox(height: 10),
           Row(
@@ -732,9 +731,7 @@ class _TranslateTagsTile extends ConsumerWidget {
     return SwitchListTile(
       secondary: const Icon(Icons.translate_rounded, size: 21),
       title: const Text('标签显示中文'),
-      subtitle: const Text(
-        '常用标签用内置词典（离线、零延迟），其余联网自动翻译并缓存',
-      ),
+      subtitle: const Text('常用标签用内置词典（离线、零延迟），其余联网自动翻译并缓存'),
       value: on,
       onChanged: (v) => ref.read(translateTagsProvider.notifier).set(v),
     );
@@ -751,8 +748,8 @@ class _GlassBlurTile extends ConsumerWidget {
       valueListenable: glassBlurEnabled,
       builder: (context, on, _) => SwitchListTile(
         secondary: const Icon(Icons.blur_on_rounded, size: 21),
-        title: const Text('毛玻璃模糊'),
-        subtitle: const Text('关掉后顶栏和底栏变成半透明色块，低端机滑动更顺'),
+        title: const Text('二级界面模糊'),
+        subtitle: const Text('仅影响仍使用磨砂效果的二级界面；关闭可减少绘制开销'),
         value: on,
         onChanged: (v) async {
           glassBlurEnabled.value = v;
@@ -768,7 +765,8 @@ class _BlockedTagsSection extends ConsumerStatefulWidget {
   const _BlockedTagsSection();
 
   @override
-  ConsumerState<_BlockedTagsSection> createState() => _BlockedTagsSectionState();
+  ConsumerState<_BlockedTagsSection> createState() =>
+      _BlockedTagsSectionState();
 }
 
 class _BlockedTagsSectionState extends ConsumerState<_BlockedTagsSection> {
@@ -802,8 +800,8 @@ class _BlockedTagsSectionState extends ConsumerState<_BlockedTagsSection> {
             '包含这些标签的视频不会出现在列表里，详情页也会拦截。\n'
             '列表卡片不带标签数据，按标题关键词匹配；详情层按真实标签拦截。',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.outline,
-                ),
+              color: Theme.of(context).colorScheme.outline,
+            ),
           ),
           const SizedBox(height: 10),
           Row(
@@ -856,9 +854,7 @@ class _PlayerEngineTile extends ConsumerWidget {
     return ListTile(
       leading: const Icon(Icons.movie_filter_outlined, size: 21),
       title: const Text('播放器引擎'),
-      subtitle: const Text(
-        'ExoPlayer：硬件解码、代理免配置（默认）\nlibmpv：软解万能，冷门编码兜底',
-      ),
+      subtitle: const Text('ExoPlayer：硬件解码、代理免配置（默认）\nlibmpv：软解万能，冷门编码兜底'),
       trailing: DropdownButton<String>(
         value: engine,
         underline: const SizedBox.shrink(),
@@ -882,5 +878,3 @@ class _PlayerEngineTile extends ConsumerWidget {
     );
   }
 }
-
-

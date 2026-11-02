@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/local/library_store.dart';
+import '../data/local/feed_cache.dart';
 import '../data/local/video_downloader.dart';
 import '../data/local/auth_store.dart';
 import '../domain/video_card.dart';
@@ -11,7 +12,8 @@ import '../data/remote/auth_client.dart';
 import '../data/remote/stream_fetcher.dart';
 import '../data/remote/doh_connector.dart';
 import '../data/remote/doh_resolver.dart';
-import '../data/remote/site_client_io.dart' if (dart.library.js_interop) '../data/remote/site_client_web.dart';
+import '../data/remote/site_client_io.dart'
+    if (dart.library.js_interop) '../data/remote/site_client_web.dart';
 import '../data/remote/stream_resolver.dart';
 import '../data/remote/tag_translator.dart';
 import '../data/remote/rule34_api.dart';
@@ -45,11 +47,14 @@ class CdnDirectController extends Notifier<bool> {
   Future<void> set(bool v) async {
     await ref.read(libraryStoreProvider).setCdnDirect(v);
     state = v;
+    // 持久化对象本身不是响应式依赖；主动重建网络客户端，避免开关只改 UI。
+    ref.invalidate(libraryStoreProvider);
   }
 }
 
-final cdnDirectProvider =
-    NotifierProvider<CdnDirectController, bool>(CdnDirectController.new);
+final cdnDirectProvider = NotifierProvider<CdnDirectController, bool>(
+  CdnDirectController.new,
+);
 
 /// 「站点直连 IP」开关的响应式镜像。
 class DirectIpController extends Notifier<bool> {
@@ -59,11 +64,13 @@ class DirectIpController extends Notifier<bool> {
   Future<void> set(bool v) async {
     await ref.read(libraryStoreProvider).setDirectIp(v);
     state = v;
+    ref.invalidate(libraryStoreProvider);
   }
 }
 
-final directIpProvider =
-    NotifierProvider<DirectIpController, bool>(DirectIpController.new);
+final directIpProvider = NotifierProvider<DirectIpController, bool>(
+  DirectIpController.new,
+);
 
 /// 「DoH 域名解析」开关的响应式镜像。
 class DohEnabledController extends Notifier<bool> {
@@ -73,11 +80,13 @@ class DohEnabledController extends Notifier<bool> {
   Future<void> set(bool v) async {
     await ref.read(libraryStoreProvider).setDohEnabled(v);
     state = v;
+    ref.invalidate(libraryStoreProvider);
   }
 }
 
-final dohEnabledProvider =
-    NotifierProvider<DohEnabledController, bool>(DohEnabledController.new);
+final dohEnabledProvider = NotifierProvider<DohEnabledController, bool>(
+  DohEnabledController.new,
+);
 
 /// DoH 解析器。全局单例：解析结果要缓存（TTL 5 分钟），
 /// 不然每次请求都查一次 DNS，反而拖慢。
@@ -99,7 +108,10 @@ final dohConnectorProvider = Provider<DnsOverHttpsConnector>((ref) {
 /// 边下边播的流抓取器。全局单例，避免同一视频重复下载。
 final streamFetcherProvider = Provider<StreamFetcher>((ref) {
   final proxy = ref.watch(libraryStoreProvider).playerProxy;
-  return StreamFetcher(proxy: proxy, connector: ref.watch(dohConnectorProvider));
+  return StreamFetcher(
+    proxy: proxy,
+    connector: ref.watch(dohConnectorProvider),
+  );
 });
 
 /// 站点地址 → CDN 直链的解析器。
@@ -128,6 +140,11 @@ final videoCacheProvider = Provider<VideoCache>((ref) {
   );
 });
 
+/// 列表页缓存：先展示旧数据、后台再刷新。
+final feedCacheProvider = Provider<FeedCache>((ref) {
+  return FeedCache(ref.watch(sharedPrefsProvider));
+});
+
 /// 缓存索引。写操作后 invalidate 这个，片库和详情页会跟着刷新。
 final cacheIndexProvider = Provider<List<CachedVideo>>((ref) {
   return ref.watch(videoCacheProvider).loadIndex();
@@ -150,8 +167,9 @@ class AutoCacheNotifier extends Notifier<bool> {
   }
 }
 
-final autoCacheProvider =
-    NotifierProvider<AutoCacheNotifier, bool>(AutoCacheNotifier.new);
+final autoCacheProvider = NotifierProvider<AutoCacheNotifier, bool>(
+  AutoCacheNotifier.new,
+);
 
 /// 标签翻译服务（联网 + 缓存 + 词典兜底）。
 final tagTranslatorProvider = Provider<TagTranslator>((ref) {
@@ -175,8 +193,9 @@ class TranslateTagsNotifier extends Notifier<bool> {
   }
 }
 
-final translateTagsProvider =
-    NotifierProvider<TranslateTagsNotifier, bool>(TranslateTagsNotifier.new);
+final translateTagsProvider = NotifierProvider<TranslateTagsNotifier, bool>(
+  TranslateTagsNotifier.new,
+);
 
 /// 视频下载器（落到系统下载目录，和私有缓存分开）。
 final videoDownloaderProvider = Provider<VideoDownloader>((ref) {
@@ -225,8 +244,9 @@ class AuthNotifier extends Notifier<AuthSession?> {
   }
 }
 
-final authProvider =
-    NotifierProvider<AuthNotifier, AuthSession?>(AuthNotifier.new);
+final authProvider = NotifierProvider<AuthNotifier, AuthSession?>(
+  AuthNotifier.new,
+);
 
 final rule34ApiProvider = Provider<Rule34Api>((ref) {
   // 登录态变化时重建 API，让它带上新的会话 cookie
@@ -267,8 +287,9 @@ class BlockedTagsNotifier extends Notifier<List<String>> {
   }
 }
 
-final blockedTagsProvider =
-    NotifierProvider<BlockedTagsNotifier, List<String>>(BlockedTagsNotifier.new);
+final blockedTagsProvider = NotifierProvider<BlockedTagsNotifier, List<String>>(
+  BlockedTagsNotifier.new,
+);
 
 /// 视频卡片是否通过屏蔽过滤。
 ///
@@ -320,7 +341,8 @@ final resumableProvider = Provider<List<WatchEntry>>((ref) {
 
 class FavoritesNotifier extends Notifier<List<FavoriteEntry>> {
   @override
-  List<FavoriteEntry> build() => ref.watch(libraryStoreProvider).loadFavorites();
+  List<FavoriteEntry> build() =>
+      ref.watch(libraryStoreProvider).loadFavorites();
 
   void reload() {
     state = ref.read(libraryStoreProvider).loadFavorites();
@@ -337,18 +359,22 @@ class FavoritesNotifier extends Notifier<List<FavoriteEntry>> {
       state.where((e) => e.kind == kind).toList();
 }
 
-final favoritesProvider = NotifierProvider<FavoritesNotifier, List<FavoriteEntry>>(
-  FavoritesNotifier.new,
-);
+final favoritesProvider =
+    NotifierProvider<FavoritesNotifier, List<FavoriteEntry>>(
+      FavoritesNotifier.new,
+    );
 
 /// 某一类收藏。
 final favoritesOfKindProvider =
     Provider.family<List<FavoriteEntry>, FavoriteKind>((ref, kind) {
-  return ref.watch(favoritesProvider).where((e) => e.kind == kind).toList();
-});
+      return ref.watch(favoritesProvider).where((e) => e.kind == kind).toList();
+    });
 
 /// 某个视频的观看进度。
-final watchProgressProvider = Provider.family<WatchEntry?, String>((ref, videoId) {
+final watchProgressProvider = Provider.family<WatchEntry?, String>((
+  ref,
+  videoId,
+) {
   for (final e in ref.watch(historyProvider)) {
     if (e.videoId == videoId) return e;
   }
@@ -368,7 +394,6 @@ class FavoriteKey {
 
   final FavoriteKind kind;
   final String target;
-
 
   @override
   bool operator ==(Object other) =>
@@ -399,7 +424,9 @@ class SearchHistoryNotifier extends Notifier<List<String>> {
 }
 
 final searchHistoryProvider =
-    NotifierProvider<SearchHistoryNotifier, List<String>>(SearchHistoryNotifier.new);
+    NotifierProvider<SearchHistoryNotifier, List<String>>(
+      SearchHistoryNotifier.new,
+    );
 
 /// 设置项：默认清晰度。
 class PreferredQualityNotifier extends Notifier<String> {
@@ -413,7 +440,9 @@ class PreferredQualityNotifier extends Notifier<String> {
 }
 
 final preferredQualityProvider =
-    NotifierProvider<PreferredQualityNotifier, String>(PreferredQualityNotifier.new);
+    NotifierProvider<PreferredQualityNotifier, String>(
+      PreferredQualityNotifier.new,
+    );
 
 /// 设置项：打开视频是否自动全屏。
 class AutoFullscreenNotifier extends Notifier<bool> {
@@ -426,10 +455,6 @@ class AutoFullscreenNotifier extends Notifier<bool> {
   }
 }
 
-final autoFullscreenProvider =
-    NotifierProvider<AutoFullscreenNotifier, bool>(AutoFullscreenNotifier.new);
-
-
-
-
-
+final autoFullscreenProvider = NotifierProvider<AutoFullscreenNotifier, bool>(
+  AutoFullscreenNotifier.new,
+);

@@ -48,4 +48,12 @@ abstract class PlayerBackend {
   Duration get currentDuration;
   bool get isPlaying;
   double get currentVolume;
+
+  /// 视频宽高比（宽 / 高）。未知时返回 null。
+  ///
+  /// 全屏时靠它判断该转横屏还是竖屏：竖屏视频（宽高比 < 1）强行横屏会
+  /// 左右留两条大黑边，实际画面只占中间一小条，非常难受。
+  ///
+  /// 在拿到元数据之前返回 null——调用方据此先不做朝向决定。
+  double? get aspectRatio;
 }

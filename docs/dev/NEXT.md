@@ -2,7 +2,7 @@
 handoff_schema: tavernweave/next/v1
 project_id: r34v-android
 status: implementation-candidate
-updated: 2026-10-31
+updated: 2026-11-02
 ---
 
 # NEXT · R34V · rule34video 安卓客户端
@@ -24,10 +24,20 @@ updated: 2026-10-31
 6. 分页为路径式，每页 23–24 条；`?sort_by=` 五种排序全页通用。
 7. 登录是普通表单 POST，字段与 CSRF 隐藏项已记录；未登录访问 `/my/` 无内容。
 8. 站点前置 `ddos-guard`（Cookie 下发），当前不拦纯 HTTP 客户端。
-9. **运行时决策已改**：本机不装 Android SDK，APK 全部由 GitHub Actions 产出。
-10. 工程已从 Tauri 脚手架迁到 Flutter（3.44.6 / Dart 3.12.2）。
+9. APK 由 GitHub Actions 产出；本机当前缺 `JAVA_HOME` 与 Java，本地 APK 构建未验证。
+10. 工程已从 Tauri 脚手架迁到 Flutter（3.44.6 / Dart 3.12.2），当前版本 `1.16.0+21`。
 
 ## 最近证据
+
+### 第七轮：全面审查后的可靠性修复
+
+- 缓存改为显式流式写入：206 正确续传，服务器忽略 Range 回 200 时覆盖旧 `.part`；取消、短响应和网络错误均保留续传现场，只有完整文件才入库。
+- 合并站点与调用方 Cookie，同名会话以调用方登录 Cookie 优先；网络设置保存后立即重建相关客户端。
+- 播放器严格尊重 ExoPlayer / libmpv 选择；下载前刷新时效链接；更新下载取消恢复可下载状态；搜索忽略过期响应。
+- 屏蔽标签入口接入设置；排行榜图片统一走应用网络层；关闭毛玻璃后底栏不再执行 `BackdropFilter`。
+- 移除未使用的图片与图标依赖，修正文档、CI 注释和自动缓存说明。
+
+验证：`flutter analyze` 零问题；`flutter test --reporter expanded` 为 **428 项通过、14 项跳过**（跳过项需显式联网开启）。本机无可用 Android 设备，APK 构建和真机播放仍未在本轮验收。
 
 ### 第六轮：本地缓存
 
@@ -154,17 +164,9 @@ flutter test --dart-define=R34V_LIVE=true test/api_test.dart   → 17 passed
 
 ## 下一道门
 
-**第一次 push 到 GitHub，看 CI 是否产出 APK。**
+**完成 APK 构建与真机验收。** 本机需先配置 JDK 17 和 `JAVA_HOME`，或由 GitHub Actions 构建；当前 `adb devices -l` 没有可用设备。
 
-```bash
-git init && git add -A && git commit -m "init"
-git remote add origin https://github.com/<用户名>/<仓库名>.git
-git push -u origin main
-```
-
-CI 绿了 → 下载 `r34v-apk` 装上 → 走「首页点进视频 → 横屏全屏看 60 秒 → 退出再进能续播」→ 告诉我结果。
-
-CI 红了 → 把失败步骤的日志贴给我，我按提示定位。
+APK 装上后，重点走「登录会员内容 → 播放与换档 → 中断缓存后续传 → 下载前换链 → 搜索快速连续提交 → 取消更新下载」，确认本轮修复在真实网络与播放器上闭环。
 
 ## 项目画板状态来源（可选）
 
@@ -172,4 +174,4 @@ CI 红了 → 把失败步骤的日志贴给我，我按提示定位。
 
 ## 一句续接
 
-读取总设计案、活动蓝图和本文件，推 CI 拿第一个 APK，然后在真机上验播放闭环。
+读取总设计案、活动蓝图和本文件，先完成 APK 构建，再在真机上验登录、播放、缓存续传与下载闭环。

@@ -267,7 +267,12 @@ class ListingParser {
           ? _squash(a.attributes['title'])
           : _squash(a.querySelector('.thumb_title')?.text);
       final img = a.querySelector('img');
-      final thumb = _absUrl(img?.attributes['src'] ?? '');
+      // 必须走 _resolveThumb 而不是直接读 `src`：
+      // 索引页的图片同样是**懒加载**，`src` 是 1px 的 base64 gif，
+      // 真实地址在 `data-rd-src`（可能还有 `data-rd-jpg` 兜底）。
+      // 早先这里只取 `src`，结果分类封面几乎全是空白占位——
+      // 实测 36 个分类里只有 1 个能显示。
+      final thumb = _resolveThumb(img);
 
       out.add(FeedLink(
         slug: slug,

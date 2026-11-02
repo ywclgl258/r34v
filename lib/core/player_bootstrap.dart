@@ -103,28 +103,6 @@ class PlayerBootstrap {
     await applyPlatformProps(player, Map.of(_props));
   }
 
-  /// 单独把「站点 IP 覆盖」下发给某个播放器。
-  ///
-  /// 和 [configure] 分开是因为它要在拿到本次播放的解析结果后才能确定，
-  /// 而 `configure` 只在播放器创建时跑一次。
-  ///
-  /// ## 为什么这里最终没有用 `stream-lavf-o`
-  ///
-  /// 试过 `stream-lavf-o=connect_to=域名:443->IP`（libavformat 官方支持的
-  /// 覆盖语法），实测会让 mpv 直接 `Failed to open <url>`：该属性一旦设置
-  /// 就**整体替换**了流选项串，把 mpv 自己依赖的默认项一起冲掉。
-  ///
-  /// 现在的做法：不碰 mpv 的流选项。站点域名在系统 DNS 下虽然可能被污染，
-  /// 但实测这台设备能正常解析（`195.154.100.108` 之类），且 mpv 会自己
-  /// 跟随 302 到 CDN。真遇到解析不了的情况，用户仍可在设置里填代理。
-  static Future<void> applySiteIpTo(Player player, String? ip) async {
-    if (kIsWeb) return;
-    // 保留接口：将来若找到不破坏默认选项的注入方式（例如 mpv 的
-    // `--dns-over-https` 或自定义 resolver），在这里实现。
-    // 目前刻意不做任何事。
-    if ((ip ?? '').isEmpty) return;
-  }
-
   /// 便于测试查看当前设置。
   @visibleForTesting
   static Map<String, String> get debugProps => Map.unmodifiable(_props);

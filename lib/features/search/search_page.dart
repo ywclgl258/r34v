@@ -27,8 +27,9 @@ class SearchPage extends ConsumerStatefulWidget {
 }
 
 class _SearchPageState extends ConsumerState<SearchPage> {
-  late final TextEditingController _text =
-      TextEditingController(text: widget.initialQuery);
+  late final TextEditingController _text = TextEditingController(
+    text: widget.initialQuery,
+  );
   final _focus = FocusNode();
   final _scroll = ScrollController();
 
@@ -41,6 +42,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   bool _loadingMore = false;
   String? _error;
   bool _searched = false;
+  int _searchRevision = 0;
 
   @override
   void initState() {
@@ -51,7 +53,9 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       _searched = true;
       WidgetsBinding.instance.addPostFrameCallback((_) => _search(1));
     } else {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _focus.requestFocus());
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _focus.requestFocus(),
+      );
     }
   }
 
@@ -73,7 +77,13 @@ class _SearchPageState extends ConsumerState<SearchPage> {
 
   Future<void> _search(int page) async {
     final q = _text.text.trim();
-    if (q.isEmpty) return;
+    final revision = page == 1 ? ++_searchRevision : _searchRevision;
+    if (q.isEmpty) {
+      if (page == 1 && _loading) {
+        setState(() => _loading = false);
+      }
+      return;
+    }
 
     setState(() {
       if (page == 1) {
@@ -87,20 +97,14 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       }
     });
 
-    // 记一笔历史（只记成功的搜索词）
-    ref.read(searchHistoryProvider.notifier).add(q);
-
     try {
       final api = ref.read(rule34ApiProvider);
       final result = await api.fetchFeed(
-        FeedRequest(
-          kind: FeedKind.search,
-          target: q,
-          sort: _sort,
-          page: page,
-        ),
+        FeedRequest(kind: FeedKind.search, target: q, sort: _sort, page: page),
       );
-      if (!mounted) return;
+      if (!mounted || revision != _searchRevision) return;
+      // 只把成功完成的搜索词记入历史。
+      ref.read(searchHistoryProvider.notifier).add(q);
       setState(() {
         _results = page == 1 ? result.cards : [..._results, ...result.cards];
         _pager = result.pager;
@@ -109,7 +113,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         _loadingMore = false;
       });
     } on HttpException catch (e) {
-      if (!mounted) return;
+      if (!mounted || revision != _searchRevision) return;
       setState(() {
         _error = e.message.contains('人机验证')
             ? '站点要求人机验证，暂时搜不了'
@@ -118,14 +122,14 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         _loadingMore = false;
       });
     } on ParseException catch (e) {
-      if (!mounted) return;
+      if (!mounted || revision != _searchRevision) return;
       setState(() {
         _error = '站点结构变了：${e.message}';
         _loading = false;
         _loadingMore = false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || revision != _searchRevision) return;
       setState(() {
         _error = '搜索失败：$e';
         _loading = false;
@@ -151,9 +155,8 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         title: Container(
           height: 42,
           decoration: BoxDecoration(
-            color: R34Color.surfaceRaised.withValues(alpha: 0.85),
-            borderRadius: BorderRadius.circular(R34Radius.pill),
-            border: Border.all(color: R34Color.glassBorder),
+            color: R34Color.surfaceRaised,
+            borderRadius: BorderRadius.circular(R34Radius.sm),
           ),
           child: TextField(
             controller: _text,
@@ -184,8 +187,11 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                       onPressed: () {
                         _text.clear();
                         setState(() {
+                          _searchRevision++;
                           _results = const [];
                           _searched = false;
+                          _loading = false;
+                          _loadingMore = false;
                           _error = null;
                         });
                       },
@@ -197,7 +203,10 @@ class _SearchPageState extends ConsumerState<SearchPage> {
         actions: [
           IconButton(
             tooltip: '搜索',
-            icon: const Icon(Icons.arrow_forward_rounded, color: R34Color.accentBright),
+            icon: const Icon(
+              Icons.arrow_forward_rounded,
+              color: R34Color.accentBright,
+            ),
             onPressed: _submit,
           ),
           const SizedBox(width: R34Space.x1),
@@ -223,7 +232,10 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                     Padding(
                       padding: const EdgeInsets.only(right: R34Space.x2),
                       child: ChoiceChip(
-                        label: Text(s.label, style: const TextStyle(fontSize: 12)),
+                        label: Text(
+                          s.label,
+                          style: const TextStyle(fontSize: 12),
+                        ),
                         selected: _sort == s,
                         visualDensity: VisualDensity.compact,
                         onSelected: (_) {
@@ -360,16 +372,10 @@ class _SearchPlaceholder extends StatelessWidget {
           runSpacing: R34Space.x2,
           children: [
             for (final q in history)
-              ActionChip(
-                label: Text(q),
-                onPressed: () => onPick(q),
-              ),
+              ActionChip(label: Text(q), onPressed: () => onPick(q)),
           ],
         ),
       ],
     );
   }
 }
-
-
-

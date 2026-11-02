@@ -69,20 +69,6 @@ class MpvBackend implements PlayerBackend {
     if (!_disposed) _configured = true;
   }
 
-  /// 把 DoH 解析出的站点 IP 交给 libmpv。
-  ///
-  /// 必须在这里注入、而不是在 [configure] 里一次性做完：`configure` 是
-  /// 「播放器属性就绪」时调用的，那时还没有本次播放的 URL，也就无从知道
-  /// 该解析哪个域名。open 之前拿到 IP 再下发，语义最清晰。
-  Future<void> applySiteIp(String? ip) async {
-    if (_disposed || _player == null) return;
-    try {
-      await PlayerBootstrap.applySiteIpTo(_player!, ip);
-    } catch (_) {
-      // 属性下发失败不该阻断播放：mpv 会退回系统 DNS
-    }
-  }
-
   @override
   Widget videoWidget() {
     // build 阶段就调用，不能返回 null；未 open 时给一个黑底占位，
@@ -214,4 +200,15 @@ class MpvBackend implements PlayerBackend {
 
   @override
   double get currentVolume => _player?.state.volume ?? _volume;
+
+  @override
+  double? get aspectRatio {
+    final p = _player;
+    if (p == null) return null;
+    final w = p.state.width;
+    final h = p.state.height;
+    // media_kit 的 width/height 是 int?，未解码时可能为 null 或 0
+    if (w == null || h == null || w <= 0 || h <= 0) return null;
+    return w / h;
+  }
 }

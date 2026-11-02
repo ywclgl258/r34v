@@ -101,6 +101,46 @@ class VideoCard {
 
   @override
   String toString() => 'VideoCard($id, $duration, $viewsText, $title)';
+
+  /// 序列化，用于列表缓存（见 `lib/data/local/feed_cache.dart`）。
+  ///
+  /// 字段名用短键：条目多（一页 23 条 × 多页 × 多个列表），
+  /// 长键名在 shared_preferences 的 JSON 里会明显变大。
+  Map<String, dynamic> toJson() => {
+    'i': id,
+    'u': url,
+    's': slug,
+    't': title,
+    'h': thumb,
+    'p': preview,
+    'd': duration,
+    'ds': durationSeconds,
+    'v': viewsText,
+    'r': ratingText,
+    'c': commentsText,
+    'a': addedText,
+    'hd': isHd ? 1 : 0,
+    'sn': hasSound ? 1 : 0,
+    'ty': type,
+  };
+
+  static VideoCard fromJson(Map<String, dynamic> j) => VideoCard(
+    id: j['i'] as String? ?? '',
+    url: j['u'] as String? ?? '',
+    slug: j['s'] as String? ?? '',
+    title: j['t'] as String? ?? '',
+    thumb: j['h'] as String? ?? '',
+    preview: j['p'] as String? ?? '',
+    duration: j['d'] as String? ?? '',
+    durationSeconds: (j['ds'] as num?)?.toInt() ?? 0,
+    viewsText: j['v'] as String? ?? '',
+    ratingText: j['r'] as String? ?? '',
+    commentsText: j['c'] as String? ?? '',
+    addedText: j['a'] as String? ?? '',
+    isHd: (j['hd'] as num?)?.toInt() == 1,
+    hasSound: (j['sn'] as num?)?.toInt() == 1,
+    type: j['ty'] as String? ?? '',
+  );
 }
 
 /// 分页器状态。`total` 是总页数，`current` 是当前页（站点未给出时为 0）。

@@ -264,4 +264,12 @@ class ExoBackend implements PlayerBackend {
 
   @override
   double get currentVolume => (_c?.value.volume ?? (_volume / 100)) * 100;
+
+  @override
+  double? get aspectRatio {
+    final c = _c;
+    if (c == null || !c.value.isInitialized) return null;
+    final ar = c.value.aspectRatio;
+    return ar > 0 ? ar : null;
+  }
 }
