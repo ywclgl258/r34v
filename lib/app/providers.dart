@@ -9,6 +9,8 @@ import '../domain/video_card.dart';
 import '../data/local/video_cache.dart';
 import '../data/remote/auth_client.dart';
 import '../data/remote/stream_fetcher.dart';
+import '../data/remote/host_router.dart';
+import '../data/remote/site_client_io.dart' if (dart.library.js_interop) '../data/remote/site_client_web.dart';
 import '../data/remote/stream_resolver.dart';
 import '../data/remote/tag_translator.dart';
 import '../data/remote/rule34_api.dart';
@@ -47,6 +49,26 @@ class CdnDirectController extends Notifier<bool> {
 
 final cdnDirectProvider =
     NotifierProvider<CdnDirectController, bool>(CdnDirectController.new);
+
+/// 「站点直连 IP」开关的响应式镜像。
+class DirectIpController extends Notifier<bool> {
+  @override
+  bool build() => ref.watch(libraryStoreProvider).directIp;
+
+  Future<void> set(bool v) async {
+    await ref.read(libraryStoreProvider).setDirectIp(v);
+    state = v;
+  }
+}
+
+final directIpProvider =
+    NotifierProvider<DirectIpController, bool>(DirectIpController.new);
+
+/// 站点 IP 路由。全局单例：失败计数要跨请求累积，否则每次都是新实例、
+/// 永远学不到「哪个 IP 在用户那边不通」。
+final hostRouterProvider = Provider<HostRouter>((ref) {
+  return HostRouter(enabled: ref.watch(libraryStoreProvider).directIp);
+});
 
 /// 边下边播的流抓取器。全局单例，避免同一视频重复下载。
 final streamFetcherProvider = Provider<StreamFetcher>((ref) {
@@ -177,7 +199,12 @@ final authProvider =
 final rule34ApiProvider = Provider<Rule34Api>((ref) {
   // 登录态变化时重建 API，让它带上新的会话 cookie
   final session = ref.watch(authProvider);
-  final api = Rule34Api(cookie: session?.cookieHeader);
+  final api = Rule34Api(
+    cookie: session?.cookieHeader,
+    // 注入全局 router：失败计数要跨请求累积，否则永远学不到
+    // 「哪个 IP 在用户那边不通」。
+    client: SiteClientImpl(router: ref.watch(hostRouterProvider)),
+  );
   ref.onDispose(api.client.dispose);
   return api;
 });
@@ -359,3 +386,5 @@ class AutoFullscreenNotifier extends Notifier<bool> {
 
 final autoFullscreenProvider =
     NotifierProvider<AutoFullscreenNotifier, bool>(AutoFullscreenNotifier.new);
+
+

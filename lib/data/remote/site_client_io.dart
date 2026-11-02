@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io' as io;
 
 import '../../core/constants.dart';
+import 'host_router.dart';
 import 'site_client_base.dart';
 
 /// 原生实现（Android / Windows）：直接用 `dart:io` 的 HttpClient。
@@ -18,12 +19,20 @@ class SiteClientImpl implements SiteClient {
     Duration? timeout,
     this.maxRetries = 3,
     Duration? retryBaseDelay,
+    HostRouter? router,
   })  : _timeout = timeout ?? const Duration(seconds: 20),
-        _retryBaseDelay = retryBaseDelay ?? const Duration(milliseconds: 600);
+        _retryBaseDelay = retryBaseDelay ?? const Duration(milliseconds: 600),
+        _router = router ?? HostRouter();
 
   final Duration _timeout;
   final int maxRetries;
   final Duration _retryBaseDelay;
+
+  /// 站点 IP 路由：首选一个 IP，其余兜底。
+  ///
+  /// 内置 IP 只是**候选**——站点换机房后必然过期，所以试完全部候选
+  /// 就回退系统 DNS 正常解析。见 [HostRouter] 的说明。
+  final HostRouter _router;
 
   /// Cookie：host → name → value。
   final Map<String, Map<String, String>> _cookies = {};
@@ -109,6 +118,74 @@ class SiteClientImpl implements SiteClient {
     String accept = 'text/html',
     Map<String, String>? headers,
   }) async {
+    // 先按「首选 IP」走一遍；失败就换下一个候选，全试完退回系统 DNS。
+    //
+    // 为什么要走 IP：`rule34video.com` 的 DNS 结果随 resolver 变化
+    // （实测本地 / 8.8.8.8 / 1.1.1.1 给出三个不同 IP，且都可用）。
+    // 本地 DNS 被污染或某个 IP 不通时，内置候选能兜住。
+    //
+    // 注意：靠 IP 选优「提速」的收益很小（实测差 5% 级别，接近抖动），
+    // 这个机制的价值在容错，不在速度。
+    final target = Uri.parse(url);
+    final apHost = _router.enabled ? _router.preferred : null;
+    final candidates = <String?>[
+      // 首选 IP；为 null 时这一项不参与，直接落到下面的系统 DNS
+      ?apHost,
+      // 同一站点域名的请求才值得换 IP；其它域（图片 CDN 等）直接走 DNS
+      if (apHost != null && _isSiteHost(target.host)) ..._restAfter(apHost),
+      null, // null = 系统 DNS
+    ];
+
+    Object? lastError;
+    for (final ip in candidates) {
+      try {
+        final r = await _requestVia(url, ip,
+            method: method, referer: referer, accept: accept, headers: headers);
+        if (ip != null) _router.recordSuccess(ip);
+        return r;
+      } catch (e) {
+        lastError = e;
+        if (ip != null) _router.recordFailure(ip);
+        _record('IP $ip 失败，换下一个：$e');
+      }
+    }
+    final e = lastError;
+    if (e is HttpException) throw e;
+    throw HttpException('请求失败：$e');
+  }
+
+  /// 依次列出 [ip] 之后还能试的候选。
+  List<String> _restAfter(String ip) {
+    final out = <String>[];
+    var cur = _router.nextAfter(ip);
+    final guard = _router.endpoints.length + 1;
+    var steps = 0;
+    while (cur != null && steps < guard) {
+      out.add(cur);
+      cur = _router.nextAfter(cur);
+      steps++;
+    }
+    return out;
+  }
+
+  /// 只有站点自己的域名才换 IP。图片/视频走各自 CDN，域名不同。
+  bool _isSiteHost(String host) {
+    final siteHost = Uri.parse(Site.base).host;
+    return host == siteHost;
+  }
+
+  /// 真正发请求。[ipOverride] 为 null 时走系统 DNS。
+  ///
+  /// 换 IP 时**必须同时把 Host 头设回原域名**，否则站点会当成未知虚拟主机
+  /// （因为 HTTPS 的 SNI 与 Host 都要匹配）。
+  Future<HttpResult> _requestVia(
+    String url,
+    String? ipOverride, {
+    required String method,
+    String? referer,
+    String accept = 'text/html',
+    Map<String, String>? headers,
+  }) async {
     final sw = Stopwatch()..start();
     final client = io.HttpClient();
     var current = Uri.parse(url);
@@ -116,11 +193,20 @@ class SiteClientImpl implements SiteClient {
 
     try {
       while (true) {
-        final req = await client.openUrl(method, current).timeout(_timeout);
+        // 换 IP 只作用于**请求的主机名**，重定向后的新主机名不再替换
+        // （重定向多半指向 CDN，用 IP 打过去只会失败）。
+        final useIp = ipOverride != null && current.host == Uri.parse(url).host;
+        final target = useIp ? HostRouter.withIp(current, ipOverride) : current;
+
+        final req = await client.openUrl(method, target).timeout(_timeout);
         req.followRedirects = false;
         req.headers.set(io.HttpHeaders.userAgentHeader, Site.userAgent);
         req.headers.set(io.HttpHeaders.acceptHeader, accept);
         req.headers.set('accept-language', 'en-US,en;q=0.9');
+        if (useIp) {
+          // Host 头保持原域名；HttpClient 会据此设置 SNI
+          req.headers.set(io.HttpHeaders.hostHeader, current.host);
+        }
         if (referer != null) req.headers.set(io.HttpHeaders.refererHeader, referer);
         headers?.forEach((k, v) => req.headers.set(k, v));
         final cookie = _cookieHeader(current.host);
@@ -152,7 +238,9 @@ class SiteClientImpl implements SiteClient {
           url: current.toString(),
           elapsed: sw.elapsed,
         );
-        _record('${result.status} ${result.body.length}B ${result.elapsed.inMilliseconds}ms $current');
+        _record('${result.status} ${result.body.length}B '
+            '${result.elapsed.inMilliseconds}ms '
+            '${ipOverride ?? 'DNS'} $current');
         if (result.looksLikeChallenge) {
           _record('  ⚠ 疑似 ddos-guard 挑战页（${result.body.length}B）');
         }
@@ -210,3 +298,4 @@ class SiteClientImpl implements SiteClient {
 
 /// 平台工厂：原生实现。
 SiteClient createSiteClient() => SiteClientImpl();
+

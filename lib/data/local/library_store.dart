@@ -407,8 +407,20 @@ class LibraryStore {
 
   // ---------- 播放网络 ----------
 
-  /// 是否用「CDN 直链」连播放源（**默认开**）。
+  /// 是否用「站点直连 IP」访问站点（**默认开**）。
   ///
+  /// 开启后请求先打内置 IP（一个首选、其余兜底），全都失败才退回系统 DNS。
+  /// `rule34video.com` 的解析结果随 DNS 服务器变化（实测本地 / 8.8.8.8 /
+  /// 1.1.1.1 给出三个不同 IP，都可用），本地 DNS 被污染时内置候选能兜住。
+  ///
+  /// 注意：这个机制的收益在**容错**，不在速度——实测各 IP 差异只有 5% 级别。
+  bool get directIp =>
+      _prefs.getBool('${_kSettings}_direct_ip') ?? true;
+
+  Future<void> setDirectIp(bool v) =>
+      _prefs.setBool('${_kSettings}_direct_ip', v);
+
+  /// 是否用「CDN 直链」连播放源（**默认开**）。
   /// 开启时：播放前先把站点的 `/get_file/...` 解析成 CDN 直链，播放器
   /// 直接连 CDN，不再每次 Range 请求都重走一遍 302。
   ///

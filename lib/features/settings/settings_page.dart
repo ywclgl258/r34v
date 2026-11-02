@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../core/player_bootstrap.dart';
 import '../../data/local/apk_installer.dart';
+import '../../data/remote/host_router.dart';
 import '../../ui/components.dart';
 import '../../ui/glass.dart';
 import '../../ui/tokens.dart';
@@ -113,7 +114,11 @@ class SettingsPage extends ConsumerWidget {
           ),
           _Group(
             title: '网络',
-            children: const [_CdnDirectTile(), _ProxyTile()],
+            children: const [
+              _DirectIpTile(),
+              _CdnDirectTile(),
+              _ProxyTile(),
+            ],
           ),
           _Group(
             title: '关于',
@@ -343,6 +348,33 @@ class _UpdateTile extends ConsumerWidget {
           child: const Text('检查'),
         );
     }
+  }
+}
+
+/// 「站点直连 IP」开关（默认开）。
+///
+/// `rule34video.com` 的 DNS 结果随 resolver 变化——实测本地 / 8.8.8.8 /
+/// 1.1.1.1 给出三个不同 IP，且都可用。开启后先打内置首选 IP，
+/// 失败依次换备用，全失败才退回系统 DNS。
+///
+/// **价值在容错而非提速**：实测各 IP 差异只有 5% 级别，接近网络抖动。
+class _DirectIpTile extends ConsumerWidget {
+  const _DirectIpTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final on = ref.watch(directIpProvider);
+    return SwitchListTile(
+      secondary: const Icon(Icons.dns_rounded, size: 21),
+      title: const Text('站点直连 IP'),
+      subtitle: Text(
+        on
+            ? '内置 ${kBuiltinEndpoints.length} 个 IP，首选失败自动换备用'
+            : '走系统 DNS 解析，DNS 被污染时可能连不上',
+      ),
+      value: on,
+      onChanged: (v) => ref.read(directIpProvider.notifier).set(v),
+    );
   }
 }
 
@@ -709,3 +741,4 @@ class _PlayerEngineTile extends ConsumerWidget {
     );
   }
 }
+
