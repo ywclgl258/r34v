@@ -9,6 +9,8 @@ import '../domain/video_card.dart';
 import '../data/local/video_cache.dart';
 import '../data/remote/auth_client.dart';
 import '../data/remote/stream_fetcher.dart';
+import '../data/remote/doh_connector.dart';
+import '../data/remote/doh_resolver.dart';
 import '../data/remote/host_router.dart';
 import '../data/remote/site_client_io.dart' if (dart.library.js_interop) '../data/remote/site_client_web.dart';
 import '../data/remote/stream_resolver.dart';
@@ -64,16 +66,49 @@ class DirectIpController extends Notifier<bool> {
 final directIpProvider =
     NotifierProvider<DirectIpController, bool>(DirectIpController.new);
 
+/// 「DoH 域名解析」开关的响应式镜像。
+class DohEnabledController extends Notifier<bool> {
+  @override
+  bool build() => ref.watch(libraryStoreProvider).dohEnabled;
+
+  Future<void> set(bool v) async {
+    await ref.read(libraryStoreProvider).setDohEnabled(v);
+    state = v;
+  }
+}
+
+final dohEnabledProvider =
+    NotifierProvider<DohEnabledController, bool>(DohEnabledController.new);
+
 /// 站点 IP 路由。全局单例：失败计数要跨请求累积，否则每次都是新实例、
 /// 永远学不到「哪个 IP 在用户那边不通」。
+///
+/// **注意：开了 DoH 之后它只是兜底**。正常情况下 IP 来自 DoH 查询，
+/// 走不到这里。保留它是因为 DoH 全挂时还得有路走。
 final hostRouterProvider = Provider<HostRouter>((ref) {
   return HostRouter(enabled: ref.watch(libraryStoreProvider).directIp);
+});
+
+/// DoH 解析器。全局单例：解析结果要缓存（TTL 5 分钟），
+/// 不然每次请求都查一次 DNS，反而拖慢。
+final dohResolverProvider = Provider<DohResolver>((ref) {
+  return DohResolver();
+});
+
+/// DoH 连接器。装上它之后，**所有走它所装 client 的请求**都会在
+/// socket 层把站点域名换成 DoH 查到的 IP——HTTP 层看到的仍是原域名，
+/// Host / SNI / 证书校验全部自动正确。
+final dohConnectorProvider = Provider<DnsOverHttpsConnector>((ref) {
+  return DnsOverHttpsConnector(
+    resolver: ref.watch(dohResolverProvider),
+    enabled: ref.watch(libraryStoreProvider).dohEnabled,
+  );
 });
 
 /// 边下边播的流抓取器。全局单例，避免同一视频重复下载。
 final streamFetcherProvider = Provider<StreamFetcher>((ref) {
   final proxy = ref.watch(libraryStoreProvider).playerProxy;
-  return StreamFetcher(proxy: proxy);
+  return StreamFetcher(proxy: proxy, connector: ref.watch(dohConnectorProvider));
 });
 
 /// 站点地址 → CDN 直链的解析器。
@@ -93,7 +128,10 @@ final streamResolverProvider = Provider<StreamResolver>((ref) {
 });
 
 final videoCacheProvider = Provider<VideoCache>((ref) {
-  return VideoCache(ref.watch(sharedPrefsProvider));
+  return VideoCache(
+    ref.watch(sharedPrefsProvider),
+    connector: ref.watch(dohConnectorProvider),
+  );
 });
 
 /// 缓存索引。写操作后 invalidate 这个，片库和详情页会跟着刷新。
@@ -203,7 +241,10 @@ final rule34ApiProvider = Provider<Rule34Api>((ref) {
     cookie: session?.cookieHeader,
     // 注入全局 router：失败计数要跨请求累积，否则永远学不到
     // 「哪个 IP 在用户那边不通」。
-    client: SiteClientImpl(router: ref.watch(hostRouterProvider)),
+    client: SiteClientImpl(
+      router: ref.watch(hostRouterProvider),
+      connector: ref.watch(dohConnectorProvider),
+    ),
   );
   ref.onDispose(api.client.dispose);
   return api;
@@ -386,5 +427,7 @@ class AutoFullscreenNotifier extends Notifier<bool> {
 
 final autoFullscreenProvider =
     NotifierProvider<AutoFullscreenNotifier, bool>(AutoFullscreenNotifier.new);
+
+
 
 

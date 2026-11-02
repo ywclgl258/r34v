@@ -407,6 +407,20 @@ class LibraryStore {
 
   // ---------- 播放网络 ----------
 
+  /// 是否用 DoH（DNS over HTTPS）解析站点域名（**默认开**）。
+  ///
+  /// 这是解决「IP 会过期」的根本办法。站点在做 DNS 轮询，每次解析
+  /// 返回的 IP 都不同（实测：108.160.167.158 / 108.160.165.9 / 52.175.9.80），
+  /// 所以任何硬编码列表都会在几天内过时。
+  ///
+  /// DoH 每次拿到的都是当下的真实 IP，既不怕过期也不怕本地 DNS 污染。
+  /// 关掉后退回「硬编码 IP → 系统 DNS」的老路。
+  bool get dohEnabled =>
+      _prefs.getBool('${_kSettings}_doh') ?? true;
+
+  Future<void> setDohEnabled(bool v) =>
+      _prefs.setBool('${_kSettings}_doh', v);
+
   /// 是否用「站点直连 IP」访问站点（**默认开**）。
   ///
   /// 开启后请求先打内置 IP（一个首选、其余兜底），全都失败才退回系统 DNS。

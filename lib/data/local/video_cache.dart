@@ -8,6 +8,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/constants.dart';
+import '../remote/dio_proxy.dart';
+import '../remote/doh_connector.dart';
 
 /// 一条缓存记录。
 class CachedVideo {
@@ -99,7 +101,19 @@ class CacheProgress {
 /// 在 token 过期时拿到半截脏文件。干脆整段下载到 `.part`，校验大小后再改名，
 /// 失败就删掉重来——宁可多花一次流量，也不要一个播到一半坏掉的文件。
 class VideoCache {
-  VideoCache(this._prefs);
+  VideoCache(this._prefs, {DnsOverHttpsConnector? connector}) {
+    _dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 20),
+      receiveTimeout: const Duration(minutes: 10),
+      headers: {
+        'User-Agent': Site.userAgent,
+        'Referer': '${Site.base}/',
+      },
+    ));
+    // 装上 DoH 连接器后，缓存下载和页面浏览走同一套解析，
+    // 不会出现「页面能开、下载连不上」这种割裂。
+    applyProxyToDio(_dio, '', connector: connector);
+  }
 
   final SharedPreferences _prefs;
 
@@ -113,15 +127,7 @@ class VideoCache {
   /// 小于这个长度的视频不值得缓存（几秒钟的片段）。
   static const int minDurationSeconds = 30;
 
-  final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 20),
-    receiveTimeout: const Duration(minutes: 10),
-    headers: {
-      'User-Agent': Site.userAgent,
-      'Referer': '${Site.base}/',
-    },
-  ));
-
+  late final Dio _dio;
   bool get autoCache => _prefs.getBool(_kAutoCache) ?? false;
 
   Future<void> setAutoCache(bool v) => _prefs.setBool(_kAutoCache, v);
@@ -419,3 +425,4 @@ class VideoCache {
     }
   }
 }
+

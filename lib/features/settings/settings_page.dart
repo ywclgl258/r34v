@@ -115,6 +115,7 @@ class SettingsPage extends ConsumerWidget {
           _Group(
             title: '网络',
             children: const [
+              _DohTile(),
               _DirectIpTile(),
               _CdnDirectTile(),
               _ProxyTile(),
@@ -348,6 +349,37 @@ class _UpdateTile extends ConsumerWidget {
           child: const Text('检查'),
         );
     }
+  }
+}
+
+/// 「DoH 域名解析」开关（默认开）。
+///
+/// 这是解决「IP 会过期」的根本办法。站点在做 DNS 轮询，每次解析返回的
+/// IP 都不同，所以任何硬编码列表都会在几天内过时。
+///
+/// 实测这个域名在**国内 DNS 下是被污染的**：AliDNS 返回 Facebook 的 IP 段
+/// （`69.171.242.11` 等），全都连不通；而 Cloudflare / Google 都稳定返回
+/// `190.115.31.243`，200 正常。所以预设顺序把国外服务商排在前面。
+class _DohTile extends ConsumerWidget {
+  const _DohTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final on = ref.watch(dohEnabledProvider);
+    return SwitchListTile(
+      secondary: const Icon(Icons.travel_explore_rounded, size: 21),
+      title: const Text('DoH 域名解析'),
+      subtitle: Text(
+        on
+            ? '每次请求前查询真实 IP，不怕地址过期或 DNS 污染'
+            : '用固定 IP 列表和系统 DNS，地址变了可能连不上',
+      ),
+      value: on,
+      onChanged: (v) async {
+        await ref.read(dohEnabledProvider.notifier).set(v);
+        if (v) ref.read(dohConnectorProvider).reset();
+      },
+    );
   }
 }
 

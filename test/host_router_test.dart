@@ -13,12 +13,14 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('内置候选表', () {
-    test('三个 IP 都保留，一个都不丢', () {
-      expect(kBuiltinEndpoints.length, 3);
+    test('保留可用的 IP，剔掉了实测慢 7 倍的那个', () {
+      // 曾经还有 4.78.139.54（Cloudflare DNS 解析到的），实测它单独请求
+      // 首页要 22.13s，比其它 IP 慢 7 倍，留着反而拖慢——已删除。
       final ips = kBuiltinEndpoints.map((e) => e.ip).toList();
       expect(ips, contains('108.160.162.109'));
       expect(ips, contains('128.121.243.76'));
-      expect(ips, contains('4.78.139.54'));
+      expect(ips, isNot(contains('4.78.139.54')),
+          reason: '这个 IP 实测 22 秒，比其它慢 7 倍');
     });
 
     test('首选是 weight 最小的那个（实测最快）', () {
@@ -37,15 +39,13 @@ void main() {
       final first = r.preferred!;
       final second = r.nextAfter(first);
       final third = second == null ? null : r.nextAfter(second);
-      final fourth = third == null ? null : r.nextAfter(third);
 
       expect(first, isNotNull);
-      expect(second, isNotNull, reason: '第二个候选必须存在');
-      expect(third, isNotNull, reason: '第三个候选必须存在');
-      expect(fourth, isNull, reason: '试完就回退系统 DNS');
+      expect(second, isNotNull, reason: '至少要有第二个候选当兜底');
+      expect(third, isNull, reason: '试完就回退系统 DNS');
     });
 
-    test('三个 IP 各不相同，且都在内置表里', () {
+    test('候选各不相同，且都在内置表里', () {
       final r = HostRouter();
       final seen = <String>[];
       String? cur = r.preferred;
@@ -53,8 +53,8 @@ void main() {
         seen.add(cur);
         cur = r.nextAfter(cur);
       }
-      expect(seen.length, 3);
-      expect(seen.toSet().length, 3, reason: '不能重复试同一个 IP');
+      expect(seen.length, kBuiltinEndpoints.length);
+      expect(seen.toSet().length, seen.length, reason: '不能重复试同一个 IP');
       for (final ip in seen) {
         expect(kBuiltinEndpoints.map((e) => e.ip), contains(ip));
       }

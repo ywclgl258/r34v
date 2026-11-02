@@ -47,18 +47,28 @@ class HostEndpoint {
   String toString() => '$ip${label.isEmpty ? '' : '($label)'}';
 }
 
-/// 内置候选表。
+/// 内置候选表（**兜底用**，正常情况下会被 DoH 解析结果取代）。
 ///
-/// 顺序按实测「详情页最优耗时」排过：
-/// `108.160.162.109` 1.311s < `128.121.243.76` 1.382s < `4.78.139.54` 1.566s。
+/// 站点在做 DNS 轮询，**每次解析返回的 IP 都不同**：
 ///
-/// **注意这只是初始顺序**。真实顺序由 [HostRouter] 的探测结果决定，
-/// 因为网络路径千差万别，我们这边快不代表用户那边也快。
+/// ```
+/// 108.160.167.158
+/// 108.160.165.9
+/// 52.175.9.80
+/// ```
+///
+/// 所以硬编码列表注定会过时，它的定位只是「DoH 全挂时的最后一根稻草」。
+///
+/// 曾经还有 `4.78.139.54`（Cloudflare DNS 解析到的），实测它单独请求
+/// 首页要 **22.13s**，比其它 IP 慢 7 倍——留着反而会拖慢，已删除。
 const List<HostEndpoint> kBuiltinEndpoints = [
   HostEndpoint(ip: '108.160.162.109', label: 'dns.google', weight: 0),
   HostEndpoint(ip: '128.121.243.76', label: 'dns.local', weight: 1),
-  HostEndpoint(ip: '4.78.139.54', label: 'dns.cloudflare', weight: 2),
 ];
+
+/// 站点主机名。DoH 只对站点自身域名生效——图片和视频走各自的 CDN，
+/// 域名完全不同，不应该被替换。
+const String kSiteHost = 'rule34video.com';
 
 /// 站点 IP 路由。
 ///

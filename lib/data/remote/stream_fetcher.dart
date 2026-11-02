@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../core/constants.dart';
 import 'dio_proxy.dart';
+import 'doh_connector.dart';
 
 /// 把远端视频「边下边播」到本地文件。
 ///
@@ -26,7 +27,7 @@ import 'dio_proxy.dart';
 /// 直链 token 会过期：分段下载中遇到 403 会通过 [fetch] 的 refreshUrl
 /// 回调换新链续传。
 class StreamFetcher {
-  StreamFetcher({String proxy = '', Dio? dio})
+  StreamFetcher({String proxy = '', Dio? dio, DnsOverHttpsConnector? connector})
       : _dio = dio ??
             Dio(BaseOptions(
               connectTimeout: const Duration(seconds: 20),
@@ -38,7 +39,7 @@ class StreamFetcher {
                 'Accept-Encoding': 'identity',
               },
             )) {
-    applyProxyToDio(_dio, proxy);
+    applyProxyToDio(_dio, proxy, connector: connector);
   }
 
   late final Dio _dio;
@@ -480,3 +481,4 @@ class CancelException {
   static bool isCancel(DioException e) =>
       e.type == DioExceptionType.cancel || CancelToken.isCancel(e);
 }
+

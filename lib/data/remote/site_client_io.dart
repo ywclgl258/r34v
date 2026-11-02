@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io' as io;
 
 import '../../core/constants.dart';
+import 'doh_connector.dart';
 import 'host_router.dart';
 import 'site_client_base.dart';
 
@@ -20,6 +21,7 @@ class SiteClientImpl implements SiteClient {
     this.maxRetries = 3,
     Duration? retryBaseDelay,
     HostRouter? router,
+    this.connector,
   })  : _timeout = timeout ?? const Duration(seconds: 20),
         _retryBaseDelay = retryBaseDelay ?? const Duration(milliseconds: 600),
         _router = router ?? HostRouter();
@@ -33,6 +35,13 @@ class SiteClientImpl implements SiteClient {
   /// 内置 IP 只是**候选**——站点换机房后必然过期，所以试完全部候选
   /// 就回退系统 DNS 正常解析。见 [HostRouter] 的说明。
   final HostRouter _router;
+
+  /// DNS over HTTPS 连接器。
+  ///
+  /// 装上之后域名在 socket 层就被换成 DoH 查到的 IP，HTTP 层看到的
+  /// 仍是原域名（Host / SNI / 证书校验全自动正确）。
+  /// 为 null 时退回 [_router] 那套「换 IP + 补 Host 头」的旧逻辑。
+  final DnsOverHttpsConnector? connector;
 
   /// Cookie：host → name → value。
   final Map<String, Map<String, String>> _cookies = {};
@@ -118,16 +127,22 @@ class SiteClientImpl implements SiteClient {
     String accept = 'text/html',
     Map<String, String>? headers,
   }) async {
-    // 先按「首选 IP」走一遍；失败就换下一个候选，全试完退回系统 DNS。
-    //
-    // 为什么要走 IP：`rule34video.com` 的 DNS 结果随 resolver 变化
-    // （实测本地 / 8.8.8.8 / 1.1.1.1 给出三个不同 IP，且都可用）。
-    // 本地 DNS 被污染或某个 IP 不通时，内置候选能兜住。
-    //
-    // 注意：靠 IP 选优「提速」的收益很小（实测差 5% 级别，接近抖动），
-    // 这个机制的价值在容错，不在速度。
     final target = Uri.parse(url);
-    final apHost = _router.enabled ? _router.preferred : null;
+
+    // 站点自己的域名：先问 DoH 要一个当下可连的 IP。
+    //
+    // 走的是「换 IP + 补 Host 头」这条路——为什么不在 socket 层拦截，
+    // 见 [DnsOverHttpsConnector] 的注释（`connectionFactory` 那条路
+    // 因为 HttpClient 不再做 TLS、且 `ConnectionTask` 是 final 而走不通）。
+    //
+    // DoH 拿不到可用 IP 时返回 null，下面的候选循环会退到硬编码列表
+    // 和系统 DNS。
+    String? dohIp;
+    if (connector != null && _isSiteHost(target.host)) {
+      dohIp = await connector!.resolveSiteIp();
+    }
+
+    final apHost = dohIp ?? (_router.enabled ? _router.preferred : null);
     final candidates = <String?>[
       // 首选 IP；为 null 时这一项不参与，直接落到下面的系统 DNS
       ?apHost,
@@ -187,7 +202,10 @@ class SiteClientImpl implements SiteClient {
     Map<String, String>? headers,
   }) async {
     final sw = Stopwatch()..start();
-    final client = io.HttpClient();
+    final raw = io.HttpClient();
+    // 换 IP 时 URI 的 host 会变成 IP，所以必须把 Host 头补回原域名，
+    // 否则站点会当成未知虚拟主机（404/421）。
+    final manualIp = ipOverride;
     var current = Uri.parse(url);
     var redirects = 0;
 
@@ -195,10 +213,10 @@ class SiteClientImpl implements SiteClient {
       while (true) {
         // 换 IP 只作用于**请求的主机名**，重定向后的新主机名不再替换
         // （重定向多半指向 CDN，用 IP 打过去只会失败）。
-        final useIp = ipOverride != null && current.host == Uri.parse(url).host;
-        final target = useIp ? HostRouter.withIp(current, ipOverride) : current;
+        final useIp = manualIp != null && current.host == Uri.parse(url).host;
+        final target = useIp ? HostRouter.withIp(current, manualIp) : current;
 
-        final req = await client.openUrl(method, target).timeout(_timeout);
+        final req = await raw.openUrl(method, target).timeout(_timeout);
         req.followRedirects = false;
         req.headers.set(io.HttpHeaders.userAgentHeader, Site.userAgent);
         req.headers.set(io.HttpHeaders.acceptHeader, accept);
@@ -255,7 +273,7 @@ class SiteClientImpl implements SiteClient {
       _record('SOCKET ${sw.elapsed.inMilliseconds}ms $url：${e.message}');
       throw HttpException('网络不可用：${e.message}', url: url);
     } finally {
-      client.close(force: true);
+      raw.close(force: true);
     }
   }
 
@@ -298,4 +316,8 @@ class SiteClientImpl implements SiteClient {
 
 /// 平台工厂：原生实现。
 SiteClient createSiteClient() => SiteClientImpl();
+
+
+
+
 

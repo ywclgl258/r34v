@@ -20,7 +20,14 @@ void main() {
 
   late SharedPreferences prefs;
   setUp(() async {
-    SharedPreferences.setMockInitialValues({});
+    // 关掉 DoH：这个测试验的是路由结构，不该真去查 DNS。
+    // 开着的话 DohResolver 会在测试环境发起真实网络请求，
+    // 留下一个 6 秒超时 Timer，测试结束时报
+    // "A Timer is still pending"。
+    SharedPreferences.setMockInitialValues({
+      'settings_v1_doh': false,
+      'settings_v1_direct_ip': false,
+    });
     prefs = await SharedPreferences.getInstance();
   });
 
