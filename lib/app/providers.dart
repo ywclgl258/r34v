@@ -11,7 +11,6 @@ import '../data/remote/auth_client.dart';
 import '../data/remote/stream_fetcher.dart';
 import '../data/remote/doh_connector.dart';
 import '../data/remote/doh_resolver.dart';
-import '../data/remote/host_router.dart';
 import '../data/remote/site_client_io.dart' if (dart.library.js_interop) '../data/remote/site_client_web.dart';
 import '../data/remote/stream_resolver.dart';
 import '../data/remote/tag_translator.dart';
@@ -80,24 +79,16 @@ class DohEnabledController extends Notifier<bool> {
 final dohEnabledProvider =
     NotifierProvider<DohEnabledController, bool>(DohEnabledController.new);
 
-/// 站点 IP 路由。全局单例：失败计数要跨请求累积，否则每次都是新实例、
-/// 永远学不到「哪个 IP 在用户那边不通」。
-///
-/// **注意：开了 DoH 之后它只是兜底**。正常情况下 IP 来自 DoH 查询，
-/// 走不到这里。保留它是因为 DoH 全挂时还得有路走。
-final hostRouterProvider = Provider<HostRouter>((ref) {
-  return HostRouter(enabled: ref.watch(libraryStoreProvider).directIp);
-});
-
 /// DoH 解析器。全局单例：解析结果要缓存（TTL 5 分钟），
 /// 不然每次请求都查一次 DNS，反而拖慢。
 final dohResolverProvider = Provider<DohResolver>((ref) {
   return DohResolver();
 });
 
-/// DoH 连接器。装上它之后，**所有走它所装 client 的请求**都会在
-/// socket 层把站点域名换成 DoH 查到的 IP——HTTP 层看到的仍是原域名，
-/// Host / SNI / 证书校验全部自动正确。
+/// DoH 连接器：负责「问 DoH 要一个当下可连的 IP」。
+///
+/// 它不再直接改 HTTP 请求，只提供 IP；怎么用由 SiteClient 决定
+/// （TCP 连 IP、TLS 对域名，见 host_router.dart 的 connectViaIp）。
 final dohConnectorProvider = Provider<DnsOverHttpsConnector>((ref) {
   return DnsOverHttpsConnector(
     resolver: ref.watch(dohResolverProvider),
@@ -242,8 +233,12 @@ final rule34ApiProvider = Provider<Rule34Api>((ref) {
     // 注入全局 router：失败计数要跨请求累积，否则永远学不到
     // 「哪个 IP 在用户那边不通」。
     client: SiteClientImpl(
-      router: ref.watch(hostRouterProvider),
+      useDirectIp: ref.watch(libraryStoreProvider).directIp,
       connector: ref.watch(dohConnectorProvider),
+      // 传用户配的代理：有代理就优先走代理。
+      // 实测两条路现在都稳定（各 5/5），但代理通常在 0.5–1s，
+      // 直连 0.7–3.4s，代理略优，而且不受本地 DNS 污染影响。
+      proxy: ref.watch(libraryStoreProvider).playerProxy,
       // 传 prefs 让 cookie 能跨启动存活。ddos-guard 的 __ddg1_ 有效期
       // 是一年，持久化之后正常使用几乎不会再撞挑战页。
       prefs: ref.watch(sharedPrefsProvider),
@@ -430,6 +425,7 @@ class AutoFullscreenNotifier extends Notifier<bool> {
 
 final autoFullscreenProvider =
     NotifierProvider<AutoFullscreenNotifier, bool>(AutoFullscreenNotifier.new);
+
 
 
 

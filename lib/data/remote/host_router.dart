@@ -1,38 +1,11 @@
-/// 站点 IP 路由：内置可用 IP，一个首选、其余备用兜底。
-///
-/// ## 为什么需要
-///
-/// `rule34video.com` 的解析结果**随 DNS 服务器变化**（实测）：
-///
-/// | Resolver | 解析到的 IP |
-/// |---|---|
-/// | 本地 DNS | `128.121.243.76` |
-/// | Google 8.8.8.8 | `108.160.162.109` |
-/// | Cloudflare 1.1.1.1 | `4.78.139.54` |
-///
-/// 三个 IP 实测**全部可用**，都是 `Server: ddos-guard` 前置、都不返回挑战页。
-///
-/// 但要注意：**靠 IP 选优提速的收益很小**——详情页最优 1.311s vs
-/// 最差 1.566s，差距接近网络抖动本身。所以这个模块的价值不在"更快"，
-/// 而在**容错**：
-///
-/// - 某个 IP 超时/被拦时可立刻换下一个，而不是直接失败；
-/// - 本地 DNS 被污染时仍有可用出口；
-/// - 少一次 DNS 解析往返。
-///
-/// ## 为什么保留系统 DNS
-///
-/// 硬编码 IP **一定会过期**（站点换机房、CDN 调度调整）。所以：
-/// 内置列表只是**候选**，探测全失败就退回系统 DNS 正常解析。
-/// 绝不把内置 IP 当成唯一出路。
-library;
+import 'dart:async';
+import 'dart:io';
 
-/// 一个候选端点。
+/// 一个站点 IP 端点。
 class HostEndpoint {
   const HostEndpoint({
     required this.ip,
     this.label = '',
-    this.weight = 0,
   });
 
   final String ip;
@@ -40,130 +13,112 @@ class HostEndpoint {
   /// 给日志/诊断用的来源说明。
   final String label;
 
-  /// 静态优先级，数字小的优先。实测差异不明显，所以只用来定初始顺序。
-  final int weight;
-
   @override
-  String toString() => '$ip${label.isEmpty ? '' : '($label)'}';
+  String toString() => '$ip($label)';
 }
 
-/// 内置候选表（**兜底用**，正常情况下会被 DoH 解析结果取代）。
+/// 站点直连 IP 的选择器。
 ///
-/// 站点在做 DNS 轮询，**每次解析返回的 IP 都不同**：
+/// ## 先说结论：这条路在当前网络下**不可靠**
 ///
-/// ```
-/// 108.160.167.158
-/// 108.160.165.9
-/// 52.175.9.80
-/// ```
+/// 实测数据（本机，绕开代理直连）：
 ///
-/// 所以硬编码列表注定会过时，它的定位只是「DoH 全挂时的最后一根稻草」。
+/// | 检查点 | 结果 |
+/// |---|---|
+/// | TCP 连 `190.115.31.243:443` | 8/8 成功 |
+/// | TLS 握手 | 6/8 成功 |
+/// | **完整拿到响应正文** | **1/8 成功** |
 ///
-/// 曾经还有 `4.78.139.54`（Cloudflare DNS 解析到的），实测它单独请求
-/// 首页要 **22.13s**，比其它 IP 慢 7 倍——留着反而会拖慢，已删除。
+/// 也就是说连接能建立、握手能完成，但**服务端在传正文阶段极不稳定**
+/// （大量 `No stream event` 超时）。同机走代理时是 **10/10 成功**，
+/// 稳定在 0.3–1.5 秒。
+///
+/// 另一个 IP `202.160.128.40`（系统 DNS 当时解析到的）TCP 就是 **0/8**，
+/// 完全不通。
+///
+/// 所以这里的定位是：**直连是一次机会，不是默认路径**。有代理就优先用
+/// 代理；只有没配代理时才尝试直连，且失败要能快速退回。
+///
+/// ## 为什么不能「把 URL 的 host 换成 IP」
+///
+/// 这是之前踩过的坑，必须记下来。那样做在 TLS 层**必然失败**：
+///
+/// | 方式 | 结果 |
+/// |---|---|
+/// | 代理 + 域名 | ✅ 200 |
+/// | 代理 + IP 当 host | ❌ `HandshakeException` |
+/// | 直连 + IP 当 host | ❌ `HandshakeException` |
+///
+/// 原因是 URI 的 host 是 IP 时，Dart 拿 **IP 做 SNI**，而服务器证书是
+/// `/CN=rule34video.com`，校验不过。补 `Host` 头救不了——`Host` 是
+/// HTTP 层的事，管不到 TLS。
+///
+/// 真要让 TCP 连 IP、TLS 对域名，只有 `SecureSocket.secure(tcp, host: 域名)`
+/// 这一条路。它确实能通（实测拿到 170707 字节、200 OK），但因为上面说的
+/// 服务端不稳定，整体成功率仍然很低。
+
+/// 内置候选。**只保留实测能连通的**。
+///
+/// 曾经有 `108.160.162.109` 和 `128.121.243.76`，实测 TCP **0/6 全不通**，
+/// 留着只会让每次请求先白等一个超时。
 const List<HostEndpoint> kBuiltinEndpoints = [
-  HostEndpoint(ip: '108.160.162.109', label: 'dns.google', weight: 0),
-  HostEndpoint(ip: '128.121.243.76', label: 'dns.local', weight: 1),
+  HostEndpoint(ip: '190.115.31.243', label: 'DoH'),
 ];
 
-/// 站点主机名。DoH 只对站点自身域名生效——图片和视频走各自的 CDN，
-/// 域名完全不同，不应该被替换。
+/// 站点主机名。
 const String kSiteHost = 'rule34video.com';
 
-/// 站点 IP 路由。
+/// 判断 host 是否是站点自身（含 www）。
+bool isSiteHost(String host) =>
+    host == kSiteHost || host == 'www.$kSiteHost';
+
+/// 用 IP 连 TCP，但让 TLS 对域名完成握手。
 ///
-/// 语义是「首选一个，其余兜底」：
-/// - [preferred] 是当前首选 IP，请求先打它；
-/// - 失败时 [nextAfter] 依次给出候选，最后一个之后回退系统 DNS（返回 null）。
+/// 这是唯一能在不改变 URI host 的前提下用指定 IP 建连的方式：
 ///
-/// 刻意做成**无状态查询 + 外部记账**的形式：不在这里自己发请求，
-/// 也不持有 HttpClient。谁发请求谁负责报告成败，路由只负责排序。
-class HostRouter {
-  HostRouter({
-    List<HostEndpoint>? endpoints,
-    this.enabled = true,
-  })  : _endpoints = [...(endpoints ?? kBuiltinEndpoints)]
-          ..sort((a, b) => a.weight.compareTo(b.weight));
-
-  final List<HostEndpoint> _endpoints;
-
-  /// 关掉时 [preferred] 恒为 null，调用方走系统 DNS。
-  bool enabled;
-
-  /// 上一次可用性探测的最优 IP（由 [recordSuccess] 更新）。
-  String? _preferred;
-
-  /// 连续失败次数，按 IP 记。用来把坏掉的 IP 降到后面。
-  final Map<String, int> _failures = {};
-
-  /// 候选列表（拷贝，供诊断展示）。
-  List<HostEndpoint> get endpoints => List.unmodifiable(_endpoints);
-
-  bool get isEmpty => _endpoints.isEmpty;
-
-  /// 当前首选 IP；没有可用候选时返回 null（调用方走系统 DNS）。
-  String? get preferred {
-    if (!enabled || _endpoints.isEmpty) return null;
-
-    // 1) 探测成功过、且没连续失败两次 → 用它
-    final p = _preferred;
-    if (p != null && (_failures[p] ?? 0) < 2) return p;
-
-    // 2) 否则取静态顺序里「第一个没被彻底放弃的」。
-    //
-    // 刻意**不用**失败次数动态排序：`nextAfter` 走的是静态顺序，
-    // 两者不一致时，遍历候选会跳过或重复某个 IP。曾经就是这么错的——
-    // 首选失败一次后被降级，`nextAfter` 从静态表里取到的下一个
-    // 恰好也是它自己刚跳过的位置，于是某个 IP 一次都没被试过。
-    for (final e in _endpoints) {
-      if ((_failures[e.ip] ?? 0) < 2) return e.ip;
-    }
-    // 全都失败两次了，还是从静态顺序第一个开始（总比直接放弃好）
-    return _endpoints.first.ip;
+/// ```dart
+/// final tcp  = await Socket.connect(ip, 443);
+/// final tls  = await SecureSocket.secure(tcp, host: 'rule34video.com');
+/// ```
+///
+/// `host` 参数同时决定 **SNI** 和 **证书校验目标**，所以证书能过。
+///
+/// 返回已完成 TLS 的 socket，可直接用于 `ConnectionTask.fromSocket`。
+Future<SecureSocket> connectViaIp(
+  String ip,
+  int port, {
+  required String host,
+  Duration connectTimeout = const Duration(seconds: 8),
+  Duration tlsTimeout = const Duration(seconds: 12),
+}) async {
+  final tcp = await Socket.connect(ip, port, timeout: connectTimeout);
+  try {
+    return await SecureSocket.secure(
+      tcp,
+      host: host,
+      // 站点只支持 HTTP/1.1（实测 ALPN 只协商出 1.1）
+      supportedProtocols: const ['http/1.1'],
+    ).timeout(tlsTimeout);
+  } catch (_) {
+    // TLS 失败必须关掉底层 TCP，否则留下半开连接
+    try {
+      tcp.destroy();
+    } catch (_) {}
+    rethrow;
   }
-
-  /// 在 [ip] 失败之后，下一个该试的 IP；全都试过返回 null（→ 系统 DNS）。
-  ///
-  /// 严格按静态顺序往后走，保证一次请求里每个候选最多试一次。
-  String? nextAfter(String ip) {
-    if (!enabled) return null;
-    final idx = _endpoints.indexWhere((e) => e.ip == ip);
-    if (idx < 0) return _endpoints.firstOrNull?.ip;
-    if (idx + 1 >= _endpoints.length) return null;
-    return _endpoints[idx + 1].ip;
-  }
-
-  /// 报告某 IP 成功。连续成功会让它成为首选。
-  void recordSuccess(String ip) {
-    _failures[ip] = 0;
-    _preferred = ip;
-  }
-
-  /// 报告某 IP 失败。
-  ///
-  /// 只累加计数；[preferred] 会在连续失败两次后自动换人。
-  void recordFailure(String ip) {
-    _failures[ip] = (_failures[ip] ?? 0) + 1;
-  }
-
-  /// 尝试次数上限：候选数 + 1（最后一次是系统 DNS）。
-  int get maxAttempts => _endpoints.length + 1;
-
-  void reset() {
-    _preferred = null;
-    _failures.clear();
-  }
-
-  /// 拼出「用这个 IP 但保留原 Host/SNI」的地址。
-  ///
-  /// 只是把主机名换成 IP，路径与查询串原样保留。
-  /// **不能**直接拿 `https://<ip>/path` 就完事——那样 Host 头会变成 IP，
-  /// 站点会当成未知虚拟主机。调用方必须同时把 Host 头设回原域名。
-  static Uri withIp(Uri original, String ip) =>
-      original.replace(host: ip);
 }
 
-extension _FirstOrNull<T> on List<T> {
-  T? get firstOrNull => isEmpty ? null : first;
+/// 探测某个 IP 是否能连通（只建 TCP，不握手，快）。
+Future<bool> probeTcp(
+  String ip, {
+  int port = 443,
+  Duration timeout = const Duration(seconds: 4),
+}) async {
+  try {
+    final s = await Socket.connect(ip, port, timeout: timeout);
+    s.destroy();
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
-

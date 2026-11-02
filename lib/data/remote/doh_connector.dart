@@ -139,7 +139,3 @@ class DnsOverHttpsConnector {
   }
 }
 
-/// 判断一个 host 是不是站点自己的（含 `www.` 前缀的情况）。
-bool isSiteHost(String host) =>
-    host == kSiteHost || host == 'www.$kSiteHost';
-

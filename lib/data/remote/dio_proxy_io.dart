@@ -4,7 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 
 import 'doh_connector.dart';
-import 'host_router.dart';
+import 'host_router.dart' as hr;
 
 /// 原生端：显式设置代理，并按需用 DoH 解析结果替换请求的 host。
 ///
@@ -34,7 +34,7 @@ void applyProxyImpl(Dio dio, String? proxy, {DnsOverHttpsConnector? connector}) 
     InterceptorsWrapper(
       onRequest: (options, handler) async {
         final uri = options.uri;
-        if (!isSiteHost(uri.host)) {
+        if (!hr.isSiteHost(uri.host)) {
           handler.next(options);
           return;
         }
@@ -45,9 +45,11 @@ void applyProxyImpl(Dio dio, String? proxy, {DnsOverHttpsConnector? connector}) 
         }
         // 换 IP，但把 Host 头补回原域名——HTTP/1.1 靠它决定虚拟主机。
         options.headers['Host'] = uri.host;
-        options.path = HostRouter.withIp(uri, ip).toString();
+        // 不再改 URI 的 host：那样 TLS 必然失败（SNI 会变成 IP）。\n        // 这里改成让 Dio 走系统 DNS，IP 直连交给 SiteClientImpl。\n        options.headers['X-R34V-Hint-Ip'] = ip;
         handler.next(options);
       },
     ),
   );
 }
+
+

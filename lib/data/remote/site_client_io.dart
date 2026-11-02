@@ -22,12 +22,12 @@ class SiteClientImpl implements SiteClient {
     Duration? timeout,
     this.maxRetries = 3,
     Duration? retryBaseDelay,
-    HostRouter? router,
+    this.useDirectIp = true,
     this.connector,
+    this._proxy,
     this._prefs,
   })  : _timeout = timeout ?? const Duration(seconds: 20),
-        _retryBaseDelay = retryBaseDelay ?? const Duration(milliseconds: 600),
-        _router = router ?? HostRouter() {
+        _retryBaseDelay = retryBaseDelay ?? const Duration(milliseconds: 600) {
     _loadCookies();
   }
 
@@ -35,17 +35,18 @@ class SiteClientImpl implements SiteClient {
   final int maxRetries;
   final Duration _retryBaseDelay;
 
-  /// 站点 IP 路由：首选一个 IP，其余兜底。
+  /// 是否允许用 DoH 解析出的 IP 直连站点。
   ///
-  /// 内置 IP 只是**候选**——站点换机房后必然过期，所以试完全部候选
-  /// 就回退系统 DNS 正常解析。见 [HostRouter] 的说明。
-  final HostRouter _router;
+  /// 关掉后只用代理/系统 DNS。
+  final bool useDirectIp;
 
-  /// DNS over HTTPS 连接器。
+  /// 用户配置的代理（形如 `127.0.0.1:7897`）。非空时优先走代理。
   ///
-  /// 装上之后域名在 socket 层就被换成 DoH 查到的 IP，HTTP 层看到的
-  /// 仍是原域名（Host / SNI / 证书校验全自动正确）。
-  /// 为 null 时退回 [_router] 那套「换 IP + 补 Host 头」的旧逻辑。
+  /// 实测：代理 10/10 成功、0.3–1.5 秒；直连只有 1/8 能拿到完整正文。
+  /// 所以有代理就先用代理，别为了"直连"把好好的链路丢掉。
+  final String? _proxy;
+
+  /// DoH 解析器。用来拿当下的真实 IP。
   final DnsOverHttpsConnector? connector;
 
   /// Cookie：host → name → cookie。
@@ -190,40 +191,67 @@ class SiteClientImpl implements SiteClient {
     Map<String, String>? headers,
   }) async {
     final target = Uri.parse(url);
+    final onSite = _isSiteHost(target.host);
 
-    // 站点自己的域名：先问 DoH 要一个当下可连的 IP。
+    // 站点自身的域名，按「当前实际可用路径」排序候选：
     //
-    // 走的是「换 IP + 补 Host 头」这条路——为什么不在 socket 层拦截，
-    // 见 [DnsOverHttpsConnector] 的注释（`connectionFactory` 那条路
-    // 因为 HttpClient 不再做 TLS、且 `ConnectionTask` 是 final 而走不通）。
+    // 1. 用户配了代理 → 代理优先。实测代理 10/10 成功、0.3–1.5s；
+    //    而去掉代理直连只有 1/8 能拿到正文（能连上、能握手，但传正文
+    //    阶段大量 No stream event）。
+    // 2. 没配代理 → 直连优先，用 DoH 解析出的 IP（走 TCP→IP、TLS→域名）。
+    // 3. 都失败 → 换 DoH 的其它 IP，最后退回系统 DNS。
     //
-    // DoH 拿不到可用 IP 时返回 null，下面的候选循环会退到硬编码列表
-    // 和系统 DNS。
-    String? dohIp;
-    if (connector != null && _isSiteHost(target.host)) {
-      dohIp = await connector!.resolveSiteIp();
+    // 注意这里**不再把 URL 的 host 换成 IP**。那样做 TLS 必然失败：
+    // host 是 IP 时 SNI 也是 IP，而证书是 /CN=rule34video.com。
+    // 正确做法见 [_openViaIp]：URI 保持域名，只在 socket 层指定 IP。
+    final steps = <_Attempt>[];
+
+    if (onSite) {
+      final hasProxy = (_proxy ?? '').trim().isNotEmpty;
+      if (hasProxy) {
+        steps.add(const _Attempt.proxy());
+      }
+      if (useDirectIp) {
+        String? ip;
+        if (connector != null) {
+          ip = await connector!.resolveSiteIp();
+        }
+        final list = <String>[
+          ?ip,
+          ...kBuiltinEndpoints.map((e) => e.ip).where((e) => e != ip),
+        ];
+        for (final one in list) {
+          steps.add(_Attempt.ip(one));
+        }
+      }
+      if (!hasProxy) steps.add(const _Attempt.direct());
+    } else {
+      // 非站点域名（CDN、DoH 端点等）一律走系统 DNS，不替换 IP。
+      steps.add(const _Attempt.direct());
     }
 
-    final apHost = dohIp ?? (_router.enabled ? _router.preferred : null);
-    final candidates = <String?>[
-      // 首选 IP；为 null 时这一项不参与，直接落到下面的系统 DNS
-      ?apHost,
-      // 同一站点域名的请求才值得换 IP；其它域（图片 CDN 等）直接走 DNS
-      if (apHost != null && _isSiteHost(target.host)) ..._restAfter(apHost),
-      null, // null = 系统 DNS
-    ];
-
     Object? lastError;
-    for (final ip in candidates) {
+    for (final step in steps) {
       try {
-        final r = await _requestVia(url, ip,
-            method: method, referer: referer, accept: accept, headers: headers);
-        if (ip != null) _router.recordSuccess(ip);
+        final r = await _requestVia(
+          url,
+          step,
+          method: method,
+          referer: referer,
+          accept: accept,
+          headers: headers,
+        );
+        if (step.ip != null) {
+          _record('IP ${step.ip} 可用');
+        }
         return r;
       } catch (e) {
         lastError = e;
-        if (ip != null) _router.recordFailure(ip);
-        _record('IP $ip 失败，换下一个：$e');
+        if (step.ip != null) {
+          _record('IP ${step.ip} 失败：${_short(e)}');
+        } else {
+          _record('${step.label} 失败：${_short(e)}');
+        }
       }
     }
     final e = lastError;
@@ -231,33 +259,25 @@ class SiteClientImpl implements SiteClient {
     throw HttpException('请求失败：$e');
   }
 
-  /// 依次列出 [ip] 之后还能试的候选。
-  List<String> _restAfter(String ip) {
-    final out = <String>[];
-    var cur = _router.nextAfter(ip);
-    final guard = _router.endpoints.length + 1;
-    var steps = 0;
-    while (cur != null && steps < guard) {
-      out.add(cur);
-      cur = _router.nextAfter(cur);
-      steps++;
-    }
-    return out;
+  static String _short(Object e) {
+    final s = '$e';
+    return s.length > 80 ? '${s.substring(0, 80)}…' : s;
   }
 
-  /// 只有站点自己的域名才换 IP。图片/视频走各自 CDN，域名不同。
+  /// 只有站点自己的域名才走 IP 直连。图片/视频走各自 CDN，域名不同。
   bool _isSiteHost(String host) {
     final siteHost = Uri.parse(Site.base).host;
     return host == siteHost;
   }
 
-  /// 真正发请求。[ipOverride] 为 null 时走系统 DNS。
+  /// 真正发请求。
   ///
-  /// 换 IP 时**必须同时把 Host 头设回原域名**，否则站点会当成未知虚拟主机
-  /// （因为 HTTPS 的 SNI 与 Host 都要匹配）。
+  /// **关键：`current` 始终保留原始域名。** 指定 IP 时只改底层 socket
+  /// 的连接目标，URI 一个字都不动——所以 Host 头、SNI、证书校验、
+  /// Cookie 域匹配全部自动正确，不需要任何手工补丁。
   Future<HttpResult> _requestVia(
     String url,
-    String? ipOverride, {
+    _Attempt attempt, {
     required String method,
     String? referer,
     String accept = 'text/html',
@@ -265,28 +285,50 @@ class SiteClientImpl implements SiteClient {
   }) async {
     final sw = Stopwatch()..start();
     final raw = io.HttpClient();
-    // 换 IP 时 URI 的 host 会变成 IP，所以必须把 Host 头补回原域名，
-    // 否则站点会当成未知虚拟主机（404/421）。
-    final manualIp = ipOverride;
+    // SDK 在 http_impl.dart 里有一句 assert(connectionTimeout != null)：
+    // socket 超时且该值为 null 时会直接断言失败（看起来像神秘崩溃）。
+    // 用了自定义 connectionFactory 就必须显式给值。
+    raw.connectionTimeout = _timeout;
+
+    if (attempt.kind == _AttemptKind.proxy) {
+      final p = (_proxy ?? '').trim();
+      if (p.isNotEmpty) {
+        raw.findProxy = (_) => 'PROXY $p';
+      }
+    } else if (attempt.kind == _AttemptKind.ip) {
+      raw.connectionFactory = (uri, proxyHost, proxyPort) async {
+        // 走代理时不接管；HTTPS 代理要的是 CONNECT 域名。
+        if (proxyHost != null) {
+          final s = await io.Socket.connect(proxyHost, proxyPort ?? 443,
+              timeout: _timeout);
+          return io.ConnectionTask.fromSocket<io.Socket>(
+              Future.value(s), () {});
+        }
+        final secure = await connectViaIp(
+          attempt.ip!,
+          uri.port == 0 ? 443 : uri.port,
+          host: uri.host,
+          connectTimeout: _timeout,
+        );
+        return io.ConnectionTask.fromSocket<io.SecureSocket>(
+            Future.value(secure), () {});
+      };
+    } else {
+      // 系统 DNS：不接管，但要显式声明直连，否则 HttpClient 会自动套用
+      // 系统代理，那就不是"直连"了。
+      raw.findProxy = (_) => 'DIRECT';
+    }
+
     var current = Uri.parse(url);
     var redirects = 0;
 
     try {
       while (true) {
-        // 换 IP 只作用于**请求的主机名**，重定向后的新主机名不再替换
-        // （重定向多半指向 CDN，用 IP 打过去只会失败）。
-        final useIp = manualIp != null && current.host == Uri.parse(url).host;
-        final target = useIp ? HostRouter.withIp(current, manualIp) : current;
-
-        final req = await raw.openUrl(method, target).timeout(_timeout);
+        final req = await raw.openUrl(method, current).timeout(_timeout);
         req.followRedirects = false;
         req.headers.set(io.HttpHeaders.userAgentHeader, Site.userAgent);
         req.headers.set(io.HttpHeaders.acceptHeader, accept);
         req.headers.set('accept-language', 'en-US,en;q=0.9');
-        if (useIp) {
-          // Host 头保持原域名；HttpClient 会据此设置 SNI
-          req.headers.set(io.HttpHeaders.hostHeader, current.host);
-        }
         if (referer != null) req.headers.set(io.HttpHeaders.refererHeader, referer);
         headers?.forEach((k, v) => req.headers.set(k, v));
         final cookie = _cookieHeader(current.host);
@@ -320,7 +362,7 @@ class SiteClientImpl implements SiteClient {
         );
         _record('${result.status} ${result.body.length}B '
             '${result.elapsed.inMilliseconds}ms '
-            '${ipOverride ?? 'DNS'} $current');
+            '${attempt.ip ?? attempt.label} $current');
         if (result.looksLikeChallenge) {
           _record('  ⚠ 疑似 ddos-guard 挑战页（${result.body.length}B）');
         }
@@ -334,6 +376,10 @@ class SiteClientImpl implements SiteClient {
       sw.stop();
       _record('SOCKET ${sw.elapsed.inMilliseconds}ms $url：${e.message}');
       throw HttpException('网络不可用：${e.message}', url: url);
+    } on io.HandshakeException catch (e) {
+      sw.stop();
+      _record('TLS ${sw.elapsed.inMilliseconds}ms $url：${e.message}');
+      throw HttpException('TLS 握手失败：${e.message}', url: url);
     } finally {
       raw.close(force: true);
     }
@@ -401,6 +447,39 @@ class SiteClientImpl implements SiteClient {
       return null;
     }
   }
+}
+
+/// 一次请求尝试的方式。
+enum _AttemptKind {
+  /// 走系统 DNS（或系统代理）。
+  direct,
+
+  /// 显式走配置的代理。
+  proxy,
+
+  /// 指定 IP 建连，但 TLS 仍对域名。
+  ip,
+}
+
+class _Attempt {
+  const _Attempt.direct()
+      : kind = _AttemptKind.direct,
+        ip = null;
+
+  const _Attempt.proxy()
+      : kind = _AttemptKind.proxy,
+        ip = null;
+
+  const _Attempt.ip(String this.ip) : kind = _AttemptKind.ip;
+
+  final _AttemptKind kind;
+  final String? ip;
+
+  String get label => switch (kind) {
+        _AttemptKind.direct => '系统DNS',
+        _AttemptKind.proxy => '代理',
+        _AttemptKind.ip => 'IP',
+      };
 }
 
 /// 平台工厂：原生实现。
@@ -550,6 +629,8 @@ class DomainCookie {
     }
   }
 }
+
+
 
 
 
