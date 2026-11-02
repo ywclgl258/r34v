@@ -548,10 +548,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
 
   /// 把站点地址解析成 CDN 直链；解析不出来就用原地址。
   ///
+  /// 受设置里「CDN 直链」开关控制（默认开）。关掉时原样返回，
+  /// 播放器就会直接连站点地址、每个 Range 请求重走一次 302。
+  ///
   /// 解析失败不该阻断播放——原地址虽然慢（每次 Range 都要走 302），
   /// 但能播。所以这里永不抛异常。
   Future<String> _resolvePlaybackUrl(String url) async {
     if (!url.startsWith('http')) return url;
+    if (!ref.read(libraryStoreProvider).cdnDirect) return url;
     try {
       final resolver = ref.read(streamResolverProvider);
       // 先看会话缓存：seek 重试路径上不该再等一次网络。

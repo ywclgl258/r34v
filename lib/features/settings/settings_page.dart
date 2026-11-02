@@ -113,7 +113,7 @@ class SettingsPage extends ConsumerWidget {
           ),
           _Group(
             title: '网络',
-            children: const [_ProxyTile()],
+            children: const [_CdnDirectTile(), _ProxyTile()],
           ),
           _Group(
             title: '关于',
@@ -343,6 +343,39 @@ class _UpdateTile extends ConsumerWidget {
           child: const Text('检查'),
         );
     }
+  }
+}
+
+/// 「CDN 直链」开关（默认开）。
+///
+/// 站点对 `/get_file/...` 回 302 跳 CDN，播放器每发一个 Range 请求
+/// （首播 / 每次 seek / 每次重连）都要重走一遍。开启后先解析出 CDN 地址，
+/// 整个播放会话直接连 CDN。
+///
+/// 实测（同一文件 20MB）：走 302 是 887 KB/s，直链 3.48 MB/s，差 4 倍。
+class _CdnDirectTile extends ConsumerWidget {
+  const _CdnDirectTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final on = ref.watch(cdnDirectProvider);
+    return SwitchListTile(
+      secondary: const Icon(Icons.bolt_rounded, size: 21),
+      title: const Text('CDN 直链'),
+      subtitle: Text(
+        on
+            ? '播放前先解析出 CDN 地址，缓冲更快（实测快 4 倍）'
+            : '直接连站点地址，每个请求都走一次 302 跳转',
+      ),
+      value: on,
+      onChanged: (v) async {
+        await ref.read(cdnDirectProvider.notifier).set(v);
+        if (v) {
+          // 重新打开时清掉旧缓存，避免用到关闭期间可能已失效的直链
+          ref.read(streamResolverProvider).clear();
+        }
+      },
+    );
   }
 }
 

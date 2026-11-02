@@ -27,6 +27,27 @@ final libraryStoreProvider = Provider<LibraryStore>((ref) {
   return LibraryStore(ref.watch(sharedPrefsProvider));
 });
 
+/// 「CDN 直链」开关的响应式镜像。
+///
+/// 底层真值在 `LibraryStore.cdnDirect`（持久化在 prefs）。但 prefs 本身
+/// 不是响应式的：改完开关，读方拿到的还是旧值。这里用 Notifier 做一层
+/// 镜像，初始值从 prefs 读，切换时两边都写。
+///
+/// 播放页每次起播都重新读 `LibraryStore.cdnDirect`，所以对播放生效；
+/// 设置页读这个 provider 才能立刻看到开关变化。
+class CdnDirectController extends Notifier<bool> {
+  @override
+  bool build() => ref.watch(libraryStoreProvider).cdnDirect;
+
+  Future<void> set(bool v) async {
+    await ref.read(libraryStoreProvider).setCdnDirect(v);
+    state = v;
+  }
+}
+
+final cdnDirectProvider =
+    NotifierProvider<CdnDirectController, bool>(CdnDirectController.new);
+
 /// 边下边播的流抓取器。全局单例，避免同一视频重复下载。
 final streamFetcherProvider = Provider<StreamFetcher>((ref) {
   final proxy = ref.watch(libraryStoreProvider).playerProxy;
