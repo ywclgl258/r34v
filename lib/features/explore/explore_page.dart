@@ -7,6 +7,7 @@ import '../../domain/feed_link.dart';
 import '../../domain/ranked_entry.dart';
 import '../../ui/components.dart';
 import '../../ui/glass.dart';
+import '../../ui/net_image.dart';
 import '../../ui/tokens.dart';
 import 'ranking_page.dart';
 
@@ -503,13 +504,10 @@ class _Thumb extends StatelessWidget {
       ),
     );
     if (!hasThumb || url.isEmpty) return ph;
-    return Image.network(
-      url,
-      fit: BoxFit.cover,
-      errorBuilder: (context, e, s) => ph,
-      loadingBuilder: (context, child, progress) =>
-          progress == null ? child : ph,
-    );
+    // 必须走 NetImage：`Image.network` 用的是系统 DNS，在本机网络下
+    // 解析站点域名会拿到被污染的 IP，图片全部加载不出来。
+    // NetImage 内部经 SiteClient 取字节，能吃到 DoH + IP 直连。
+    return NetImage(url: url, showBroken: false, fadeIn: Duration.zero);
   }
 }
 

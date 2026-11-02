@@ -31,7 +31,6 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
   @override
   Widget build(BuildContext context) {
     final history = ref.watch(historyProvider);
-    final resumable = ref.watch(resumableProvider);
     final videos = ref.watch(favoritesOfKindProvider(FavoriteKind.video));
     final characters = ref.watch(favoritesOfKindProvider(FavoriteKind.character));
     final models = ref.watch(favoritesOfKindProvider(FavoriteKind.model));
@@ -79,7 +78,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
               child: PillTabs(
                 controller: _tabs,
                 labels: [
-                  '继续观看 ${resumable.length}',
+                  '观看记录 ${history.length}',
                   '视频 ${videos.length}',
                   '角色 ${characters.length}',
                   '作者 ${models.length}',
@@ -93,27 +92,40 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
             child: TabBarView(
               controller: _tabs,
               children: [
-                _HistoryList(entries: resumable, all: history),
-                _FavoriteVideoList(entries: videos),
-                _FavoriteChipList(
-                  entries: characters,
-                  kind: FavoriteKind.character,
-                  icon: Icons.person_pin_outlined,
-                  emptyText: '还没有收藏的角色\n在视频详情页长按角色名就能收藏',
+                // 用全部历史，而不是只看 `resumable`。
+                //
+                // 早先这里传的是 resumable（>=15 秒且没看完），于是：
+                // - 看过但只看了几秒的，不算「继续观看」，直接消失；
+                // - 看完的记录被 isFinished 排除，也消失。
+                // 结果就是「历史看过的视频不出现」。看完的用进度条满格区分，
+                // 点进去从头播，语义正确。
+                _SafeTab(child: _HistoryList(entries: history)),
+                _SafeTab(child: _FavoriteVideoList(entries: videos)),
+                _SafeTab(
+                  child: _FavoriteChipList(
+                    entries: characters,
+                    kind: FavoriteKind.character,
+                    icon: Icons.person_pin_outlined,
+                    emptyText: '还没有收藏的角色\n在视频详情页长按角色名就能收藏',
+                  ),
                 ),
-                _FavoriteChipList(
-                  entries: models,
-                  kind: FavoriteKind.model,
-                  icon: Icons.person_outline,
-                  emptyText: '还没有收藏的作者\n在视频详情页长按作者名就能收藏',
+                _SafeTab(
+                  child: _FavoriteChipList(
+                    entries: models,
+                    kind: FavoriteKind.model,
+                    icon: Icons.person_outline,
+                    emptyText: '还没有收藏的作者\n在视频详情页长按作者名就能收藏',
+                  ),
                 ),
-                _FavoriteChipList(
-                  entries: tags,
-                  kind: FavoriteKind.tag,
-                  icon: Icons.sell_outlined,
-                  emptyText: '还没有收藏的标签\n在视频详情页长按标签就能收藏',
+                _SafeTab(
+                  child: _FavoriteChipList(
+                    entries: tags,
+                    kind: FavoriteKind.tag,
+                    icon: Icons.sell_outlined,
+                    emptyText: '还没有收藏的标签\n在视频详情页长按标签就能收藏',
+                  ),
                 ),
-                _CachedList(entries: cached),
+                _SafeTab(child: _CachedList(entries: cached)),
               ],
             ),
           ),
@@ -122,8 +134,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
     );
   }
 
-  static Future<bool> _confirm(BuildContext context, String msg) async {
-    final r = await showDialog<bool>(
+  static Future<bool> _confirm(BuildContext context, String msg) async {    final r = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         content: Text(msg),
@@ -137,11 +148,52 @@ class _LibraryPageState extends ConsumerState<LibraryPage>
   }
 }
 
+/// 页签内容的布局兜底。
+///
+/// `TabBarView` 在左右滑动过渡时，会把**两个子页面同时**按小于整屏的宽度
+/// 布局（滑动过程中各占一部分）。此时列表里那些固定尺寸的东西——
+/// `Divider(indent: 132)`、104 宽的封面、`InputChip` 的固定内边距——
+/// 会算成负的可用宽度，Flutter 抛 overflow，用户看到的就是切换时
+/// 闪一下红色错误页。
+///
+/// 用 `ClipRect` 裁掉过渡期的溢出部分。**不用 OverflowBox**：那会让子树
+/// 脱离父约束自行撑开，反而破坏正常布局下的定位（测试里表现为切到某个
+/// 页签后找不到本应存在的元素）。
+class _SafeTab extends StatelessWidget {
+  const _SafeTab({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => ClipRect(child: child);
+}
+
+/// 行间分隔线：左边让开封面宽度，右边留一点边距。
+///
+/// 不能直接写死 `Divider(indent: 132)`：`TabBarView` 左右滑动过渡时子页面
+/// 会被压到很窄，132 的缩进加 16 的右边距一旦超过可用宽度，
+/// RenderPadding 就算出负尺寸并抛 overflow（用户看到红色错误页）。
+/// 这里按实际宽度取最小值，窄的时候自然退化成整条线。
+class _RowDivider extends StatelessWidget {
+  const _RowDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        // 封面 104 + 间距 12 + 页面左内边距 16 ≈ 132
+        final indent = 132.0.clamp(0.0, (w - 16).clamp(0.0, 132.0));
+        return Divider(height: 1, indent: indent, endIndent: w > 200 ? 16 : 0);
+      },
+    );
+  }
+}
+
 class _HistoryList extends ConsumerWidget {
-  const _HistoryList({required this.entries, required this.all});
+  const _HistoryList({required this.entries});
 
   final List<WatchEntry> entries;
-  final List<WatchEntry> all;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -154,20 +206,24 @@ class _HistoryList extends ConsumerWidget {
     return ListView.separated(
       itemCount: entries.length,
       separatorBuilder: (context, index) =>
-          const Divider(height: 1, indent: 132, endIndent: 16),
+          const _RowDivider(),
       itemBuilder: (context, i) {
         final e = entries[i];
+        final finished = e.isFinished;
+        final progressText = finished
+            ? '已看完'
+            : '${_fmt(e.positionSeconds)} / ${_fmt(e.durationSeconds)}';
         return _MediaRow(
           thumb: e.thumb,
           title: e.title,
-          subtitle:
-              '${_fmt(e.positionSeconds)} / ${_fmt(e.durationSeconds)}  ·  ${_ago(e.updatedAt)}',
+          subtitle: '$progressText  ·  ${_ago(e.updatedAt)}',
           overlay: Positioned(
             left: 0,
             right: 0,
             bottom: 0,
             child: LinearProgressIndicator(
-              value: e.progress,
+              // 看完的进度条满格，和「看了一半」在视觉上区分开。
+              value: finished ? 1 : e.progress,
               minHeight: 3,
               backgroundColor: Colors.black45,
             ),
@@ -203,7 +259,7 @@ class _FavoriteVideoList extends ConsumerWidget {
     return ListView.separated(
       itemCount: entries.length,
       separatorBuilder: (context, index) =>
-          const Divider(height: 1, indent: 132, endIndent: 16),
+          const _RowDivider(),
       itemBuilder: (context, i) {
         final e = entries[i];
         return _MediaRow(

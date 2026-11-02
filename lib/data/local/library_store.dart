@@ -317,6 +317,14 @@ class LibraryStore {
   String get playerEngine =>
       _prefs.getString('${_kSettings}_player_engine') ?? 'exo';
 
+  /// 用户是否**从没主动改过**引擎。
+  ///
+  /// 用来区分「默认值 exo」和「用户显式选了 exo」。直连（无代理）时
+  /// ExoPlayer 因无法注入 IP 必然连不上，工厂据此自动退回 mpv；
+  /// 但如果用户是主动选的 exo，就不该被悄悄改掉。
+  bool get playerEngineIsDefault =>
+      !_prefs.containsKey('${_kSettings}_player_engine');
+
   Future<void> setPlayerEngine(String v) =>
       _prefs.setString('${_kSettings}_player_engine', v);
 

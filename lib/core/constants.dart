@@ -20,6 +20,11 @@ class Site {
   /// 是否正在走本地预览代理（用于 UI 上给一句提示）。
   static bool get usingPreviewProxy => base != 'https://rule34video.com';
 
+  /// 站点主机名（不含协议与路径）。
+  ///
+  /// 给 libmpv 的 `connect_to=` 参数用：那边要的是 `域名:端口` 形式。
+  static const String hostForMpv = 'rule34video.com';
+
   /// 把站点绝对 URL 改写成本地代理地址（仅预览模式生效）。
   ///
   /// 解析器从 HTML 里拿到的是 `https://rule34video.com/...` 这样的绝对地址。

@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/constants.dart';
 import 'dio_proxy.dart';
+import 'doh_connector.dart';
 
 /// 把站点的 `/get_file/...` 地址解析成 **CDN 直链**。
 ///
@@ -52,8 +53,12 @@ import 'dio_proxy.dart';
 ///
 /// 所以 Referer 必须带，而且要用**真实视频页 URL**——这才是浏览器的行为。
 class StreamResolver {
-  StreamResolver({Dio? dio, String proxy = '', this.prefs})
-      : _dio = dio ??
+  StreamResolver({
+    Dio? dio,
+    String proxy = '',
+    this.prefs,
+    DnsOverHttpsConnector? connector,
+  }) : _dio = dio ??
             Dio(BaseOptions(
               connectTimeout: const Duration(seconds: 15),
               receiveTimeout: const Duration(seconds: 20),
@@ -67,7 +72,11 @@ class StreamResolver {
               followRedirects: false,
               validateStatus: (s) => s != null && s < 500,
             )) {
-    applyProxyToDio(_dio, proxy);
+    // **必须传 connector**。这里请求的是站点的 `/get_file/...`，属于站点
+    // 域名；系统 DNS 被污染时会连到死 IP，解析必然失败，于是调用方拿不到
+    // CDN 直链、只能把原始 URL 交给播放器——而播放器同样走系统 DNS，
+    // 结果就是「Failed to open」。
+    applyProxyToDio(_dio, proxy, connector: connector);
     _loadFromDisk();
   }
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:js_interop';
+import 'dart:typed_data';
 
 import 'package:web/web.dart' as web;
 
@@ -58,6 +59,27 @@ class SiteClientImpl implements SiteClient {
       return r.status == 200 || r.status == 206;
     } catch (_) {
       return false;
+    }
+  }
+
+  /// Web 端的字节获取。
+  ///
+  /// 浏览器里 fetch 一样受跨域限制，但 Electron/CORS 代理场景下可用；
+  /// 图片在 Web 端没法用 `Image.memory` 之外的方式拿到原始字节，
+  /// 所以这里给出真实实现而不是空壳。
+  @override
+  Future<Uint8List?> getBytes(String url, {String? referer}) async {
+    try {
+      final res = await web.window
+          .fetch(url.toJS, web.RequestInit(redirect: 'follow'))
+          .toDart
+          .timeout(_timeout);
+      if (res.status < 200 || res.status >= 300) return null;
+      final buf = await res.arrayBuffer().toDart;
+      return buf.toDart.asUint8List();
+    } catch (e) {
+      _record('IMG 失败：$e');
+      return null;
     }
   }
 

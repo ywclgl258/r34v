@@ -196,14 +196,16 @@ void main() {
   });
 
   group('片库分三类', () {
-    testWidgets('四个分页：继续观看 / 视频 / 作者 / 标签', (tester) async {
+    testWidgets('四个分页：观看记录 / 视频 / 作者 / 标签', (tester) async {
       await tester.pumpWidget(ProviderScope(
         overrides: [sharedPrefsProvider.overrideWithValue(prefs)],
         child: const MaterialApp(home: LibraryPage()),
       ));
       await tester.pump();
 
-      expect(find.textContaining('继续观看'), findsOneWidget);
+      // 页签名从「继续观看」改成「观看记录」：现在这一页列的是**全部**
+      // 历史（含已看完的），不只是可续播的那些，用「继续观看」会名不副实。
+      expect(find.textContaining('观看记录'), findsOneWidget);
       expect(find.textContaining('视频'), findsWidgets);
       expect(find.textContaining('作者'), findsWidgets);
       expect(find.textContaining('标签'), findsWidgets);

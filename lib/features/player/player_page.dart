@@ -24,6 +24,7 @@ import '../../ui/tokens.dart';
 import '../common/video_sections.dart';
 import '../feed/video_card_tile.dart';
 import '../feed/video_grid.dart';
+import '../../data/remote/host_router.dart';
 import '../../data/remote/stream_fetcher.dart';
 import '../../data/parsing/parse_exception.dart';
 import '../../data/remote/site_client.dart';
@@ -48,7 +49,7 @@ class PlayerPage extends ConsumerStatefulWidget {
 
 class _PlayerPageState extends ConsumerState<PlayerPage>
     with WidgetsBindingObserver, RouteAware {
-  /// 播放引擎（ExoPlayer 默认 / libmpv 兜底），进页面时按设置定型。
+  /// 播放引擎，进页面时按设置定型（直连无代理时工厂会自动选 mpv）。
   /// 设置里切换引擎对下一个播放生效。
   late final PlayerBackend _backend = ref.read(playerBackendFactoryProvider)(
     ref.read(libraryStoreProvider).playerEngine,
@@ -320,12 +321,19 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
 
   /// dispose 用的存进度版本：位置和时长由调用方传入，
   /// 不再读已经要销毁的 player。
+  ///
+  /// **必须刷新 historyProvider**：这是「退出播放页」这条最常见的路径，
+  /// 早先只写了 prefs 却没 invalidate，导致片库里的「继续观看」停留在
+  /// 打开 App 时的快照——用户看完一个视频回到片库，看不到刚看的那条。
+  /// 注意这里不能再用 `mounted` 判断（dispose 时已为 false），
+  /// 刷新的是全局 provider，与页面存活无关。
   void _persistProgressAt(int pos, int dur) {
     final d = _detail;
     if (d == null) return;
     if (pos <= 0) return;
     final total = dur > 0 ? dur : d.durationSeconds;
-    _store.saveWatch(WatchEntry(
+    _store
+        .saveWatch(WatchEntry(
           videoId: d.id,
           title: d.title,
           thumb: d.poster,
@@ -334,7 +342,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
           durationSeconds: total,
           streamLabel: _current?.label ?? '',
           updatedAt: DateTime.now(),
-        ));
+        ))
+        .then((_) {
+      try {
+        ref.invalidate(historyProvider);
+      } catch (_) {
+        // provider 容器已销毁（应用退出）时忽略
+      }
+    });
   }
 
   @override
@@ -561,6 +576,31 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     }
   }
 
+  /// 把 DoH 解析出的站点 IP 交给正在使用的播放器后端。
+  ///
+  /// **为什么播放必须单独做这件事**：`SiteClientImpl` 那套 IP 直连只覆盖
+  /// Dart 层的 HTTP 请求（页面、图片、下载）。而 Android 上默认的
+  /// ExoPlayer 用 OkHttp，有自己的 DNS 与连接栈，Dart 侧怎么配都影响不到
+  /// 它——系统 DNS 被污染时，表现就是「详情能看、视频连不上」。
+  ///
+  /// libmpv 则认 `stream-lavf-o` 的 `connect_to`，可以精确覆盖
+  /// 「域名:端口 → IP」。所以这里只对 mpv 后端下发；Exo 后端没有对应
+  /// 能力，必须在选引擎时就避开它（见 [createPlayerBackend]）。
+  Future<void> _feedSiteIpToPlayer() async {
+    final backend = _backend;
+    if (backend is! MpvBackend) return;
+    try {
+      String? ip = await ref.read(dohConnectorProvider).resolveSiteIp();
+      // DoH 依赖 cloudflare-dns.com / dns.google，而这些域名本身也要解析。
+      // 系统 DNS 被污染时 DoH 会失败——此时用内置的已知可用 IP 兜底。
+      ip ??= kBuiltinEndpoints.firstOrNull?.ip;
+      if (!mounted) return;
+      await backend.applySiteIp(ip);
+    } catch (_) {
+      // 解析失败就让它走系统 DNS，不阻断播放
+    }
+  }
+
   /// 用作 Referer 的**视频详情页地址**。
   ///
   /// 站点有反盗链白名单，实测：
@@ -644,6 +684,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
 
     try {
       final target = await _resolvePlaybackUrl(url);
+      if (!_isCurrent(revision)) return false;
+      await _feedSiteIpToPlayer();
       if (!_isCurrent(revision)) return false;
       await _backend.open(target, play: true, referer: _pageReferer);
       if (!_isCurrent(revision)) return false;
@@ -805,6 +847,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     // 本地文件（缓存）没有 302 可解析，只有远端地址才值得解析。
     // _resolvePlaybackUrl 内部对非 http 地址直接原样返回。
     final target = await _resolvePlaybackUrl(source);
+    if (!_isCurrent(revision)) return;
+    await _feedSiteIpToPlayer();
     if (!_isCurrent(revision)) return;
     await _backend.open(target, play: play, referer: _pageReferer);
     if (!_isCurrent(revision)) return;

@@ -379,22 +379,39 @@ class _PillTab extends StatelessWidget {
     // 用隐式动画做，切换时能看见"形状在变"，不需要额外状态管理。
     return AnimatedContainer(
       duration: R34Motion.base,
-      curve: R34Motion.spring,
+      // **这里必须用不过冲的曲线。**
+      //
+      // `R34Motion.spring` 是 `Cubic(0.34, 1.28, 0.64, 1)`，控制点 y=1.28
+      // 意味着插值参数 t 会冲过 1.0（回弹效果就是这么来的）。
+      // 而 `BoxShadow.lerp` 在 t > 1 时会按线性外推算 blurRadius，
+      // 一旦越过端点就得到**负数**，命中 dart:ui 的断言：
+      //
+      //   'Text shadow blur radius should be non-negative.'
+      //
+      // 表现：点页签切换的那一瞬间整页变红（release 下灰屏）。
+      // 只在那一帧出现，很容易被误判成布局溢出。
+      //
+      // 其他属性（color / border / padding）用 spring 没问题，只有阴影
+      // 经不起外推，所以整段动画统一换成 easeOut——视觉差别很小，
+      // 但彻底避开这个断言。
+      curve: R34Motion.easeOut,
       decoration: BoxDecoration(
         color: selected ? R34Color.ink : R34Color.surface,
         borderRadius: BorderRadius.circular(R34Radius.pill),
         border: Border.all(
           color: selected ? Colors.transparent : R34Color.hairline,
         ),
-        boxShadow: selected
-            ? [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.35),
-                  blurRadius: 14,
-                  offset: const Offset(0, 6),
-                ),
-              ]
-            : null,
+        boxShadow: [
+          // 始终给等长列表（不要写 `selected ? [...] : null`），
+          // 让 lerp 只在两个同构 BoxShadow 之间发生。
+          BoxShadow(
+            color: selected
+                ? Colors.black.withValues(alpha: 0.35)
+                : Colors.transparent,
+            blurRadius: 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Material(
         type: MaterialType.transparency,

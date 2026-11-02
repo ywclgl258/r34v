@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
+import 'dart:typed_data';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -159,6 +160,44 @@ class SiteClientImpl implements SiteClient {
     }
   }
 
+  /// 取任意资源的原始字节（图片用）。
+  /// 存在的理由：图片原本走 `CachedNetworkImage` → `flutter_cache_manager`
+  /// → 系统 `HttpClient`，那条路**不经过这里的 DoH + IP 直连**。在没有
+  /// 代理、系统 DNS 又被污染的网络下，图片会全部卡在 SYN_SENT 直到超时，
+  /// 而同一页面的 HTML 因为有本类的兜底反而能正常拿到——表现就是
+  /// 「列表有字、封面全灰」。
+  ///
+  /// 这里让图片复用同一套建连逻辑（代理 → DoH 解析的 IP → 系统 DNS），
+  /// 上层只要把字节交给 `Image.memory` 即可。
+  ///
+  /// 返回 null 表示拿不到（HTTP 非 2xx 或网络全挂），调用方按破图处理。
+  @override
+  Future<Uint8List?> getBytes(
+    String url, {
+    String? referer,
+  }) async {
+    final buf = <int>[];
+    try {
+      final r = await _request(
+        url,
+        method: 'GET',
+        referer: referer,
+        // CDN/静态资源不认 text/html 也无所谓，但给 */* 更通用
+        accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        rawOut: buf,
+      );
+      if (r.status < 200 || r.status >= 300) {
+        _record('IMG ${r.status} $url');
+        return null;
+      }
+      if (buf.isEmpty) return null;
+      return Uint8List.fromList(buf);
+    } catch (e) {
+      _record('IMG 失败 ${_short(e)} $url');
+      return null;
+    }
+  }
+
   Future<HttpResult> _withRetry(Future<HttpResult> Function() action) async {
     Object? lastError;
     for (var attempt = 0; attempt <= maxRetries; attempt++) {
@@ -189,6 +228,7 @@ class SiteClientImpl implements SiteClient {
     String? referer,
     String accept = 'text/html',
     Map<String, String>? headers,
+    List<int>? rawOut,
   }) async {
     final target = Uri.parse(url);
     final onSite = _isSiteHost(target.host);
@@ -243,6 +283,7 @@ class SiteClientImpl implements SiteClient {
           referer: referer,
           accept: accept,
           headers: headers,
+          rawOut: rawOut,
         );
         if (step.ip != null) {
           _record('IP ${step.ip} 可用');
@@ -276,6 +317,7 @@ class SiteClientImpl implements SiteClient {
                 referer: referer,
                 accept: accept,
                 headers: headers,
+                rawOut: rawOut,
               );
               _record('IP $ip 可用（自动升级）');
               return r;
@@ -314,6 +356,11 @@ class SiteClientImpl implements SiteClient {
     String? referer,
     String accept = 'text/html',
     Map<String, String>? headers,
+    /// 非 null 时把响应正文按字节塞进它，不尝试当文本解码。
+    ///
+    /// 图片走这条路：先按 UTF-8 解码再编码回去会破坏字节，
+    /// 而 JPEG/WebP 一丁点损坏就整张解不出来。
+    List<int>? rawOut,
   }) async {
     final sw = Stopwatch()..start();
     final raw = io.HttpClient();
@@ -384,6 +431,20 @@ class SiteClientImpl implements SiteClient {
             .fold<List<int>>(<int>[], (acc, chunk) => acc..addAll(chunk))
             .timeout(_timeout);
         sw.stop();
+
+        // 二进制直出：不解码、不建字符串。
+        if (rawOut != null) {
+          rawOut.addAll(bytes);
+          _record('${res.statusCode} ${bytes.length}B '
+              '${sw.elapsedMilliseconds}ms '
+              '${attempt.ip ?? attempt.label} $current');
+          return HttpResult(
+            status: res.statusCode,
+            body: '',
+            url: current.toString(),
+            elapsed: sw.elapsed,
+          );
+        }
 
         final body = _decode(bytes, res.headers.contentType);
         final result = HttpResult(

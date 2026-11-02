@@ -10,10 +10,19 @@ import 'package:r34v/data/parsing/detail_parser.dart';
 import 'package:r34v/data/remote/rule34_api.dart';
 import 'package:r34v/domain/video_card.dart';
 import 'package:r34v/domain/video_detail.dart';
+import 'package:r34v/features/player/backends/backends.dart';
 import 'package:r34v/features/player/player_page.dart';
 import 'package:r34v/ui/net_image.dart';
 import 'package:r34v/ui/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/fake_player_backend.dart';
+
+/// 测试里固定用假后端。
+///
+/// 生产工厂在「无代理 + 默认引擎 + DoH 开启」时会切到 libmpv（为了注入
+/// 站点 IP），而 libmpv 需要 media_kit 原生库，测试环境没有。
+PlayerBackend _testBackendFactory(String engine) => FakePlayerBackend();
 
 /// 横向滑动调速的**接线**测试。
 ///
@@ -81,6 +90,9 @@ void main() {
       overrides: [
         rule34ApiProvider.overrideWithValue(_FakeApi(detail)),
         sharedPrefsProvider.overrideWithValue(prefs),
+        // 工厂在「无代理 + 默认引擎」时会切到 libmpv，而 libmpv 需要
+        // media_kit 原生库——测试环境没有。这里锁死成本测试用的假后端。
+        playerBackendFactoryProvider.overrideWithValue(_testBackendFactory),
       ],
       child: MaterialApp(
         theme: buildAppTheme(),

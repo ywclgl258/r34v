@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 /// 一次 HTTP 响应。平台无关。
 class HttpResult {
@@ -70,6 +71,16 @@ abstract class SiteClient {
 
   /// 探测直链是否还能用。只取 1 字节，不下载整个视频。
   Future<bool> isStreamAlive(String url);
+
+  /// 取任意资源的原始字节（图片专用）。
+  ///
+  /// 关键在于它和 [getHtml] 走**同一套建连逻辑**：代理 → DoH 解析出的
+  /// IP 直连 → 系统 DNS。图片如果走 `flutter_cache_manager` 自带的
+  /// `HttpClient`，就绕开了这层兜底，在没有代理且系统 DNS 被污染的网络下
+  /// 会全部超时（表现为「列表有字、封面全灰」）。
+  ///
+  /// 返回 null 表示拿不到，调用方按破图处理。
+  Future<Uint8List?> getBytes(String url, {String? referer});
 
   /// 请求日志（最近 50 条），给设置页的诊断区看。
   List<String> get log;

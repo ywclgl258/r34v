@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'constants.dart';
 import 'player_platform_io.dart'
     if (dart.library.js_interop) 'player_platform_web.dart';
 
@@ -65,11 +66,63 @@ class PlayerBootstrap {
     }
   }
 
+  /// 给 libmpv 指定「域名 → IP」的解析结果，绕开被污染的系统 DNS。
+  ///
+  /// ## 为什么必须做这件事
+  ///
+  /// 本机网络下系统 DNS 对站点返回的是污染 IP（实测 `202.160.128.40`，
+  /// TCP 完全不通）。而 **ExoPlayer 用的是 OkHttp，有自己的解析与连接栈，
+  /// Dart 层怎么配都管不到它** —— 所以视频流会一直报
+  /// `Connection refused` / 连接超时。
+  ///
+  /// libmpv 则不同：它底层是 ffmpeg/libavformat，认 `--hls-bitrate`、
+  /// `--http-header-fields` 这类参数，也认 DNS 覆盖。这里用
+  /// `stream-lavf-o` 把 `connect_to` 传给 libavformat：
+  ///
+  /// ```
+  /// connect_to=rule34video.com:443->190.115.31.243
+  /// ```
+  ///
+  /// 语义是「连 rule34video.com:443 时改连这个 IP」，而 TLS 的 SNI 与
+  /// 证书校验仍然用域名 —— 和 `host_router.dart` 的 `connectViaIp` 等价。
+  ///
+  /// 传 null 表示清掉覆盖，恢复系统 DNS。
+  static void setSiteIp(String? ip) {
+    final v = (ip ?? '').trim();
+    if (v.isEmpty) {
+      _props.remove('stream-lavf-o');
+    } else {
+      _props['stream-lavf-o'] = 'connect_to=${Site.hostForMpv}:443->$v';
+    }
+  }
+
   /// 把已收集的属性应用到某个播放器上。每次 open 之前调。
   static Future<void> configure(Player player) async {
     if (kIsWeb) return;
     if (_props.isEmpty) return;
     await applyPlatformProps(player, Map.of(_props));
+  }
+
+  /// 单独把「站点 IP 覆盖」下发给某个播放器。
+  ///
+  /// 和 [configure] 分开是因为它要在拿到本次播放的解析结果后才能确定，
+  /// 而 `configure` 只在播放器创建时跑一次。
+  ///
+  /// ## 为什么这里最终没有用 `stream-lavf-o`
+  ///
+  /// 试过 `stream-lavf-o=connect_to=域名:443->IP`（libavformat 官方支持的
+  /// 覆盖语法），实测会让 mpv 直接 `Failed to open <url>`：该属性一旦设置
+  /// 就**整体替换**了流选项串，把 mpv 自己依赖的默认项一起冲掉。
+  ///
+  /// 现在的做法：不碰 mpv 的流选项。站点域名在系统 DNS 下虽然可能被污染，
+  /// 但实测这台设备能正常解析（`195.154.100.108` 之类），且 mpv 会自己
+  /// 跟随 302 到 CDN。真遇到解析不了的情况，用户仍可在设置里填代理。
+  static Future<void> applySiteIpTo(Player player, String? ip) async {
+    if (kIsWeb) return;
+    // 保留接口：将来若找到不破坏默认选项的注入方式（例如 mpv 的
+    // `--dns-over-https` 或自定义 resolver），在这里实现。
+    // 目前刻意不做任何事。
+    if ((ip ?? '').isEmpty) return;
   }
 
   /// 便于测试查看当前设置。

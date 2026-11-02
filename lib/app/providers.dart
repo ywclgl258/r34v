@@ -115,6 +115,9 @@ final streamResolverProvider = Provider<StreamResolver>((ref) {
   return StreamResolver(
     proxy: store.playerProxy,
     prefs: ref.watch(sharedPrefsProvider),
+    // 解析 /get_file/ 用到的也是站点域名，必须共享同一个 DoH 连接器，
+    // 否则系统 DNS 被污染时这一步就会失败（拿不到 CDN 直链）。
+    connector: ref.watch(dohConnectorProvider),
   );
 });
 
