@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
 
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../../core/constants.dart';
 import 'doh_connector.dart';
 import 'host_router.dart';
@@ -22,9 +24,12 @@ class SiteClientImpl implements SiteClient {
     Duration? retryBaseDelay,
     HostRouter? router,
     this.connector,
+    this._prefs,
   })  : _timeout = timeout ?? const Duration(seconds: 20),
         _retryBaseDelay = retryBaseDelay ?? const Duration(milliseconds: 600),
-        _router = router ?? HostRouter();
+        _router = router ?? HostRouter() {
+    _loadCookies();
+  }
 
   final Duration _timeout;
   final int maxRetries;
@@ -43,8 +48,15 @@ class SiteClientImpl implements SiteClient {
   /// 为 null 时退回 [_router] 那套「换 IP + 补 Host 头」的旧逻辑。
   final DnsOverHttpsConnector? connector;
 
-  /// Cookie：host → name → value。
-  final Map<String, Map<String, String>> _cookies = {};
+  /// Cookie：host → name → cookie。
+  ///
+  /// 存的是带属性的 [DomainCookie]，不再是裸字符串——只有这样才能判断过期。
+  final Map<String, Map<String, DomainCookie>> _cookies = {};
+
+  /// 持久化用。为 null 时退化成纯内存（测试环境常见）。
+  final SharedPreferences? _prefs;
+
+  static const String _kCookies = 'site_cookies_v1';
 
   final List<String> _log = [];
 
@@ -57,8 +69,58 @@ class SiteClientImpl implements SiteClient {
     _log.clear();
   }
 
-  void _record(String line) {
-    final t = DateTime.now();
+  // ---------- Cookie 持久化 ----------
+
+  /// 冷启动时读回上次的 cookie。
+  ///
+  /// 为什么要持久化：ddos-guard 的 `__ddg1_` 有效期是**一年**。
+  /// 以前 cookie 只在内存里，退出 App 就全丢，下次冷启动又得从零开始被
+  /// 挑战一次。持久化之后，正常使用几乎不会再撞挑战页。
+  void _loadCookies() {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    final raw = prefs.getString(_kCookies);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final now = DateTime.now();
+      for (final entry in data.entries) {
+        final host = entry.key;
+        final list = entry.value;
+        if (list is! List) continue;
+        final jar = <String, DomainCookie>{};
+        for (final item in list) {
+          if (item is! Map) continue;
+          final c = DomainCookie.fromJson(Map<String, dynamic>.from(item));
+          if (c == null) continue;
+          // 载入时就丢掉过期的，免得带着死 cookie 出门
+          if (c.isExpired(now)) continue;
+          jar[c.name] = c;
+        }
+        if (jar.isNotEmpty) _cookies[host] = jar;
+      }
+    } catch (_) {
+      // 格式变了就重来，不值得为 cookie 崩一次
+      _cookies.clear();
+    }
+  }
+
+  void _saveCookies() {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    try {
+      final now = DateTime.now();
+      final data = <String, dynamic>{};
+      _cookies.forEach((host, jar) {
+        jar.removeWhere((_, c) => c.isExpired(now));
+        if (jar.isEmpty) return;
+        data[host] = jar.values.map((c) => c.toJson()).toList();
+      });
+      unawaited(prefs.setString(_kCookies, jsonEncode(data)));
+    } catch (_) {}
+  }
+
+  void _record(String line) {    final t = DateTime.now();
     String p(int v) => v.toString().padLeft(2, '0');
     _log.add('${p(t.hour)}:${p(t.minute)}:${p(t.second)}  $line');
     if (_log.length > 50) _log.removeAt(0);
@@ -277,23 +339,50 @@ class SiteClientImpl implements SiteClient {
     }
   }
 
+  /// 组装 `Cookie` 请求头。
+  ///
+  /// **会跳过已过期的 cookie**，并顺手清掉它们。以前不看过期时间，
+  /// 所有 cookie 永久留在内存里，等于把早就失效的值一直往外发。
   String _cookieHeader(String host) {
     final jar = _cookies[host];
     if (jar == null || jar.isEmpty) return '';
+    final now = DateTime.now();
+    jar.removeWhere((_, c) => c.isExpired(now));
+    if (jar.isEmpty) return '';
     return jar.entries.map((e) => '${e.key}=${e.value}').join('; ');
   }
 
+  /// 解析并保存 `Set-Cookie`。
+  ///
+  /// ## 为什么不能只取第一段
+  ///
+  /// 以前是 `line.split(';').first`，只留 `name=value`，把 **Path、
+  /// Domain、Expires、HttpOnly、Secure 全部丢掉**。后果：
+  ///
+  /// - 不知道过期时间 → 失效的 cookie 一直被发出去
+  /// - 本站的 ddos-guard cookie 里 `__ddg1_` 是一年、`__ddg8_` 是一小时，
+  ///   混在一起当永久值处理，行为完全错乱
+  ///
+  /// 现在按 RFC 6265 把常见属性都解析出来，并据此判断是否过期。
   void _absorbCookies(io.HttpClientResponse res, String host) {
     final raw = res.headers[io.HttpHeaders.setCookieHeader];
     if (raw == null || raw.isEmpty) return;
-    final jar = _cookies.putIfAbsent(host, () => <String, String>{});
+    final jar = _cookies.putIfAbsent(host, () => <String, DomainCookie>{});
+
     for (final line in raw) {
-      final first = line.split(';').first;
-      final eq = first.indexOf('=');
-      if (eq <= 0) continue;
-      final name = first.substring(0, eq).trim();
-      final value = first.substring(eq + 1).trim();
-      if (name.isNotEmpty) jar[name] = value;
+      final parsed = DomainCookie.parse(line);
+      if (parsed == null) continue;
+
+      // Domain 属性：统一按当前请求主机归档。本站是同域站点，
+      // 不做跨子域的精细匹配——那需要完整的 RFC 6265 域匹配算法，
+      // 而这里只有一个域名，过度设计没有收益。
+      final key = parsed.name;
+      if (parsed.isExpired(DateTime.now())) {
+        jar.remove(key);
+      } else {
+        jar[key] = parsed;
+      }
+      _saveCookies();
     }
   }
 
@@ -316,6 +405,158 @@ class SiteClientImpl implements SiteClient {
 
 /// 平台工厂：原生实现。
 SiteClient createSiteClient() => SiteClientImpl();
+
+/// 一条 Cookie，按 RFC 6265 解析出会用到的属性。
+///
+/// 抽成独立类是为了能被单测覆盖——Cookie 解析是最容易悄悄出错的地方，
+/// 而它的错误表现（"偶发要重新验证"）极难在真机上定位。
+class DomainCookie {
+  DomainCookie({
+    required this.name,
+    required this.value,
+    this.expiresAt,
+    this.path,
+    this.domain,
+    this.secure = false,
+    this.httpOnly = false,
+  });
+
+  final String name;
+  final String value;
+
+  /// 过期时刻。null 表示**会话 cookie**（关掉浏览器/进程就没了）。
+  final DateTime? expiresAt;
+
+  final String? path;
+  final String? domain;
+  final bool secure;
+  final bool httpOnly;
+
+  /// 是否已过期。
+  ///
+  /// 会话 cookie（[expiresAt] 为 null）**不算过期**——它在本次进程内一直有效。
+  /// 只有显式带了 `Expires` / `Max-Age` 且时间已过的才算。
+  bool isExpired(DateTime now) {
+    final at = expiresAt;
+    if (at == null) return false;
+    return !at.isAfter(now);
+  }
+
+  /// 序列化（用于持久化到 prefs）。
+  Map<String, dynamic> toJson() => {
+        'n': name,
+        'v': value,
+        if (expiresAt != null) 'e': expiresAt!.millisecondsSinceEpoch,
+        if (path != null) 'p': path,
+        if (domain != null) 'd': domain,
+        if (secure) 's': 1,
+        if (httpOnly) 'h': 1,
+      };
+
+  static DomainCookie? fromJson(Map<String, dynamic> m) {
+    final n = m['n'] as String?;
+    final v = m['v'] as String?;
+    if (n == null || n.isEmpty || v == null) return null;
+    final e = (m['e'] as num?)?.toInt();
+    return DomainCookie(
+      name: n,
+      value: v,
+      expiresAt: e == null ? null : DateTime.fromMillisecondsSinceEpoch(e),
+      path: m['p'] as String?,
+      domain: m['d'] as String?,
+      secure: m['s'] == 1,
+      httpOnly: m['h'] == 1,
+    );
+  }
+
+  /// 解析一行 `Set-Cookie`。格式非法时返回 null。
+  ///
+  /// 支持：`<name>=<value>; Path=/; Domain=...; Expires=<HTTP-date>;`
+  /// `Max-Age=<n>; Secure; HttpOnly`
+  ///
+  /// `Expires` 用 **RFC 1123 格式**（`Mon, 02 Nov 2026 00:36:19 GMT`），
+  /// 这是站点实际用的格式；Dart 的 `HttpDate.parse` 正好能读。
+  /// `Max-Age` 优先级高于 `Expires`（RFC 6265 §5.3）。
+  static DomainCookie? parse(String line) {
+    final parts = line.split(';');
+    if (parts.isEmpty) return null;
+
+    final first = parts.first;
+    final eq = first.indexOf('=');
+    if (eq <= 0) return null;
+    final name = first.substring(0, eq).trim();
+    final value = first.substring(eq + 1).trim();
+    if (name.isEmpty) return null;
+
+    DateTime? expiresAt;
+    int? maxAge;
+    String? path;
+    String? domain;
+    var secure = false;
+    var httpOnly = false;
+
+    for (var i = 1; i < parts.length; i++) {
+      final seg = parts[i].trim();
+      if (seg.isEmpty) continue;
+      final eq2 = seg.indexOf('=');
+      final key = (eq2 < 0 ? seg : seg.substring(0, eq2)).trim().toLowerCase();
+      final val = eq2 < 0 ? '' : seg.substring(eq2 + 1).trim();
+
+      switch (key) {
+        case 'expires':
+          // 解析失败就当没写（不退化成"立即过期"——那会误删有效 cookie）
+          final parsed = _tryParseHttpDate(val);
+          if (parsed != null) expiresAt = parsed;
+        case 'max-age':
+          maxAge = int.tryParse(val);
+        case 'path':
+          path = val;
+        case 'domain':
+          domain = val;
+        case 'secure':
+          secure = true;
+        case 'httponly':
+          httpOnly = true;
+      }
+    }
+
+    // Max-Age 优先：<=0 表示立刻失效
+    if (maxAge != null) {
+      expiresAt = maxAge <= 0
+          ? DateTime.fromMillisecondsSinceEpoch(0)
+          : DateTime.now().add(Duration(seconds: maxAge));
+    }
+
+    return DomainCookie(
+      name: name,
+      value: value,
+      expiresAt: expiresAt,
+      path: path,
+      domain: domain,
+      secure: secure,
+      httpOnly: httpOnly,
+    );
+  }
+
+  /// 解析 HTTP 日期。ddos-guard 的格式是
+  /// `Mon, 02 Nov 2026 00:36:19 GMT`。
+  static DateTime? _tryParseHttpDate(String? raw) {
+    final s = raw?.trim() ?? '';
+    if (s.isEmpty) return null;
+    try {
+      return io.HttpDate.parse(s);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+
+
+
+
+
+
 
 
 

@@ -89,7 +89,14 @@ class FeedController extends Notifier<FeedState> {
     try {
       final api = ref.read(rule34ApiProvider);
       final page = await api.fetchFeed(request.copyWith(page: 1));
-      _accumulated.addAll(page.cards);
+      // 首页去重：**单页内部也可能有重复**。
+      //
+      // 站点在「随机」「最高评分」这类排序下偶尔会把同一个视频吐两次，
+      // 一旦重复进入列表，ListView 的 key 冲突会直接抛
+      // `Key "..." was already used`（参考项目在 Compose 上踩过同样的坑）。
+      // loadMore 里已经按 id 去过重，首屏这条路径之前漏了。
+      final seen = <String>{};
+      _accumulated.addAll(page.cards.where((c) => seen.add(c.id)));
       state = FeedReady(
         cards: List.unmodifiable(_accumulated),
         pager: page.pager,

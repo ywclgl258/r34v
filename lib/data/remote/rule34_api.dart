@@ -54,7 +54,7 @@ class Rule34Api {
       throw HttpException('列表页返回 ${res.status}', status: res.status, url: res.url);
     }
     if (res.looksLikeChallenge) {
-      throw HttpException('站点要求人机验证', status: res.status, url: res.url);
+      throw HttpException('站点要求人机验证', status: res.status, url: res.url, challenge: true);
     }
     _listing.assertStructure(res.body, request);
     return _listing.parse(res.body, request);
@@ -75,7 +75,7 @@ class Rule34Api {
       throw HttpException('详情页返回 ${res.status}', status: res.status, url: res.url);
     }
     if (res.looksLikeChallenge) {
-      throw HttpException('站点要求人机验证', status: res.status, url: res.url);
+      throw HttpException('站点要求人机验证', status: res.status, url: res.url, challenge: true);
     }
 
     final detail = _detail.parse(res.body);
@@ -158,5 +158,6 @@ class Rule34Api {
   /// 这里保留空实现，等以后有本地标签索引再填。
   Future<List<String>> suggest(String query) async => const [];
 }
+
 
 

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:screen_brightness/screen_brightness.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'backends/backends.dart';
 import 'swipe_rate.dart';
@@ -411,6 +412,34 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     }
   }
 
+  /// 上次请求是否被人机验证拦下。用来决定要不要给「用浏览器打开」的出口。
+  bool _needsChallenge = false;
+
+  /// 用外部浏览器打开当前视频页。
+  ///
+  /// 过 ddos-guard 需要执行 JS 和存 cookie，那是浏览器的活。我们能做的
+  /// 只是在浏览器里把 cookie 拿到——所以打开后提示用户回来重试。
+  Future<void> _openInBrowser() async {
+    final uri = Uri.parse(_pageReferer);
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!mounted) return;
+      if (ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('在浏览器里打开并完成验证后，回到这里点「重试」'),
+            duration: Duration(seconds: 6),
+          ),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('打不开浏览器，请手动访问 $uri')),
+      );
+    }
+  }
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -455,6 +484,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
       if (!mounted) return;
       setState(() {
         _error = '打不开：${e.message}';
+        // 被 ddos-guard 拦下时标记出来，UI 才会给「用浏览器打开」的出口。
+        _needsChallenge = e.challenge;
         _loading = false;
       });
     } on ParseException catch (e) {
@@ -1243,7 +1274,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     if (d == null) {
       return Scaffold(
         appBar: AppBar(),
-        body: ErrorState(message: _error ?? '没能加载这个视频', onRetry: _load),
+        body: ErrorState(
+          message: _error ?? '没能加载这个视频',
+          onRetry: _load,
+          // 被人机验证拦住时重试没用——必须有人在浏览器里把验证过掉。
+          // 给一个出口，比让用户反复点"重试"有用得多。
+          secondaryLabel: _needsChallenge ? '用浏览器打开' : null,
+          onSecondary: _needsChallenge ? _openInBrowser : null,
+        ),
       );
     }
 
@@ -2148,3 +2186,4 @@ class _SeekBarState extends State<_SeekBar> {
     );
   }
 }
+

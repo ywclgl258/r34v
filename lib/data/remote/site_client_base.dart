@@ -36,11 +36,17 @@ class HttpResult {
 
 /// 网络层异常。
 class HttpException implements Exception {
-  HttpException(this.message, {this.status, this.url});
+  HttpException(this.message, {this.status, this.url, this.challenge = false});
 
   final String message;
   final int? status;
   final String? url;
+
+  /// 是不是「被 ddos-guard 拦下」这类需要人工过一次验证的情况。
+  ///
+  /// 单独标出来是因为它的处理方式与众不同：重试没用，必须有人在浏览器里
+  /// 把验证过掉。UI 据此给出「用浏览器打开」的出口。
+  final bool challenge;
 
   @override
   String toString() => 'HttpException: $message${status == null ? "" : " (HTTP $status)"}';

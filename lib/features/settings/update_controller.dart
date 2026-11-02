@@ -107,17 +107,27 @@ class UpdateController extends Notifier<UpdateState> {
     final current = state.currentVersion.isNotEmpty
         ? state.currentVersion
         : await svc.currentVersion();
-    final latest = await svc.checkLatest();
+    final UpdateInfo? latest;
+    try {
+      latest = await svc.checkLatest();
+    } on UpdateException catch (e) {
+      state = state.copyWith(
+        phase: silent ? UpdatePhase.idle : UpdatePhase.failed,
+        currentVersion: current,
+        error: silent ? '' : e.userMessage,
+      );
+      return;
+    }
     unawaited(
       ref.read(libraryStoreProvider).setLastUpdateCheckAt(DateTime.now()),
     );
 
     if (latest == null) {
-      // 查不到 ≠ 已是最新。要区分，否则用户会以为更新功能坏了。
+      // 接口通了，但没有任何可用 release。这和"失败"是两件事。
       state = state.copyWith(
         phase: silent ? UpdatePhase.idle : UpdatePhase.failed,
         currentVersion: current,
-        error: silent ? '' : '检查失败：网络不通或暂时拿不到版本信息',
+        error: silent ? '' : '暂时没有可用版本',
       );
       return;
     }
@@ -140,22 +150,27 @@ class UpdateController extends Notifier<UpdateState> {
     _cancelToken = CancelToken();
     state = state.copyWith(phase: UpdatePhase.downloading, progress: 0, error: '');
 
-    final path = await ref.read(updateServiceProvider).download(
-          info,
-          cancelToken: _cancelToken,
-          onProgress: (v) {
-            // 下载回调很密，但这里只改一个 double，Riverpod 自己会合并帧
-            state = state.copyWith(progress: v);
-          },
-        );
-
-    if (path == null) {
+    final String path;
+    try {
+      path = await ref.read(updateServiceProvider).download(
+            info,
+            cancelToken: _cancelToken,
+            onProgress: (v) {
+              // 下载回调很密，但这里只改一个 double，Riverpod 自己会合并帧
+              state = state.copyWith(progress: v);
+            },
+          );
+    } on UpdateException catch (e) {
+      state = state.copyWith(phase: UpdatePhase.failed, error: e.userMessage);
+      return;
+    } catch (e) {
       state = state.copyWith(
         phase: UpdatePhase.failed,
-        error: '下载失败，请检查网络后重试',
+        error: '下载失败：$e',
       );
       return;
     }
+
     state = state.copyWith(
       phase: UpdatePhase.readyToInstall,
       localPath: path,

@@ -244,6 +244,9 @@ final rule34ApiProvider = Provider<Rule34Api>((ref) {
     client: SiteClientImpl(
       router: ref.watch(hostRouterProvider),
       connector: ref.watch(dohConnectorProvider),
+      // 传 prefs 让 cookie 能跨启动存活。ddos-guard 的 __ddg1_ 有效期
+      // 是一年，持久化之后正常使用几乎不会再撞挑战页。
+      prefs: ref.watch(sharedPrefsProvider),
     ),
   );
   ref.onDispose(api.client.dispose);

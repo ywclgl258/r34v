@@ -179,6 +179,8 @@ class EmptyState extends StatelessWidget {
     this.message,
     this.actionLabel,
     this.onAction,
+    this.secondaryLabel,
+    this.onSecondary,
   });
 
   final IconData icon;
@@ -186,6 +188,11 @@ class EmptyState extends StatelessWidget {
   final String? message;
   final String? actionLabel;
   final VoidCallback? onAction;
+
+  /// 次要动作。用在「重试没用、得换个办法」的场景，
+  /// 例如被人机验证拦住时给一个「用浏览器打开」的出口。
+  final String? secondaryLabel;
+  final VoidCallback? onSecondary;
 
   @override
   Widget build(BuildContext context) {
@@ -232,6 +239,13 @@ class EmptyState extends StatelessWidget {
                 child: Text(actionLabel ?? '重试'),
               ),
             ],
+            if (onSecondary != null) ...[
+              const SizedBox(height: R34Space.x2),
+              TextButton(
+                onPressed: onSecondary,
+                child: Text(secondaryLabel ?? ''),
+              ),
+            ],
           ],
         ),
       ),
@@ -247,12 +261,16 @@ class ErrorState extends StatelessWidget {
     this.onRetry,
     this.icon = Icons.cloud_off_rounded,
     this.title = '加载失败',
+    this.secondaryLabel,
+    this.onSecondary,
   });
 
   final String message;
   final VoidCallback? onRetry;
   final IconData icon;
   final String title;
+  final String? secondaryLabel;
+  final VoidCallback? onSecondary;
 
   @override
   Widget build(BuildContext context) {
@@ -262,6 +280,8 @@ class ErrorState extends StatelessWidget {
       message: message,
       actionLabel: '重试',
       onAction: onRetry,
+      secondaryLabel: secondaryLabel,
+      onSecondary: onSecondary,
     );
   }
 }
