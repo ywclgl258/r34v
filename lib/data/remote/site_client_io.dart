@@ -231,7 +231,10 @@ class SiteClientImpl implements SiteClient {
     }
 
     Object? lastError;
-    for (final step in steps) {
+    var triedIp = false;
+    for (var i = 0; i < steps.length; i++) {
+      final step = steps[i];
+      if (step.ip != null) triedIp = true;
       try {
         final r = await _requestVia(
           url,
@@ -251,6 +254,35 @@ class SiteClientImpl implements SiteClient {
           _record('IP ${step.ip} 失败：${_short(e)}');
         } else {
           _record('${step.label} 失败：${_short(e)}');
+        }
+
+        // **自动升级**：如果「站点直连 IP」这个开关是关的，而系统 DNS
+        // 已经失败，就仍然试一次 DoH 解析出的 IP。
+        //
+        // 为什么必须这样：某些网络下系统 DNS 返回的是污染 IP（实测
+        // 202.160.128.40 的 TCP 是 0/8，完全不通），这时「关掉直连 IP」
+        // 等于把唯一能用的路也关掉，用户看到的只是反复 20 秒超时。
+        // 开关的本意是「别用硬编码 IP」，不是「宁可连不上也不用 IP」。
+        if (!triedIp && onSite && connector != null && i == steps.length - 1) {
+          triedIp = true;
+          _record('系统 DNS 不通，自动改用 DoH 解析的 IP 再试一次');
+          try {
+            final ip = await connector!.resolveSiteIp();
+            if (ip != null) {
+              final r = await _requestVia(
+                url,
+                _Attempt.ip(ip),
+                method: method,
+                referer: referer,
+                accept: accept,
+                headers: headers,
+              );
+              _record('IP $ip 可用（自动升级）');
+              return r;
+            }
+          } catch (e2) {
+            _record('自动升级也失败：${_short(e2)}');
+          }
         }
       }
     }

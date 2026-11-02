@@ -174,13 +174,36 @@ class DohResolver {
   /// ```
   ///
   /// 只取 `type == 1`（A 记录）。纯函数，方便单测。
+  ///
+  /// ## 为什么要接受字符串
+  ///
+  /// 实测 Cloudflare 的 `/dns-query` 返回的 `Content-Type` 不是
+  /// `application/json`，于是 Dio 即使设了 `ResponseType.json` 也**不解析**，
+  /// `res.data` 拿到的是原始 `String`。
+  ///
+  /// 第一版只判断 `is Map`，遇到字符串就当成「没有 A 记录」直接返回空——
+  /// 结果 Cloudflare 作为第一优先级永远是空的，每个请求都要多绕两轮。
+  /// 现在字符串也会被解析。
   static List<String> parseAnswers(Object? raw) {
-    if (raw is! Map) return const [];
-    final status = raw['Status'];
+    var node = raw;
+
+    // 字符串先尝试当 JSON 解析（Cloudflare 就属于这种）
+    if (node is String) {
+      final t = node.trim();
+      if (t.isEmpty) return const [];
+      try {
+        node = jsonDecode(t);
+      } catch (_) {
+        return const [];
+      }
+    }
+
+    if (node is! Map) return const [];
+    final status = node['Status'];
     // 0 = NOERROR；其它（3 = NXDOMAIN 等）都算没有结果
     if (status is int && status != 0) return const [];
 
-    final answer = raw['Answer'];
+    final answer = node['Answer'];
     if (answer is! List) return const [];
 
     final out = <String>[];

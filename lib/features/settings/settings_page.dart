@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../core/player_bootstrap.dart';
 import '../../data/local/apk_installer.dart';
+import '../../data/remote/net_diagnoser.dart';
 import '../../data/remote/host_router.dart';
 import '../../ui/components.dart';
 import '../../ui/glass.dart';
@@ -127,7 +128,7 @@ class SettingsPage extends ConsumerWidget {
           ),
           _Group(
             title: '诊断',
-            children: const [_DiagnosticsTile()],
+            children: const [_NetDiagnoseTile(), _DiagnosticsTile()],
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -213,6 +214,114 @@ class _DiagnosticsTile extends ConsumerWidget {
           child: SelectableText(
             api.client.log.isEmpty ? '（还没有请求）' : api.client.log.join('\n'),
             style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 「连接诊断」：把每条网络路径现场实测一遍。
+///
+/// 光看请求日志分不清是 DNS 污染、IP 不通、TLS 失败还是服务端不回数据，
+/// 而这几种的修法完全不同。这里逐条测并给出独立结论。
+class _NetDiagnoseTile extends ConsumerStatefulWidget {
+  const _NetDiagnoseTile();
+
+  @override
+  ConsumerState<_NetDiagnoseTile> createState() => _NetDiagnoseTileState();
+}
+
+class _NetDiagnoseTileState extends ConsumerState<_NetDiagnoseTile> {
+  final List<NetProbe> _probes = [];
+  bool _running = false;
+
+  Future<void> _run() async {
+    if (_running) return;
+    setState(() {
+      _probes.clear();
+      _running = true;
+    });
+    final d = NetDiagnoser(connector: ref.read(dohConnectorProvider));
+    try {
+      await d.run((p) {
+        if (mounted) setState(() {});
+      });
+    } finally {
+      if (mounted) setState(() => _running = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      leading: const Icon(Icons.troubleshoot_rounded, size: 21),
+      title: const Text('连接诊断'),
+      subtitle: Text(_running ? '正在测试各条线路…' : '逐条实测，定位卡在哪一步'),
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: _running ? null : _run,
+                icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                label: Text(_running ? '测试中…' : '开始诊断'),
+              ),
+              if (_probes.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                for (final p in _probes)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 5),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                p.label,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              p.summary,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                                color: p.ok
+                                    ? R34Color.inkMuted
+                                    : (p.error.isNotEmpty
+                                        ? Theme.of(context).colorScheme.error
+                                        : R34Color.inkMuted),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (p.detail.isNotEmpty)
+                          Text(
+                            p.detail,
+                            style: const TextStyle(
+                              fontSize: 10.5,
+                              fontFamily: 'monospace',
+                              color: R34Color.inkMuted,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                const Text(
+                  '提示：如果「TCP」全绿但「HTTP via」全红，说明能连上但服务端不回数据；'
+                  '如果「系统 DNS」解析出的 IP 和「DoH 解析」不同，说明本地 DNS 被污染。',
+                  style: TextStyle(fontSize: 10.5, color: R34Color.inkMuted, height: 1.5),
+                ),
+              ],
+            ],
           ),
         ),
       ],
@@ -773,4 +882,5 @@ class _PlayerEngineTile extends ConsumerWidget {
     );
   }
 }
+
 
