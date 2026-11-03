@@ -110,6 +110,41 @@ class DohResolver {
     return ips;
   }
 
+  /// 解析出**所有服务商提供的 IP 并集**，用于候选池。
+  ///
+  /// ## 和 [resolve] 的区别
+  ///
+  /// [resolve] 串行问、第一个成功就返回——那是「快速拿一个能用的」，
+  /// 适合请求路径。
+  ///
+  /// 这个函数要的是**尽量多的候选**：站点在做 DNS 轮询，不同服务商、
+  /// 不同地区视角下返回的 A 记录可能不同，而这些 IP 的可达性也各不相同。
+  /// 只拿一个就锁死，等于把「换一条能用的路」的机会扔掉了。
+  ///
+  /// 所以这里**并发问全部服务商**，把所有结果并起来。
+  /// 用它做候选池，再由 [SiteIpPool] 逐个实测筛选。
+  Future<List<String>> resolveAll(String hostname) async {
+    final targets = preset == null ? presets : <DohPreset>[preset!];
+
+    final results = await Future.wait(
+      targets.map((p) async {
+        try {
+          return await _queryOne(p, hostname);
+        } catch (_) {
+          return const <String>[];
+        }
+      }),
+    );
+
+    final out = <String>[];
+    for (final list in results) {
+      for (final ip in list) {
+        if (!out.contains(ip)) out.add(ip);
+      }
+    }
+    return out;
+  }
+
   /// 同步取缓存（没有或过期返回空）。
   List<String> cachedFor(String hostname) {
     final hit = _cache[hostname];

@@ -17,6 +17,8 @@ import '../data/remote/site_client_io.dart'
 import '../data/remote/stream_resolver.dart';
 import '../data/remote/tag_translator.dart';
 import '../data/remote/rule34_api.dart';
+import '../data/remote/site_ip_pool.dart';
+import '../data/remote/network_env.dart';
 
 /// 只观察整页导航，弹出菜单、音量面板不会打断播放。
 final routeObserverProvider = Provider<RouteObserver<PageRoute<dynamic>>>(
@@ -145,6 +147,36 @@ final feedCacheProvider = Provider<FeedCache>((ref) {
   return FeedCache(ref.watch(sharedPrefsProvider));
 });
 
+/// 当前是否有 VPN 在接管流量。
+///
+/// 用于设置页展示状态，以及让 UI 说清楚「有 VPN 时不做 IP 直连」这个
+/// 反直觉的行为——否则用户会觉得「我开了梯子反而不走了」。
+///
+/// 每 5 秒重查一次（`NetworkEnv` 内部有缓存），这样用户在 App 运行期间
+/// 开关 VPN，界面能自己跟上，不需要重启。
+final vpnActiveProvider = StreamProvider<bool>((ref) async* {
+  // 先给一个立即值，避免首帧空白
+  yield await NetworkEnv.hasVpn();
+  // 之后轮询。StreamProvider 会被自动取消，停用页面不会再耗电。
+  while (true) {
+    await Future<void>.delayed(const Duration(seconds: 5));
+    NetworkEnv.invalidate();
+    yield await NetworkEnv.hasVpn();
+  }
+});
+
+/// 站点直连 IP 的候选池：自动发现 + 跨启动复用。
+///
+/// 冷启动时先吐上次存盘的池（同步、零网络），后台再刷新。
+/// 这样「打开 App 自动更新可用 IP」不会拖慢首屏。
+final siteIpPoolProvider = Provider<SiteIpPool>((ref) {
+  // 构造时已经同步载入了上次结果，这里不用再调 loadFromDisk。
+  return SiteIpPool(
+    connector: ref.watch(dohConnectorProvider),
+    prefs: ref.watch(sharedPrefsProvider),
+  );
+});
+
 /// 缓存索引。写操作后 invalidate 这个，片库和详情页会跟着刷新。
 final cacheIndexProvider = Provider<List<CachedVideo>>((ref) {
   return ref.watch(videoCacheProvider).loadIndex();
@@ -258,9 +290,15 @@ final rule34ApiProvider = Provider<Rule34Api>((ref) {
     client: SiteClientImpl(
       useDirectIp: ref.watch(libraryStoreProvider).directIp,
       connector: ref.watch(dohConnectorProvider),
-      // 传用户配的代理：有代理就优先走代理。
-      // 实测两条路现在都稳定（各 5/5），但代理通常在 0.5–1s，
-      // 直连 0.7–3.4s，代理略优，而且不受本地 DNS 污染影响。
+      // 候选顺序：用户自定义 IP（最优先）→ 自动探测出的池。
+      //
+      // 池是「每次启动后台刷新 + 跨启动复用」的：冷启动先用上次的结果，
+      // 探到新的再替换。这样内置 IP 失效时用户不需要等发新版。
+      customIps: [
+        ...ref.watch(libraryStoreProvider).customSiteIpList,
+        ...ref.watch(siteIpPoolProvider).ips,
+      ],
+      // 传用户配的代理：有代理就**只**走代理（不再混 IP 直连）。
       proxy: ref.watch(libraryStoreProvider).playerProxy,
       // 传 prefs 让 cookie 能跨启动存活。ddos-guard 的 __ddg1_ 有效期
       // 是一年，持久化之后正常使用几乎不会再撞挑战页。

@@ -10,6 +10,7 @@ import '../../domain/video_card.dart';
 import '../../app/providers.dart';
 import '../../ui/components.dart';
 import '../../ui/glass.dart';
+import '../../ui/loading_scene.dart';
 import '../../ui/tokens.dart';
 import 'hot_carousel.dart';
 import 'video_card_tile.dart';
@@ -342,7 +343,12 @@ class _FeedPageTabState extends ConsumerState<FeedPageTab> {
               ],
             ),
       body: switch (state) {
-        FeedLoading() => const Center(child: CircularProgressIndicator()),
+        FeedLoading() => const LoadingScene(
+          // 列表页只走一条链路（请求 + 解析），所以用 fetching 阶段；
+          // 步骤文案对应用户真正在等的两件事。
+          stage: LoadingStage.fetching,
+          footNote: '首次加载会慢一些',
+        ),
         FeedError(:final message, :final isChallenge, :final canRetry) => ErrorState(
             message: message,
             title: isChallenge ? '需要人机验证' : '加载失败',

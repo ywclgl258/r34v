@@ -53,6 +53,7 @@ Future<void> main() async {
     ),
   );
 }
+
 class R34vApp extends ConsumerStatefulWidget {
   const R34vApp({super.key});
 
@@ -64,6 +65,17 @@ class _R34vAppState extends ConsumerState<R34vApp> {
   @override
   void initState() {
     super.initState();
+    // 启动后**延迟**刷新站点直连 IP 池。
+    //
+    // 「每次打开自动检测新的可用 IP」就在这里做：首屏不等它，用户先看到
+    // 内容；探测在后台跑，完成后写入池并落盘，本次及下次启动都用新结果。
+    //
+    // 只在池子陈旧（超过 6 小时）或从没探测过时才跑，避免每次冷启动都
+    // 白耗一轮流量——站点轮询不是分钟级的，没必要那么频繁。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _refreshIpPoolIfNeeded();
+    });
+
     // 启动后**延迟**检查一次更新：不跟首屏抢网络，失败也不打扰。
     //
     // 只在距上次检查超过 12 小时才查，避免频繁冷启动反复打 GitHub
@@ -83,6 +95,33 @@ class _R34vAppState extends ConsumerState<R34vApp> {
         ),
       );
     });
+  }
+
+  /// 后台刷新直连 IP 池。
+  Future<void> _refreshIpPoolIfNeeded() async {
+    try {
+      final pool = ref.read(siteIpPoolProvider);
+      if (!pool.isStale) return;
+
+      // 等首屏把第一批请求发出去再探，别抢带宽
+      await Future<void>.delayed(const Duration(seconds: 5));
+      if (!mounted) return;
+
+      final store = ref.read(libraryStoreProvider);
+      // 有代理或 VPN 时不做直连探测：探测本身会绕过用户的分流规则，
+      // 结果既不准也没意义。
+      if (store.playerProxy.trim().isNotEmpty) return;
+
+      final fresh = await pool.refresh(
+        extra: store.customSiteIpList,
+      );
+      if (!mounted || fresh.isEmpty) return;
+
+      // 池变了要重建 API，否则它还用着旧的候选列表
+      ref.invalidate(rule34ApiProvider);
+    } catch (_) {
+      // 探测失败不影响使用，下次启动会再试
+    }
   }
 
   @override

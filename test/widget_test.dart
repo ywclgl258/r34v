@@ -17,6 +17,7 @@ import 'package:r34v/domain/video_detail.dart';
 import 'package:r34v/features/feed/feed_page.dart';
 import 'package:r34v/features/feed/video_card_tile.dart';
 import 'package:r34v/features/player/player_page.dart';
+import 'package:r34v/ui/loading_scene.dart';
 import 'package:r34v/ui/net_image.dart';
 import 'package:r34v/features/library/library_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -116,8 +117,8 @@ void main() {
         const FeedPageTab(kind: FeedKind.latest, showBackButton: false),
         api: FakeApi(), prefs: prefs,
       ));
-      // 首帧是 loading
-      expect(find.byType(CircularProgressIndicator), findsWidgets);
+      // 首帧是加载场景（带步骤说明，不再是一个裸转圈）
+      expect(find.byType(LoadingScene), findsOneWidget);
 
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
@@ -251,6 +252,7 @@ void main() {
     });
   });
 }
+
 
 
 

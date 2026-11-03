@@ -54,11 +54,22 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        // 只打 arm64（现代手机全是这个架构）。
-        // 注意：abiFilters 只对 AAR 里的 jni 生效，media_kit 是通过
-        // jar 依赖塞 so 的，不吃这一套——真正滤掉它要靠下面的 packaging.excludes。
+        // ABI 选择。
+        //
+        // 发布包只打 arm64（现代手机全是这个架构，33MB 里 so 占大头）。
+        // 但**本机模拟器是 x86_64**，需要能临时构建一个带 x86_64 的包来自测：
+        //
+        //   flutter build apk --release --target-platform android-x64 \
+        //     -Ptarget-platform=x64 -Pr34vAbiX64=true
+        //
+        // 由 `-Pr34vAbiX64=true` 打开，默认关闭——**发布包不受影响**。
+        val withX64 = (project.findProperty("r34vAbiX64") as String?) == "true"
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += if (withX64) {
+                listOf("arm64-v8a", "x86_64")
+            } else {
+                listOf("arm64-v8a")
+            }
         }
     }
 
@@ -67,7 +78,10 @@ android {
             // media_kit 的 jar 把三个架构的 libmpv（各 11-15MB）全塞进来，
             // abiFilters 管不到 jar 来源，这里按路径排除。
             excludes += "/lib/armeabi-v7a/**"
-            excludes += "/lib/x86_64/**"
+            // 只有构建模拟器包时才保留 x86_64 的 libmpv
+            if ((project.findProperty("r34vAbiX64") as String?) != "true") {
+                excludes += "/lib/x86_64/**"
+            }
         }
     }
 

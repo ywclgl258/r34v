@@ -46,8 +46,21 @@ class DnsOverHttpsConnector {
   /// 解析失败次数，便于判断 DoH 是否整体不可用。
   int failureCount = 0;
 
-  /// 上一次验证通过的 IP。网络环境不变时它能一直复用。
+  /// 上次验证过的 IP，用来跳过重复探测。
   String? _lastGood;
+
+  /// 最近的候选池（按探测耗时排序），给请求层逐个重试用。
+  ///
+  /// 单个 IP 的成败**和地区强相关**：同一个域名在国内连
+  /// `190.115.31.243` 很稳，换个国家/运营商可能完全不通。所以不能只挑
+  /// 「当前最快的那个」就锁死——要把整池按质量排好序交给上层，
+  /// 这条不通就试下一条。
+  List<String> _lastPool = const [];
+
+  /// 上次探测得到的候选（已按可用性 + 延迟排序，且只含能连上的）。
+  ///
+  /// 为空表示还没探测过或全部不通。
+  List<String> get lastPool => List.unmodifiable(_lastPool);
 
   /// 单个 IP 的探测超时。
   ///
@@ -71,28 +84,36 @@ class DnsOverHttpsConnector {
 
   /// 解析任意 host（主要给测试与诊断用）。
   Future<String?> resolve(String host) async {
-    if (!enabled) return null;
-    if (!isSiteHost(host)) return null;
+    final pool = await resolvePool(host);
+    return pool.isEmpty ? null : pool.first;
+  }
+
+  /// 解析出**整池**可用 IP，按「先快后慢」排序。
+  ///
+  /// 与 [resolveSiteIp] 的区别：那个只给一个，这个给全部可用的。
+  /// 请求层需要后者——某个 IP 在特定地区/运营商下不通时，
+  /// 要能立刻试下一个，而不是把整次请求判死。
+  Future<List<String>> resolvePool(String host) async {
+    if (!enabled) return const [];
+    if (!isSiteHost(host)) return const [];
 
     try {
       final ips = await resolver.resolve(host);
       if (ips.isEmpty) {
         failureCount++;
-        return null;
+        return const [];
       }
 
-      // 上次验证过的 IP 还在列表里就直接用，省一次探测。
-      // 这条很重要：一旦找到能用的，网络环境通常不会立刻变，
-      // 复用它能避免每次都重新试错、把首屏拖慢。
+      // 上次探测的池子仍然有效（候选没变）就直接复用，省一次全量探测。
       final remembered = _lastGood;
-      if (remembered != null && ips.contains(remembered)) {
+      if (remembered != null && ips.contains(remembered) && _lastPool.isNotEmpty) {
         lastResolvedIp = remembered;
-        return remembered;
+        return _lastPool;
       }
 
-      // 并发探测全部候选，取最快能连的那个。
-      // 串行最坏是 N × probeTimeout（3 个坏 IP = 6 秒），用户感受到的
-      // 就是「打开很慢」；并发之后最坏只等一个 probeTimeout。
+      // 并发探测全部候选，按耗时排序。
+      // 串行最坏是 N × probeTimeout，用户感受到的就是「打开很慢」；
+      // 并发之后最坏只等一个 probeTimeout。
       final probed = await Future.wait(
         ips.map((ip) async {
           final sw = Stopwatch()..start();
@@ -106,16 +127,36 @@ class DnsOverHttpsConnector {
 
       if (alive.isEmpty) {
         failureCount++;
-        return null;
+        _lastPool = const [];
+        return const [];
       }
 
-      final best = alive.first.ip;
-      _lastGood = best;
-      lastResolvedIp = best;
-      return best;
+      final pool = alive.map((p) => p.ip).toList();
+      _lastPool = pool;
+      _lastGood = pool.first;
+      lastResolvedIp = pool.first;
+      return pool;
     } catch (_) {
       failureCount++;
-      return null;
+      return const [];
+    }
+  }
+
+  /// 解析出**所有可用 IP**（多服务商并集 + 实测筛选），用于候选池。
+  ///
+  /// 与 [resolvePool] 的区别：
+  /// - [resolvePool] 只问「能快速拿到的那个结果」，适合请求路径；
+  /// - 这个函数用 [DohResolver.resolveAll] **并发问全部服务商**并把结果
+  ///   并起来，得到尽量多的候选，再由 [SiteIpPool] 做完整 TLS 实测筛选。
+  ///
+  /// 「候选多」这件事很重要：站点做 DNS 轮询，不同服务商/地区返回的
+  /// A 记录可能不同，只取一个就锁死，等于放弃「换条路」的机会。
+  Future<List<String>> resolveAllCandidates() async {
+    if (!enabled) return const [];
+    try {
+      return await resolver.resolveAll(kSiteHost);
+    } catch (_) {
+      return const [];
     }
   }
 
@@ -133,6 +174,7 @@ class DnsOverHttpsConnector {
   /// 忘掉已验证的 IP（网络变化或用户切换设置时调用）。
   void reset() {
     _lastGood = null;
+    _lastPool = const [];
     lastResolvedIp = null;
     failureCount = 0;
     resolver.clear();

@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/constants.dart';
 import 'doh_connector.dart';
 import 'host_router.dart';
+import 'network_env.dart';
 import 'site_client_base.dart';
 
 /// 合并站点 Cookie jar 与调用方会话 Cookie。
@@ -44,6 +45,7 @@ class SiteClientImpl implements SiteClient {
     Duration? retryBaseDelay,
     this.useDirectIp = true,
     this.connector,
+    this.customIps = const [],
     this._proxy,
     this._prefs,
   }) : _timeout = timeout ?? const Duration(seconds: 20),
@@ -68,6 +70,13 @@ class SiteClientImpl implements SiteClient {
 
   /// DoH 解析器。用来拿当下的真实 IP。
   final DnsOverHttpsConnector? connector;
+
+  /// 用户手动指定的优先 IP（来自设置页）。
+  ///
+  /// 内置 IP 只在本机网络验证过，换地区很可能一个都不通；站点又在做
+  /// DNS 轮询，不同运营商拿到的 IP 不同。留这个口子让用户把
+  /// 「我这边实测能连的 IP」排到最前面，不必等发新版。
+  final List<String> customIps;
 
   /// Cookie：host → name → cookie。
   ///
@@ -264,29 +273,72 @@ class SiteClientImpl implements SiteClient {
     // host 是 IP 时 SNI 也是 IP，而证书是 /CN=rule34video.com。
     // 正确做法见 [_openViaIp]：URI 保持域名，只在 socket 层指定 IP。
     final steps = <_Attempt>[];
+    final hasProxy = (_proxy ?? '').trim().isNotEmpty;
+    // VPN 检测：开着 VPN 时**绝不能**做 IP 直连，见下面分支的说明。
+    final vpn = onSite ? await NetworkEnv.hasVpn() : false;
 
     if (onSite) {
-      final hasProxy = (_proxy ?? '').trim().isNotEmpty;
       if (hasProxy) {
+        // **有代理时只走代理，绝不混入 IP 直连。**
+        //
+        // 早先的实现是「代理先试，失败再退 IP 直连」。这是错的：用户之所以
+        // 配代理，正是因为直连不通——退到直连等于退到一条确定失败的路上，
+        // 白白多等一个超时。实测表现就是「开了梯子反而连不上」。
+        //
+        // 代理和 IP 直连是**两种互斥的策略**，不是可以叠加的兜底链。
         steps.add(const _Attempt.proxy());
-      }
-      if (useDirectIp) {
-        String? ip;
-        if (connector != null) {
-          ip = await connector!.resolveSiteIp();
+      } else if (vpn) {
+        // **检测到 VPN：老实按域名请求，不做任何 IP 直连。**
+        //
+        // 这和「代理」不是一回事。VPN（tun 模式）是**按域名分流**的：
+        // 它看到你连 rule34video.com 才会按规则选节点。我们一旦把域名
+        // 换成裸 IP，VPN 匹配不到域名规则，只能按 IP-CIDR 兜底——通常
+        // 落到 DIRECT，于是既没用上节点、又因为本地 DNS 被污染连到了
+        // 错的 IP。这正是「直连能通、开了梯子反而连不上」的原因。
+        //
+        // 让域名原样交给 VPN：它自己解析、自己分流，这是唯一正确的做法。
+        steps.add(const _Attempt.direct());
+      } else {
+        // 没有代理也没有 VPN：**用户自定义 IP** → DoH 整池 → 内置 → 系统 DNS。
+        //
+        // 自定义 IP 排最前的理由：它来自用户自己在他那条网络上实测的结果。
+        // 内置列表只在本机验证过，换地区很可能全废——而站点做 DNS 轮询，
+        // 不同运营商拿到的 IP 本来就不一样。
+        //
+        // 用整池而不是单个 IP：某个 IP 通不通和地区、运营商强相关。
+        // 逐条试是唯一能自适应的做法。
+        if (useDirectIp) {
+          final pool = <String>[];
+
+          for (final ip in customIps) {
+            if (!pool.contains(ip)) pool.add(ip);
+          }
+
+          if (connector != null) {
+            final resolved = await connector!.resolvePool(kSiteHost);
+            for (final ip in resolved) {
+              if (!pool.contains(ip)) pool.add(ip);
+            }
+          }
+
+          for (final e in kBuiltinEndpoints) {
+            if (!pool.contains(e.ip)) pool.add(e.ip);
+          }
+
+          for (final one in pool) {
+            steps.add(_Attempt.ip(one));
+          }
         }
-        final list = <String>[
-          ?ip,
-          ...kBuiltinEndpoints.map((e) => e.ip).where((e) => e != ip),
-        ];
-        for (final one in list) {
-          steps.add(_Attempt.ip(one));
-        }
+        steps.add(const _Attempt.direct());
       }
-      if (!hasProxy) steps.add(const _Attempt.direct());
     } else {
-      // 非站点域名（CDN、DoH 端点等）一律走系统 DNS，不替换 IP。
-      steps.add(const _Attempt.direct());
+      // 非站点域名：CDN、图片、视频、DoH 端点等。
+      //
+      // **有代理时必须也走代理。** 早先这里无条件走 direct，而 direct 分支
+      // 写死了 `findProxy = DIRECT`——于是在需要梯子的网络里，站点 HTML
+      // 从代理过去了，图片和视频却在直连 CDN，全部超时。这就是
+      // 「页面能打开、封面全灰、视频播不了」的原因。
+      steps.add(hasProxy ? const _Attempt.proxy() : const _Attempt.direct());
     }
 
     Object? lastError;
@@ -323,7 +375,17 @@ class SiteClientImpl implements SiteClient {
         // 202.160.128.40 的 TCP 是 0/8，完全不通），这时「关掉直连 IP」
         // 等于把唯一能用的路也关掉，用户看到的只是反复 20 秒超时。
         // 开关的本意是「别用硬编码 IP」，不是「宁可连不上也不用 IP」。
-        if (!triedIp && onSite && connector != null && i == steps.length - 1) {
+        //
+        // **但配了代理或检测到 VPN 时绝不升级。** 这两种情况下 IP 直连会
+        // 绕过用户自己的分流规则：代理/VPN 靠域名决定走哪条路，给裸 IP
+        // 只能按 IP-CIDR 兜底，通常落回 DIRECT——多失败一次、多等一个
+        // 超时，还把「代理/VPN 挂了」的真实原因掩盖成「IP 也不通」。
+        if (!triedIp &&
+            !hasProxy &&
+            !vpn &&
+            onSite &&
+            connector != null &&
+            i == steps.length - 1) {
           triedIp = true;
           _record('系统 DNS 不通，自动改用 DoH 解析的 IP 再试一次');
           try {

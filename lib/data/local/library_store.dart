@@ -334,6 +334,52 @@ class LibraryStore {
       ? _prefs.remove('${_kSettings}_player_proxy')
       : _prefs.setString('${_kSettings}_player_proxy', v);
 
+  // ---------- 自定义站点 IP ----------
+
+  /// 用户手动指定优先使用的站点 IP（可多个，逗号/空格分隔）。
+  ///
+  /// ## 为什么需要这个
+  ///
+  /// 内置 IP 只在本机网络验证过。**换到别的地区很可能一个都不通**——
+  /// 站点做 DNS 轮询，不同运营商拿到的 IP 不同，可达性也不同。
+  /// 官方内置列表再多也覆盖不全所有地区。
+  ///
+  /// 所以留一个入口：用户（或他的朋友）能自己把「在我这边实测能连的 IP」
+  /// 填进来。这是唯一不依赖发新版就能适配任意地区的办法。
+  ///
+  /// 填进来的 IP 会**排在内置候选之前**优先尝试。
+  String get customSiteIps =>
+      _prefs.getString('${_kSettings}_custom_site_ips') ?? '';
+
+  /// 解析成 IP 列表（去空、去重、保持顺序）。
+  List<String> get customSiteIpList {
+    final raw = customSiteIps;
+    if (raw.trim().isEmpty) return const [];
+    final out = <String>[];
+    for (final part in raw.split(RegExp(r'[,，\s]+'))) {
+      final v = part.trim();
+      if (v.isEmpty) continue;
+      if (!_looksLikeIpv4(v)) continue;
+      if (!out.contains(v)) out.add(v);
+    }
+    return out;
+  }
+
+  Future<void> setCustomSiteIps(String v) => v.trim().isEmpty
+      ? _prefs.remove('${_kSettings}_custom_site_ips')
+      : _prefs.setString('${_kSettings}_custom_site_ips', v.trim());
+
+  /// 简单校验点分十进制 IPv4（不做完整校验，只为挡住明显的误输入）。
+  static bool _looksLikeIpv4(String s) {
+    final parts = s.split('.');
+    if (parts.length != 4) return false;
+    for (final p in parts) {
+      final n = int.tryParse(p);
+      if (n == null || n < 0 || n > 255) return false;
+    }
+    return true;
+  }
+
 
   Future<void> setVolume(double v) => _prefs.setDouble('${_kSettings}_volume', v);
 

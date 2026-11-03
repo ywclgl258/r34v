@@ -5,6 +5,7 @@ import 'package:dio/io.dart';
 
 import 'doh_connector.dart';
 import 'host_router.dart' as hr;
+import 'network_env.dart';
 
 /// 原生端：显式设置代理，并让站点域名的请求真正走 IP 直连。
 ///
@@ -38,7 +39,14 @@ void applyProxyImpl(
   final p = (proxy ?? '').trim();
   final hasProxy = p.isNotEmpty;
 
-  // 代理优先；只有没代理且需要 IP 直连时才接管连接工厂。
+  // 代理优先。**有代理时不要把 IP 直连混进来。**
+  //
+  // 用户配代理正是因为他那边直连不通。早先的实现会在代理失败后自动退到
+  // IP 直连，但那是一条确定失败的路——白白多等一个超时，还会把
+  // 「代理挂了」的真实原因掩盖掉。
+  //
+  // 而且有代理时这里**完全不接管连接工厂**：让 HttpClient 走系统代理设置，
+  // 图片、视频、CDN 全都会经代理，行为一致。
   if (hasProxy) {
     dio.httpClientAdapter = IOHttpClientAdapter(
       createHttpClient: () {
@@ -52,7 +60,6 @@ void applyProxyImpl(
   }
 
   if (connector == null) return;
-
   dio.httpClientAdapter = IOHttpClientAdapter(
     createHttpClient: () {
       final c = HttpClient();
@@ -63,6 +70,16 @@ void applyProxyImpl(
       c.connectionFactory = (uri, proxyHost, proxyPort) async {
         // 站点域名才做 IP 直连。
         if (hr.isSiteHost(uri.host)) {
+          // **VPN 在接管流量时绝不做 IP 直连。**
+          //
+          // VPN（tun 模式）按域名分流：它看到 rule34video.com 才会按规则
+          // 选节点。换成裸 IP 后它匹配不到域名规则，只能按 IP-CIDR 兜底，
+          // 通常落回 DIRECT——既没用上节点，又可能连到污染 IP。
+          // 所以直接按域名交给系统（也就是交给 VPN）。
+          if (await NetworkEnv.hasVpn()) {
+            return _connectDefault(uri);
+          }
+
           String? ip;
           try {
             ip = await connector.resolveSiteIp();

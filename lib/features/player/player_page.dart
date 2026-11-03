@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart' show DragStartBehavior;
@@ -20,6 +21,7 @@ import '../../data/local/background_transfer.dart';
 import '../../data/local/library_store.dart';
 import '../../data/local/video_cache.dart';
 import '../../ui/components.dart';
+import '../../ui/loading_scene.dart';
 import '../../ui/tokens.dart';
 import '../common/video_sections.dart';
 import '../feed/video_card_tile.dart';
@@ -74,6 +76,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
   StreamVariant? _current;
   String? _error;
   bool _loading = true;
+
+  /// 当前加载阶段，用于给用户明确进度感。
+  ///
+  /// 站点是纯 HTML 解析，一轮 1–3 秒；网络差或要换链时更久。
+  /// 只转一个圈的话用户无法判断「在干活还是在等超时」，
+  /// 所以每一步都告诉他在做什么。
+  LoadingStage _stage = LoadingStage.resolving;
   bool _fullscreen = false;
 
   /// 当前全屏朝向是否为竖屏。用于避免重复下发同一个朝向请求。
@@ -503,9 +512,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
       _loading = true;
       _error = null;
       _refreshCount = 0;
+      _stage = LoadingStage.fetching;
     });
     try {
       final api = ref.read(rule34ApiProvider);
+      // 阶段已经在上面的 setState 里设为 resolving；
+      // 这里不再单独 setState 一次——多一次 rebuild 会让详情区的
+      // 子组件（标签翻译等）提前挂上定时器，既无必要也不利于测试稳定。
       final d = await api.fetchDetail(_path);
       if (!mounted) return;
 
@@ -569,6 +582,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
   Future<void> _startPlayback(VideoDetail d, StreamVariant s) async {
     final revision = ++_playbackRevision;
     _pendingPlayback = true;
+    // 进入起播流程：解析直链 → 播放器 open → 等首帧
+    if (mounted) setState(() => _stage = LoadingStage.resolvingStream);
     if (!_isCurrent(revision)) return;
     try {
       // 从上次看到的位置接着播
@@ -652,6 +667,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
   Future<String> _resolvePlaybackUrl(String url) async {
     if (!url.startsWith('http')) return url;
     if (!ref.read(libraryStoreProvider).cdnDirect) return url;
+    // 这一步要走一次 302，用户能感觉到停顿，明确告知
+    if (mounted && _loading) {
+      setState(() => _stage = LoadingStage.resolvingStream);
+    }
     try {
       final resolver = ref.read(streamResolverProvider);
       // 先看会话缓存：seek 重试路径上不该再等一次网络。
@@ -716,7 +735,11 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     try {
       final target = await _resolvePlaybackUrl(url);
       if (!_isCurrent(revision)) return false;
-      if (!_isCurrent(revision)) return false;
+      // 直链已拿到，现在等播放器首字节。这一步实测要 5–11 秒，
+      // 是最容易让用户以为卡死的一段，明确告知。
+      if (mounted && _pendingPlayback) {
+        setState(() => _stage = LoadingStage.buffering);
+      }
       await _backend.open(target, play: true, referer: _pageReferer);
       if (!_isCurrent(revision)) return false;
       // 站点实测首字节要 5–11 秒，给足余量；太短会把能直连的误判成失败，
@@ -741,6 +764,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
           _error = null;
           _playingFromCache = false;
           _pendingPlayback = false;
+          _stage = LoadingStage.ready;
         });
       }
       return true;
@@ -1427,7 +1451,25 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
   @override
   Widget build(BuildContext context) {
     if (_loading && _detail == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      // 用带步骤说明的加载场景，而不是一个光秃秃的转圈。
+      //
+      // 站点是纯 HTML 解析 + DoH + IP 直连，首屏 1–3 秒是常态，慢网络更久。
+      // 用户盯着转圈时无法区分「在干活」和「卡死了」，焦虑正是来自这种
+      // 不确定；把当前步骤写出来，即使还是慢，至少他知道没白等。
+      return Scaffold(
+        body: LoadingScene(
+          stage: _stage,
+          // 进度按阶段推进（不确定具体百分比，用分段值近似）
+          progress: switch (_stage) {
+            LoadingStage.resolving => 0.12,
+            LoadingStage.fetching => 0.42,
+            LoadingStage.resolvingStream => 0.68,
+            LoadingStage.buffering => 0.88,
+            LoadingStage.ready => 1.0,
+          },
+          footNote: _refreshCount > 0 ? '已重试 $_refreshCount 次' : null,
+        ),
+      );
     }
 
     // 详情都没拿到（网络失败/解析失败/被屏蔽），这时没有信息可显示，
@@ -1458,6 +1500,56 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
               ? _buildPlayerError()
               : Center(child: _backend.videoWidget()),
         ),
+        // 等首帧时的覆盖层。
+        //
+        // 起播要经过「解析直链 → 播放器 open → 服务端回首个字节」，
+        // 实测 5–11 秒都出现过。这段时间视频区是全黑的，用户最容易
+        // 以为卡死并退出，所以叠一层轻量提示（不用整屏 LoadingScene，
+        // 那会把已经能看的信息全遮住）。
+        if (_pendingPlayback && _error == null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: ColoredBox(
+                color: R34Color.canvas.withValues(alpha: 0.86),
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // **不要用 CircularProgressIndicator。**
+                      //
+                      // 它是无限循环动画：组件树销毁时若仍在转，会留下
+                      // pending frame，widget 测试直接报
+                      // 「A Timer is still pending」。而且这个覆盖层
+                      // 会在起播成功后立刻消失，转圈本来也看不清。
+                      //
+                      // 用一个静态弧 + 文字，信息量一样，且没有生命周期风险。
+                      SizedBox(
+                        width: 28,
+                        height: 28,
+                        child: CustomPaint(
+                          painter: _StaticArcPainter(
+                            color: R34Color.accent,
+                            track: R34Color.ink.withValues(alpha: 0.14),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        _stage.detail,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontFamily: 'NotoSansSC',
+                          fontSize: 12.5,
+                          letterSpacing: 1.0,
+                          color: R34Color.inkMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         // 手势层。
         //
         // 手势分工：
@@ -2407,4 +2499,51 @@ class _SeekBarState extends State<_SeekBar> {
       },
     );
   }
+}
+
+/// 静态进度弧：底环 + 一段高亮弧。
+///
+/// 用于「等首帧」覆盖层。刻意**不用** `CircularProgressIndicator`——
+/// 那是无限循环动画，组件树销毁时若仍在转会留下 pending frame，
+/// widget 测试会直接报 `A Timer is still pending`，真机上也是白耗电。
+///
+/// 这个覆盖层在起播成功后立刻消失，转不转其实看不清，
+/// 静态弧既传达了「在等」的语义，又没有生命周期风险。
+class _StaticArcPainter extends CustomPainter {
+  const _StaticArcPainter({required this.color, required this.track});
+
+  final Color color;
+  final Color track;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 1.5;
+
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = track,
+    );
+
+    // 约 1/4 弧，从 12 点方向开始
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      -math.pi / 2,
+      math.pi * 0.5,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round
+        ..color = color,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _StaticArcPainter old) =>
+      old.color != color || old.track != track;
 }

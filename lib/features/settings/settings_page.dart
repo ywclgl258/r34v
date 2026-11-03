@@ -6,6 +6,7 @@ import '../../core/player_bootstrap.dart';
 import '../../data/local/apk_installer.dart';
 import '../../data/remote/net_diagnoser.dart';
 import '../../data/remote/host_router.dart';
+import '../../data/remote/site_ip_pool.dart';
 import '../../ui/components.dart';
 import '../../ui/glass.dart';
 import '../../ui/tokens.dart';
@@ -120,6 +121,7 @@ class SettingsPage extends ConsumerWidget {
             children: const [
               _DohTile(),
               _DirectIpTile(),
+              _CustomIpTile(),
               _CdnDirectTile(),
               _ProxyTile(),
             ],
@@ -459,6 +461,289 @@ class _UpdateTile extends ConsumerWidget {
   }
 }
 
+/// 「自定义站点 IP」。
+///
+/// ## 为什么需要用户自己填
+///
+/// 内置 IP 只在本机网络实测过。站点做 DNS 轮询，**不同地区/运营商拿到的
+/// IP 不同，可达性也不同**——同一个 `190.115.31.243` 在国内某运营商很稳，
+/// 换到别的国家可能完全不通。这种情况内置列表无能为力，扩表也覆盖不全
+/// 所有地区。
+///
+/// 所以留一个入口：把「在你那边实测能连的 IP」填进来，它会排在内置候选
+/// 之前优先尝试。这是唯一不依赖发新版就能适配任意地区的办法。
+///
+/// 填多个用逗号或空格分隔；会自动校验点分十进制格式。
+class _CustomIpTile extends ConsumerStatefulWidget {
+  const _CustomIpTile();
+
+  @override
+  ConsumerState<_CustomIpTile> createState() => _CustomIpTileState();
+}
+
+class _CustomIpTileState extends ConsumerState<_CustomIpTile> {
+  late final TextEditingController _c = TextEditingController(
+    text: ref.read(libraryStoreProvider).customSiteIps,
+  );
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await ref.read(libraryStoreProvider).setCustomSiteIps(_c.text);
+      // 重建 API：让新的候选池立刻生效，不用重启
+      ref.invalidate(rule34ApiProvider);
+      ref.read(dohConnectorProvider).reset();
+      if (!mounted) return;
+      final n = ref.read(libraryStoreProvider).customSiteIpList.length;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(n == 0 ? '已清空自定义 IP' : '已保存 $n 个 IP，将优先尝试'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final saved = ref.watch(libraryStoreProvider).customSiteIpList;
+    final pool = ref.watch(siteIpPoolProvider);
+    final vpn = ref.watch(vpnActiveProvider).value;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.dns_rounded, size: 20),
+              const SizedBox(width: 12),
+              Text('站点 IP', style: Theme.of(context).textTheme.titleSmall),
+              const Spacer(),
+              if (vpn == true)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: R34Color.accentSoft,
+                    borderRadius: BorderRadius.circular(R34Radius.pill),
+                  ),
+                  child: const Text(
+                    'VPN 已接管',
+                    style: TextStyle(fontSize: 10.5, color: R34Color.accentBright),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            vpn == true
+                ? '检测到 VPN。此时**不做 IP 直连**——VPN 按域名分流，'
+                      '换成裸 IP 会让它匹配不到规则、反而绕回直连。'
+                      '域名原样交给 VPN 才是正确的路。'
+                : '没有 VPN 时自动探测可用 IP：多服务商 DoH 解析 + 完整 TLS '
+                      '握手验证，结果存到本地，下次启动直接用。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.outline,
+              height: 1.5,
+            ),
+          ),
+
+          // 探测结果
+          const SizedBox(height: 10),
+          _PoolStatus(pool: pool, disabled: vpn == true),
+
+          const SizedBox(height: 14),
+          Text(
+            '手动补充（可选）',
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: R34Color.inkSecondary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '自动探测已经能覆盖绝大多数情况。只有当你知道某个 IP 在你那边'
+            '特别快、想固定用它时才需要填。多个用逗号分隔。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.outline,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _c,
+                  keyboardType: TextInputType.text,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: saved.isEmpty ? '留空即可，通常是自动探测更准' : saved.join(', '),
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _saving ? null : _save,
+                child: _saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('保存'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 探测池的当前状态 + 手动重探入口。
+class _PoolStatus extends ConsumerStatefulWidget {
+  const _PoolStatus({required this.pool, required this.disabled});
+
+  final SiteIpPool pool;
+  final bool disabled;
+
+  @override
+  ConsumerState<_PoolStatus> createState() => _PoolStatusState();
+}
+
+class _PoolStatusState extends ConsumerState<_PoolStatus> {
+  bool _probing = false;
+
+  Future<void> _reprobe() async {
+    if (_probing) return;
+    setState(() => _probing = true);
+    try {
+      final fresh = await widget.pool.refresh(
+        extra: ref.read(libraryStoreProvider).customSiteIpList,
+      );
+      if (!mounted) return;
+      ref.invalidate(rule34ApiProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            fresh.isEmpty ? '没探到可用 IP，保持原状' : '探到 ${fresh.length} 个可用 IP',
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      setState(() {});
+    } finally {
+      if (mounted) setState(() => _probing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pool = widget.pool;
+    final ips = pool.ips;
+    final at = pool.updatedAt;
+
+    String ago;
+    if (at == null) {
+      ago = '还没探测过';
+    } else {
+      final d = DateTime.now().difference(at);
+      if (d.inMinutes < 1) {
+        ago = '刚刚更新';
+      } else if (d.inHours < 1) {
+        ago = '${d.inMinutes} 分钟前更新';
+      } else if (d.inDays < 1) {
+        ago = '${d.inHours} 小时前更新';
+      } else {
+        ago = '${d.inDays} 天前更新';
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+      decoration: BoxDecoration(
+        color: R34Color.surface,
+        borderRadius: BorderRadius.circular(R34Radius.sm),
+        border: Border.all(color: R34Color.hairline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                ips.isEmpty ? Icons.cloud_off_rounded : Icons.check_circle,
+                size: 15,
+                color: ips.isEmpty ? R34Color.inkFaint : R34Color.success,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  ips.isEmpty ? '暂无可用 IP（会用系统 DNS）' : '${ips.length} 个可用 · $ago',
+                  style: const TextStyle(fontSize: 11.5, color: R34Color.inkSecondary),
+                ),
+              ),
+              TextButton(
+                onPressed: widget.disabled || _probing ? null : _reprobe,
+                style: TextButton.styleFrom(
+                  minimumSize: const Size(0, 32),
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
+                child: _probing
+                    ? const SizedBox(
+                        width: 13,
+                        height: 13,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('重新探测', style: TextStyle(fontSize: 12)),
+              ),
+            ],
+          ),
+          if (ips.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (var i = 0; i < ips.length; i++)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: R34Color.surfaceHigh,
+                      borderRadius: BorderRadius.circular(R34Radius.xs),
+                    ),
+                    child: Text(
+                      ips[i],
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 10.5,
+                        color: R34Color.inkSecondary,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 /// 「DoH 域名解析」开关（默认开）。
 ///
 /// 这是解决「IP 会过期」的根本办法。站点在做 DNS 轮询，每次解析返回的
@@ -689,13 +974,17 @@ class _ProxyTileState extends ConsumerState<_ProxyTile> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('播放器代理', style: Theme.of(context).textTheme.titleSmall),
+          Text('代理', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 4),
           Text(
-            '只影响视频流。网页数据走系统代理/VPN，不用填这里。\n'
-            '填 host:port，例如 127.0.0.1:7897。留空表示直连。',
+            '填 HTTP 代理的 host:port，例如 127.0.0.1:7897。留空表示直连。\n'
+            '\n'
+            '填了之后**所有流量**都会走它：页面、封面、视频流全部经代理，'
+            '不会再混用直连 IP。所以如果你本来就要用梯子，填这里；'
+            '如果你那边能直连，就不要填。',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
               color: Theme.of(context).colorScheme.outline,
+              height: 1.5,
             ),
           ),
           const SizedBox(height: 10),

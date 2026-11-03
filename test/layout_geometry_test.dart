@@ -86,6 +86,15 @@ void main() {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
+
+    // 收尾：把「标签翻译限流」的延时 timer 排空。
+    //
+    // 详情页渲染后 `TagChip` 会触发翻译请求，而 `TagTranslator` 有
+    // 120ms 的最小请求间隔（防止一屏 20 个标签瞬间打到翻译接口）。
+    // 测试在 600ms 处断言完就结束，那个延时仍在排队，Flutter 会判为
+    // 「A Timer is still pending」。这跟加载动画无关，是测试自身的收尾问题。
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump();
   }
 
   group('列数：手机固定两列', () {
