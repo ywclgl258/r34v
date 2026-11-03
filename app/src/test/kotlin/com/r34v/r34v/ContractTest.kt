@@ -6,6 +6,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ContractTest {
+    @Test fun updateAssetSelectionSeparatesProductionAndCompatibilityPackages() {
+        val names = listOf("app-debug.apk", "R34V-v2.0.1-compat-2.0.0.apk", "R34V-v2.0.1.apk")
+        assertEquals("R34V-v2.0.1.apk", UpgradePackages.select(names, false))
+        assertEquals("R34V-v2.0.1-compat-2.0.0.apk", UpgradePackages.select(names, true))
+        assertNull(UpgradePackages.select(listOf("app-debug.apk"), false))
+    }
     @Test fun routesAndSorts() {
         assertEquals("/tags/example/3/", FeedRequest(FeedKind.CHARACTER, "example", page = 3).path)
         assertEquals("/search/a%20b%2Fc/", FeedRequest(FeedKind.SEARCH, "a b/c").path)

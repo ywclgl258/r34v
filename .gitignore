@@ -10,9 +10,12 @@ captures/
 
 # Signing material stays local
 key.properties
+**/signing.properties
+**/*keystore.properties
 **/*.jks
 **/*.keystore
-**/keystore.properties
+**/*.p12
+**/*.pfx
 
 # Build outputs and private runtime evidence
 dist/
@@ -36,3 +39,6 @@ legacy-*/
 
 .DS_Store
 Thumbs.db
+
+# Local design process and screenshots
+.oil-ui/

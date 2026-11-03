@@ -27,24 +27,33 @@ jobs:
         run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: r34v-kotlin-debug
+          name: r34v-development-not-for-updates
           path: app/build/outputs/apk/debug/*.apk
       - name: Prepare signing key
         id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          LEGACY_KEYSTORE_BASE64: ${{ secrets.LEGACY_KEYSTORE_BASE64 }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/upload-keystore.jks
+          mkdir -p "$HOME/.r34v/signing"
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$LEGACY_KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$HOME/.r34v/signing/release.jks"
+            printf '%s' "$LEGACY_KEYSTORE_BASE64" | base64 --decode > "$HOME/.r34v/signing/historical.jks"
             echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::notice::缺少固定发布密钥。仅提供独立开发版，不生成替代正式升级包。'
           fi
       - name: Build signed release
         if: steps.signing.outputs.available == 'true'
         env:
-          KEYSTORE_PATH: app/upload-keystore.jks
+          KEYSTORE_PATH: /home/runner/.r34v/signing/release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          LEGACY_KEYSTORE_PATH: /home/runner/.r34v/signing/historical.jks
+          LEGACY_KEYSTORE_PASSWORD: ${{ secrets.LEGACY_KEYSTORE_PASSWORD }}
+          LEGACY_KEY_ALIAS: ${{ secrets.LEGACY_KEY_ALIAS }}
+          LEGACY_KEY_PASSWORD: ${{ secrets.LEGACY_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
       - uses: actions/upload-artifact@v4
         if: steps.signing.outputs.available == 'true'

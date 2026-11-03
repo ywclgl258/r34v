@@ -20,6 +20,7 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.TimeUnit
+import java.net.ProxySelector
 
 class SessionCookies(private val store: LibraryStore) : CookieJar {
     private val cookies = mutableListOf<Cookie>()
@@ -27,6 +28,19 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
         store.prefs.getStringSet("native_cookies", null)?.forEach { raw -> Cookie.parse(Site.BASE.toHttpUrl(), raw)?.let(cookies::add) }
         if (cookies.isEmpty()) for ((name, value) in store.legacyCookies()) {
             runCatching { Cookie.Builder().name(name).value(value).hostOnlyDomain(Site.HOST).secure().httpOnly().build() }.getOrNull()?.let(cookies::add)
+        }
+        // The legacy public-page jar carries long-lived anti-bot cookies separately from login.
+        runCatching {
+            val jar = com.google.gson.JsonParser.parseString(store.prefs.getString("site_cookies_v1", "{}")).asJsonObject
+            for ((host, entries) in jar.entrySet()) if (Site.isSite(host)) for (entry in entries.asJsonArray) {
+                val raw = entry.asJsonObject; val name = raw["n"]?.asString.orEmpty()
+                if (!name.startsWith("__ddg") || cookies.any { it.name == name }) continue
+                val expiry = raw["e"]?.asLong ?: Long.MAX_VALUE
+                if (expiry <= System.currentTimeMillis()) continue
+                val cookie = Cookie.Builder().name(name).value(raw["v"].asString).hostOnlyDomain(host)
+                    .path(raw["p"]?.asString ?: "/").expiresAt(expiry).secure().build()
+                cookies.add(cookie)
+            }
         }
     }
     @Synchronized override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
@@ -47,32 +61,47 @@ class Network(private val context: Context, private val store: LibraryStore) {
     @Volatile private var current: OkHttpClient? = null
     private val diskCache by lazy { Cache(File(context.cacheDir, "http"), 32L * 1024 * 1024) }
     val feedCacheDirectory get() = File(context.cacheDir, "feeds")
+    @Volatile var lastPeer: String = "尚未连接"
+        private set
+    private val resolver by lazy {
+        val bootstrap = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).connectTimeout(2, TimeUnit.SECONDS)
+            .readTimeout(3, TimeUnit.SECONDS).callTimeout(4, TimeUnit.SECONDS).build()
+        fun provider(url: String, vararg ips: String): Dns = DnsOverHttps.Builder().client(bootstrap).url(url.toHttpUrl())
+            .bootstrapDnsHosts(*ips.mapNotNull(RoutedDns::ipv4).toTypedArray()).includeIPv6(false).build()
+        RoutedDns(
+            policy = { RoutedDns.Policy(store.bool("direct_ip", true), store.bool("doh", true), vpn() || store.string("player_proxy").isNotBlank() || systemProxy(), store.string("custom_site_ips")) },
+            providers = listOf(
+                "Cloudflare" to provider("https://cloudflare-dns.com/dns-query", "104.16.248.249", "104.16.249.249", "1.1.1.1"),
+                "Google" to provider("https://dns.google/dns-query", "8.8.8.8", "8.8.4.4")),
+            loadSitePool = { runCatching { com.google.gson.JsonParser.parseString(store.prefs.getString("site_ip_pool_v1", "[]")).asJsonArray.map { it.asString } }.getOrDefault(emptyList()) },
+            saveSitePool = { ips -> store.prefs.edit().putString("site_ip_pool_v1", store.gson.toJson(ips)).putLong("site_ip_pool_v1_at", System.currentTimeMillis()).apply() })
+    }
     val client: OkHttpClient get() = current ?: synchronized(this) { current ?: build().also { current = it } }
-    val mediaClient: OkHttpClient get() = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).cache(null).build()
-    fun invalidate() { current?.connectionPool?.evictAll(); current = null }
+    val mediaClient: OkHttpClient get() = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).cache(null)
+        .dns(object : Dns { override fun lookup(hostname: String): List<InetAddress> =
+            if (!Site.isSite(hostname) && !store.bool("cdn_direct", true)) Dns.SYSTEM.lookup(hostname) else resolver.lookup(hostname) }).build()
+    fun invalidate() { current?.connectionPool?.evictAll(); current = null; resolver.clear() }
+    private fun systemProxy() = runCatching { ProxySelector.getDefault()?.select(URI(Site.BASE))?.any { it.type() != Proxy.Type.DIRECT } == true }.getOrDefault(false)
     private fun vpn(): Boolean = runCatching {
         val manager = context.getSystemService(ConnectivityManager::class.java)
         manager.getNetworkCapabilities(manager.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
     }.getOrDefault(false)
     private fun build(): OkHttpClient {
         val proxyText = store.string("player_proxy").trim()
-        val bootstrap = OkHttpClient.Builder().connectTimeout(6, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).build()
-        val doh = DnsOverHttps.Builder().client(bootstrap).url("https://cloudflare-dns.com/dns-query".toHttpUrl())
-            .bootstrapDnsHosts(InetAddress.getByName("1.1.1.1"), InetAddress.getByName("1.0.0.1")).includeIPv6(false).build()
         return OkHttpClient.Builder().connectTimeout(12, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(60, TimeUnit.SECONDS).cookieJar(session)
             .cache(diskCache)
-            .dns(object : Dns { override fun lookup(hostname: String): List<InetAddress> {
-                val host = hostname
-                val normal = { Dns.SYSTEM.lookup(host) }
-                return if (vpn() || proxyText.isNotBlank()) normal()
-                else {
-                    val manual = if (Site.isSite(host) && store.bool("direct_ip", true)) store.string("custom_site_ips").split(Regex("[\\s,;]+"))
-                        .filter { Regex("\\d{1,3}(\\.\\d{1,3}){3}").matches(it) }.mapNotNull { runCatching { InetAddress.getByName(it) }.getOrNull() } else emptyList()
-                    val resolved = if (store.bool("doh", true)) runCatching { doh.lookup(host) }.getOrElse { normal() } else normal()
-                    (manual + resolved).distinct()
+            .dns(resolver)
+            .eventListenerFactory { object : EventListener() {
+                override fun connectionAcquired(call: Call, connection: Connection) {
+                    val route = connection.route(); val host = route.address.url.host; val peer = route.socketAddress.address?.hostAddress.orEmpty()
+                    lastPeer = "$peer · ${if (route.proxy.type() == Proxy.Type.DIRECT) "直连" else "代理"}"
+                    if (route.proxy.type() == Proxy.Type.DIRECT && connection.handshake() != null) resolver.succeeded(host, peer)
                 }
-            } })
+                override fun connectFailed(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy, protocol: Protocol?, ioe: IOException) {
+                    if (proxy.type() == Proxy.Type.DIRECT) resolver.failed(call.request().url.host, inetSocketAddress.address?.hostAddress.orEmpty())
+                }
+            } }
             .apply {
                 if (proxyText.isNotEmpty()) {
                     val uri = URI(proxyText)
@@ -83,6 +112,19 @@ class Network(private val context: Context, private val store: LibraryStore) {
             .addInterceptor { chain ->
                 chain.proceed(chain.request().newBuilder().header("User-Agent", Site.UA).header("Referer", Site.BASE + "/").build())
             }.build()
+    }
+    suspend fun diagnose(): String = withContext(Dispatchers.IO) {
+        val start = System.currentTimeMillis()
+        try {
+            client.await(Request.Builder().url("${Site.BASE}/latest-updates/").cacheControl(CacheControl.FORCE_NETWORK).build()).use { response ->
+                check(response.isSuccessful) { "HTTP ${response.code}" }
+                HtmlParser.feed(response.body?.string().orEmpty(), FeedRequest())
+                "实时请求成功 · HTTP ${response.code} · ${System.currentTimeMillis() - start} ms\n$lastPeer\n${resolver.lastResolution}"
+            }
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            "实时请求失败：${error.message}\n$lastPeer\n${resolver.lastResolution}"
+        }
     }
     suspend fun html(url: String): String = withContext(Dispatchers.IO) {
         client.await(Request.Builder().url(url).build()).use { response ->

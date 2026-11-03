@@ -6,11 +6,14 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.drawable.RippleDrawable
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.*
 import android.widget.*
 import androidx.activity.ComponentActivity
@@ -53,6 +56,9 @@ class PlayerActivity : ComponentActivity() {
     private var userRate = 1f
     private var pendingError: Throwable? = null
     private var isOpening = false
+    private var failureVisible = false
+    private var retryButton: Button? = null
+    private val expandedSections = mutableMapOf<String, Boolean>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,13 +78,20 @@ class PlayerActivity : ComponentActivity() {
         playerFrame.addView(playerView, FrameLayout.LayoutParams(-1, -1))
         hint = label("", 17f, bold = true).apply { gravity = Gravity.CENTER; background = rounded(0xb0000000.toInt()); visibility = View.GONE; setPadding(dp(16), dp(12), dp(16), dp(12)) }
         playerFrame.addView(hint, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-        val fullButton = action("全屏") { toggleFullscreen() }.apply { alpha = .8f }
-        playerFrame.addView(fullButton, FrameLayout.LayoutParams(dp(74), dp(46), Gravity.TOP or Gravity.END))
-        playerFrame.addView(action("‹") { onBackPressedDispatcher.onBackPressed() }.apply { alpha = .8f }, FrameLayout.LayoutParams(dp(50), dp(46), Gravity.TOP or Gravity.START))
+        val fullButton = quietAction("全屏") { toggleFullscreen() }.apply {
+            setTextColor(Palette.text)
+            background = RippleDrawable(ColorStateList.valueOf(0x30ffffff), rounded(0x70000000, dp(6).toFloat()), null)
+        }
+        playerFrame.addView(fullButton, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(dp(8), dp(8), dp(8), 0) })
+        playerFrame.addView(iconAction(R.drawable.ic_back, "返回") { onBackPressedDispatcher.onBackPressed() }.apply {
+            background = RippleDrawable(ColorStateList.valueOf(0x30ffffff), rounded(0x70000000, dp(6).toFloat()), null)
+        }, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.START).apply { setMargins(dp(8), dp(8), dp(8), 0) })
         root.addView(playerFrame, LinearLayout.LayoutParams(-1, inlineHeight()))
-        status = label("正在获取播放地址…", 14f, Palette.muted)
-        details = scroll(column(18).apply { addView(label(video.title, 23f, bold = true)); addView(status); addView(action("重试") { load() }) })
+        status = label("正在获取播放地址…", 12f, Palette.muted)
+        details = scroll(column())
         root.addView(details, LinearLayout.LayoutParams(-1, 0, 1f)); setContentView(root)
+        renderDetails()
+        details.enterQuietly()
         installGestures()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { if (fullscreen) toggleFullscreen() else finish() }
@@ -89,7 +102,7 @@ class PlayerActivity : ComponentActivity() {
     private fun inlineHeight() = (resources.displayMetrics.widthPixels * 9f / 16f).toInt().coerceAtMost((resources.displayMetrics.heightPixels * .55f).toInt())
     private fun load() {
         if (isOpening) return
-        isOpening = true; status.text = "正在加载…"
+        isOpening = true; setFailureVisible(false); status.text = "正在加载…"
         lifecycleScope.launch {
             try {
                 if (local != null) {
@@ -112,13 +125,13 @@ class PlayerActivity : ComponentActivity() {
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                status.text = error.message ?: "加载失败"; showError(error)
+                status.text = error.message ?: "加载失败"; setFailureVisible(true); showError(error)
             } finally { isOpening = false }
         }
     }
     private fun open(value: Stream, start: Long, autoplay: Boolean = true) {
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { stream = value; position = start; return }
-        pendingError = null
+        pendingError = null; setFailureVisible(false)
         val engine = player ?: ExoPlayer.Builder(this)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(15000, 50000, 400, 800).setPrioritizeTimeOverSizeThresholds(true).build())
             .setMediaSourceFactory(DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null)))
@@ -135,7 +148,10 @@ class PlayerActivity : ComponentActivity() {
                         }
                         if (playbackState == Player.STATE_ENDED) savePosition()
                     }
-                    override fun onIsPlayingChanged(isPlaying: Boolean) { playerView.keepScreenOn = isPlaying }
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        playerView.keepScreenOn = isPlaying
+                        if (exo.playbackState == Player.STATE_READY) status.text = "${stream?.label.orEmpty()} · ${if (isPlaying) { if (offline) "离线播放" else "正在播放" } else "已暂停"}"
+                    }
                     override fun onPlayerError(error: PlaybackException) {
                         savePosition()
                         if (!offline && !refreshed) {
@@ -155,46 +171,125 @@ class PlayerActivity : ComponentActivity() {
         val item = if (local != null) MediaItem.fromUri(value.url) else app.playback.item(video, value)
         engine.setMediaItem(item, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
     }
-    private fun playbackError(error: Throwable) { pendingError = error; status.text = "播放失败：${error.message}"; showError(error) }
+    private fun playbackError(error: Throwable) { pendingError = error; status.text = "播放失败：${error.message}"; setFailureVisible(true); showError(error) }
+    private fun setFailureVisible(visible: Boolean) {
+        failureVisible = visible
+        retryButton?.visibility = if (visible) View.VISIBLE else View.GONE
+    }
+    private fun restartPlayback() {
+        refreshed = false
+        if (stream != null) open(stream!!, if (pendingError != null) position else 0) else load()
+    }
+    private fun playbackMenu(anchor: View) {
+        PopupMenu(this, anchor).apply {
+            menu.add("重新播放").setOnMenuItemClickListener { restartPlayback(); true }
+            show()
+        }
+    }
     private fun renderDetails() {
+        val scrollPosition = details.scrollY
         val content = column(18)
-        content.addView(label(video.title, 23f, bold = true)); (status.parent as? ViewGroup)?.removeView(status); content.addView(status)
-        content.addView(row().apply {
-            addView(action(stream?.label ?: "清晰度") { quality() }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(action("${userRate}×") { speed() }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(action(if (store.isFavorite("video", video.id)) "已收藏" else "收藏") {
-                store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration)); renderDetails()
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-        })
-        if (!offline) content.addView(action("下载 / 完整缓存") { download() })
-        content.addView(action("重新播放") { refreshed = false; if (stream != null) open(stream!!, if (pendingError != null) position else 0) else load() })
+        content.addView(label(video.title, 22f, bold = true))
+        val metadata = listOf(video.duration, video.views, video.rating).filter { it.isNotBlank() }.joinToString(" · ")
+        if (metadata.isNotBlank()) content.addView(label(metadata, 13f, Palette.secondary))
+        (status.parent as? ViewGroup)?.removeView(status); content.addView(status)
+        retryButton = action("重试", accent = true) {
+            if (pendingError != null) restartPlayback() else load()
+        }.apply { visibility = if (failureVisible) View.VISIBLE else View.GONE }
+        content.addView(retryButton)
+        if (stream != null || detail != null) {
+            content.space(8)
+            content.addView(FlowLayout(this).apply {
+                addView(choiceAction("${stream?.label ?: "清晰度"}") { quality() }.apply { isEnabled = detail?.streams?.isNotEmpty() == true })
+                addView(choiceAction("${userRate}×") { speed() })
+                val more = quietAction("更多 ⋯") {}
+                more.contentDescription = "更多播放操作"
+                more.setOnClickListener { playbackMenu(more) }
+                addView(more)
+            })
+            content.space(10)
+            content.addView(FlowLayout(this).apply {
+                addView(outlineAction(if (store.isFavorite("video", video.id)) "✓ 已收藏" else "＋ 收藏") {
+                    store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration)); renderDetails()
+                })
+                if (!offline) addView(outlineAction("↓ 下载") { download() })
+            })
+        }
         detail?.let { data ->
+            if (data.description.isNotBlank()) addExpandable(content, "description", "简介", initiallyExpanded = true) {
+                addView(label(data.description, 14f, Palette.secondary).apply { setLineSpacing(dp(3).toFloat(), 1f) })
+            }
             for ((name, links) in data.groups) {
                 if (links.isEmpty()) continue
-                content.space(); content.addView(label(name, 17f, bold = true))
-                val chips = com.r34v.r34v.ui.FlowLayout(this)
-                for (link in links) {
-                    val translated = if (store.bool("translate_tags", true)) TagNames.lookup(this, link.slug) else null
-                    chips.addView(action(translated ?: link.label) {
-                        startActivity(Intent(this, MainActivity::class.java).putExtra("link", link.url))
-                    }.apply {
-                        setOnLongClickListener {
-                            val kind = when (name) { "角色" -> "character"; "作者" -> "model"; else -> "tag" }
-                            val choices = if (name == "标签") arrayOf("收藏 / 取消收藏", "屏蔽 / 取消屏蔽") else arrayOf("收藏 / 取消收藏")
-                            AlertDialog.Builder(this@PlayerActivity).setTitle(link.label).setItems(choices) { _, which ->
-                                if (which == 1) { store.toggleBlocked(link.slug); toast("已更新屏蔽词") }
-                                else toast(if (store.toggleFavorite(Favorite(kind, link.slug, link.label, link.url, link.thumb))) "已收藏" else "已取消收藏")
-                            }.show(); true
+                addExpandable(content, "group:$name", "$name · ${links.size}") {
+                    val chips = FlowLayout(this@PlayerActivity)
+                    for (link in links) {
+                        val translated = if (store.bool("translate_tags", true)) TagNames.lookup(this@PlayerActivity, link.slug) else null
+                        chips.addView(chip(translated ?: link.label) {
+                            startActivity(Intent(this@PlayerActivity, MainActivity::class.java).putExtra("link", link.url))
+                        }.apply {
+                            setOnLongClickListener {
+                                val kind = when (name) { "角色" -> "character"; "作者" -> "model"; else -> "tag" }
+                                val choices = if (name == "标签") arrayOf("收藏 / 取消收藏", "屏蔽 / 取消屏蔽") else arrayOf("收藏 / 取消收藏")
+                                AlertDialog.Builder(this@PlayerActivity).setTitle(link.label).setItems(choices) { _, which ->
+                                    if (which == 1) { store.toggleBlocked(link.slug); toast("已更新屏蔽词") }
+                                    else toast(if (store.toggleFavorite(Favorite(kind, link.slug, link.label, link.url, link.thumb))) "已收藏" else "已取消收藏")
+                                }.show(); true
+                            }
+                        })
+                    }
+                    addView(chips)
+                }
+            }
+            if (data.comments.isNotEmpty()) addExpandable(content, "comments", "评论 · ${data.comments.size}") {
+                data.comments.forEachIndexed { index, comment ->
+                    if (index > 0) space(12)
+                    addView(label("${comment.author}  ${comment.date}", 13f, bold = true))
+                    addView(label(comment.text, 14f, Palette.secondary).apply { setLineSpacing(dp(3).toFloat(), 1f) })
+                }
+            }
+            val relatedVideos = data.related.filter(store::allowed).take(24)
+            if (relatedVideos.isNotEmpty()) {
+                content.space(22); content.addView(label("相关推荐", 18f, bold = true)); content.space(6)
+                relatedVideos.chunked(2).forEach { pair ->
+                    content.addView(row().apply {
+                        gravity = Gravity.TOP
+                        pair.forEachIndexed { index, related ->
+                            addView(videoTile(related) {
+                                startActivity(Intent(this@PlayerActivity, PlayerActivity::class.java).putExtra("video", store.gson.toJson(related)))
+                            }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (index == 0) marginEnd = dp(6) else marginStart = dp(6) })
                         }
+                        if (pair.size == 1) addView(Space(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(6) })
                     })
                 }
-                content.addView(chips)
             }
-            if (data.description.isNotBlank()) { content.space(); content.addView(label("简介", 18f, bold = true)); content.addView(label(data.description, 14f, Palette.muted)) }
-            if (data.comments.isNotEmpty()) { content.space(); content.addView(label("评论", 18f, bold = true)); data.comments.forEach { comment -> content.addView(label("${comment.author}  ${comment.date}", 13f, bold = true)); content.addView(label(comment.text, 14f, Palette.muted)) } }
-            if (data.related.isNotEmpty()) { content.space(); content.addView(label("相关推荐", 18f, bold = true)); data.related.filter(store::allowed).take(24).forEach { related -> content.addView(videoTile(related) { startActivity(Intent(this, PlayerActivity::class.java).putExtra("video", store.gson.toJson(related))) }) } }
         }
         details.removeAllViews(); details.addView(content)
+        details.post { details.scrollTo(0, scrollPosition) }
+    }
+    private fun addExpandable(content: LinearLayout, key: String, title: String, initiallyExpanded: Boolean = false, body: LinearLayout.() -> Unit) {
+        content.space(16)
+        val expanded = expandedSections[key] ?: initiallyExpanded
+        val bodyContent = column().apply { body(); visibility = if (expanded) View.VISIBLE else View.GONE }
+        val indicator = iconAction(R.drawable.ic_chevron_down, title) {}.apply { rotation = if (expanded) 180f else 0f; contentDescription = "${if (expanded) "收起" else "展开"}$title" }
+        fun toggle() {
+            val show = bodyContent.visibility != View.VISIBLE
+            expandedSections[key] = show; bodyContent.visibility = if (show) View.VISIBLE else View.GONE
+            indicator.contentDescription = "${if (show) "收起" else "展开"}$title"
+            indicator.animate().cancel()
+            val angle = if (show) 180f else 0f
+            if (runCatching { Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f }.getOrDefault(false)) {
+                indicator.animate().rotation(angle).setDuration(180).start()
+            } else indicator.rotation = angle
+        }
+        content.addView(row().apply {
+            minimumHeight = dp(48)
+            addView(label(title, 18f, bold = true).apply { ViewCompat.setAccessibilityHeading(this, true) }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(indicator)
+            setOnClickListener { toggle() }
+        })
+        indicator.setOnClickListener { toggle() }
+        content.addView(bodyContent)
     }
     private fun quality() {
         val options = detail?.streams ?: return

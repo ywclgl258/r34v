@@ -14,10 +14,12 @@ import com.r34v.r34v.ui.showError
 import com.r34v.r34v.ui.toast
 import kotlinx.coroutines.*
 import okhttp3.Request
+import com.r34v.r34v.data.UpgradePackages
 import java.io.File
 
 class UpdateController(private val activity: ComponentActivity, private val app: R34Application) {
     suspend fun check(silent: Boolean) {
+        if (BuildConfig.DEBUG) { if (!silent) activity.toast("当前是开发版，请使用 R34V 正式版接收更新"); return }
         try {
             val release = withContext(Dispatchers.IO) {
                 app.network.client.newCall(Request.Builder().url("https://api.github.com/repos/ywclgl258/r34v/releases/latest").header("Accept", "application/vnd.github+json").build()).execute().use { response ->
@@ -30,7 +32,9 @@ class UpdateController(private val activity: ComponentActivity, private val app:
             app.library.prefs.edit().putLong("update_checked_at", System.currentTimeMillis()).apply()
             val version = release["tag_name"].asString
             if (!newer(version, BuildConfig.VERSION_NAME)) { if (!silent) activity.toast("当前已是最新版本"); return }
-            val asset = release.getAsJsonArray("assets").firstOrNull { it.asJsonObject["name"].asString.endsWith(".apk", true) }?.asJsonObject ?: error("此版本没有 APK 安装包")
+            val assets = release.getAsJsonArray("assets").map { it.asJsonObject }
+            val filename = UpgradePackages.select(assets.map { it["name"].asString }, UpgradePackages.needsCompatibility(activity)) ?: error("此版本缺少适配当前安装签名的 APK，请稍后重试")
+            val asset = assets.first { it["name"].asString == filename }
             if (activity.isFinishing || activity.isDestroyed) return
             AlertDialog.Builder(activity).setTitle("新版本 $version").setMessage(release["body"]?.asString.orEmpty().take(1800)).setPositiveButton("下载") { _, _ ->
                 activity.lifecycleScope.launch { download(asset["browser_download_url"].asString, asset["size"].asLong) }
@@ -59,6 +63,7 @@ class UpdateController(private val activity: ComponentActivity, private val app:
                     check(expectedSize <= 0 || received == expectedSize) { "安装包不完整，请重新下载" }
                     check(temp.renameTo(file)) { "无法保存安装包" }
                 }
+                UpgradePackages.validate(activity, file)
             }
             dialog.dismiss()
             AlertDialog.Builder(activity).setTitle("更新已下载").setPositiveButton("安装") { _, _ -> install(file) }.setNegativeButton("稍后", null).show()
