@@ -106,7 +106,9 @@ class MainActivity : ComponentActivity() {
         screen = target; feedList = null; toolbar.removeAllViews(); body.removeAllViews(); navigation.removeAllViews()
         val title = when (target) { "home" -> "R34V"; "explore" -> "发现"; "search" -> "搜索"; "library" -> "片库"; "settings" -> "设置"; else -> request.kind.title }
         if (target in listOf("feed", "index", "settings")) toolbar.addView(iconAction(R.drawable.ic_back, "返回") { onBackPressedDispatcher.onBackPressed() })
-        toolbar.addView(label(title, if (target == "home") 26f else 22f, if (target == "home") Palette.red else Palette.text, true), LinearLayout.LayoutParams(0, -2, 1f))
+        toolbar.addView(label(title, if (target == "home") 26f else 22f, if (target == "home") Palette.red else Palette.text, true).apply {
+            if (target == "home") letterSpacing = 0.08f
+        }, LinearLayout.LayoutParams(0, -2, 1f))
         toolbar.addView(iconAction(R.drawable.ic_download, "下载") { libraryTab = "缓存"; navigate("library") })
         toolbar.addView(iconAction(R.drawable.ic_settings, "设置") { navigate("settings") })
         for ((key, name, icon) in listOf(Triple("home", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore), Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark))) {
@@ -126,7 +128,7 @@ class MainActivity : ComponentActivity() {
         body.removeAllViews(); body.addView(view, FrameLayout.LayoutParams(-1, -1)); view.enterQuietly()
         if (view is ScrollView) scrollPositions[screen]?.let { y -> view.post { view.scrollTo(0, y) } }
     }
-    private fun loading() = show(LinearLayout(this).apply { gravity = Gravity.CENTER; addView(ProgressBar(this@MainActivity)) })
+    private fun loading() = show(CinemaLoadingView(this).apply { showStage("正在装载内容", "整理最新片架", "加载中") })
     private fun failure(error: Throwable, retry: () -> Unit) {
         if (error is CancellationException) throw error
         show(column(24).apply { gravity = Gravity.CENTER; addView(label(error.message ?: "加载失败", 15f, Palette.muted)); addView(action("重试", true, retry)) })
@@ -161,72 +163,66 @@ class MainActivity : ComponentActivity() {
     }
     private fun home() {
         loading()
-        screenScope.launch {
-            try {
-                val hot = async {
+        val items = mutableListOf<Tile>()
+        var page = 1
+        var total = 1
+        var loadingMore = false
+        var adapter: Tiles? = null
+        fun load() {
+            if (loadingMore) return
+            loadingMore = true
+            screenScope.launch {
+                val popular = if (page == 1) async {
                     try { withTimeoutOrNull(10000) { app.repository.feed(FeedRequest(FeedKind.POPULAR)) } }
                     catch (error: Exception) { if (error is CancellationException) throw error; null }
-                }
-                val latest = app.repository.feed(FeedRequest())
-                // Latest content can render even when the optional popular feed is slow.
-                val top = withTimeoutOrNull(400) { hot.await() }?.videos.orEmpty().filter(store::allowed).ifEmpty { latest.videos.filter(store::allowed) }
-                hot.cancel()
-                val content = column().apply { setPadding(0, dp(4), 0, dp(24)) }
-                content.addView(FlowLayout(this@MainActivity).apply {
-                    setPadding(dp(16), 0, dp(16), dp(14))
-                    listOf("热门" to FeedKind.POPULAR, "最新" to FeedKind.LATEST, "高分" to FeedKind.RATED).forEach { (title, kind) -> addView(chip(title) { openFeed(FeedRequest(kind)) }) }
-                })
-                if (latest.cached) content.addView(label("当前显示离线列表缓存", 12f, Palette.muted).apply { setPadding(dp(16), 0, dp(16), dp(12)) })
-                top.firstOrNull()?.let { content.addView(featured(it)) }
-                val resume = store.history().filter { it.resumable }.take(8)
-                if (resume.isNotEmpty()) {
-                    content.addView(shelfHeading("继续观看", "全部") { libraryTab = "记录"; navigate("library") })
-                    content.addView(shelf(resume.map { watch ->
-                        videoTile(watch.video().copy(duration = "剩余 ${timeText((watch.duration - watch.position).coerceAtLeast(0) * 1000)}"), listOf("移除观看记录" to { confirm("移除这条观看记录？") { store.removeWatch(watch.id); home() } })) { play(watch.video()) }.apply {
-                            addView(watchProgress(watch))
-                            setOnLongClickListener { confirm("移除这条观看记录？") { store.removeWatch(watch.id); home() }; true }
+                } else null
+                val rated = if (page == 1) async {
+                    try { withTimeoutOrNull(10000) { app.repository.feed(FeedRequest(FeedKind.RATED)) } }
+                    catch (error: Exception) { if (error is CancellationException) throw error; null }
+                } else null
+                try {
+                    val result = app.repository.feed(FeedRequest(page = page))
+                    val videos = result.videos.filter(store::allowed)
+                    if (items.isEmpty()) {
+                        val popularVideos = withTimeoutOrNull(600) { popular?.await() }?.videos.orEmpty().filter(store::allowed)
+                        val ratedVideos = withTimeoutOrNull(600) { rated?.await() }?.videos.orEmpty().filter(store::allowed)
+                        popular?.cancel(); rated?.cancel()
+                        val ranked = popularVideos.take(3).mapIndexed { index, video -> CarouselEntry(video, "热门榜 · 第 ${index + 1} 位") } +
+                            ratedVideos.take(3).mapIndexed { index, video -> CarouselEntry(video, "高分榜 · 第 ${index + 1} 位") }
+                        val entries = ranked.ifEmpty { videos.take(1).map { CarouselEntry(it, "最新精选") } }
+                        if (entries.isNotEmpty()) {
+                            val carousel = VideoCarousel(this@MainActivity, entries, screenScope,
+                                { id -> store.isFavorite("video", id) },
+                                { value -> store.toggleFavorite(Favorite("video", value.id, value.title, value.url, value.thumb, value.duration)) },
+                                { value -> play(value) })
+                            items.add(Tile { carousel })
                         }
-                    }, wide = true))
-                }
-                content.addView(shelfHeading("最新更新", "查看全部") { openFeed(FeedRequest()) })
-                val videos = latest.videos.filter(store::allowed)
-                if (videos.isEmpty()) content.addView(label("暂时没有可显示的视频", 14f, Palette.muted).apply { setPadding(dp(16), dp(12), dp(16), dp(24)) })
-                else content.addView(shelf(videos.take(10).map { value -> videoTile(value) { play(value) }.apply { setOnLongClickListener { favoriteVideo(value); true } } }))
-                show(scroll(content))
-            } catch (error: Exception) { failure(error, ::home) }
+                        if (result.cached) items.add(Tile { label("当前显示离线列表缓存", 12f, Palette.muted).apply { setPadding(dp(16), dp(8), dp(16), dp(12)) } })
+                        items.add(heading("最新视频"))
+                    }
+                    videos.forEach { items.add(video(it)) }
+                    total = result.total
+                    page = result.current + 1
+                    if (result.current == 1 && result.videos.isEmpty()) items.add(Tile { label("暂时没有可显示的视频", 14f, Palette.muted).apply { setPadding(dp(16), dp(12), dp(16), dp(24)) } })
+                    if (adapter == null) {
+                        val (list, a) = grid(items); adapter = a; show(list)
+                        list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                                val layout = recyclerView.layoutManager as GridLayoutManager
+                                if (dy > 0 && layout.findLastVisibleItemPosition() >= items.size - 7 && page <= total) load()
+                            }
+                        })
+                    } else adapter?.notifyDataSetChanged()
+                    if (page <= total && result.videos.isEmpty()) total = page - 1
+                } catch (error: Exception) {
+                    popular?.cancel(); rated?.cancel()
+                    if (error is CancellationException) throw error
+                    if (adapter == null) failure(error) { loadingMore = false; load() }
+                    else { toast(error.message ?: "下一页加载失败"); items.add(Tile { action("重试下一页") { items.removeAt(items.lastIndex); load() } }); adapter?.notifyDataSetChanged() }
+                } finally { loadingMore = false }
+            }
         }
-    }
-    private fun featured(value: Video): View = column().apply {
-        setPadding(dp(16), 0, dp(16), dp(8))
-        addView(RatioImage(this@MainActivity).apply {
-            background = rounded(Palette.surface, dp(8).toFloat()); clipToOutline = true
-            Images.load(this@MainActivity, this, value.thumb)
-            setOnClickListener { play(value) }; contentDescription = "播放 ${value.title}"
-        }, LinearLayout.LayoutParams(-1, -2))
-        space(10)
-        addView(label("今日精选", 12f, Palette.red, true))
-        addView(label(value.title, 22f, bold = true))
-        addView(label(listOf(value.duration, value.views, value.rating).filter { it.isNotBlank() }.joinToString(" · "), 12f, Palette.muted))
-        space(8)
-        addView(row().apply {
-            addView(action("▶  播放", true) { play(value) }, LinearLayout.LayoutParams(0, -2, 1.2f).apply { marginEnd = dp(8) })
-            val favorite = Favorite("video", value.id, value.title, value.url, value.thumb, value.duration)
-            addView(outlineAction(if (store.isFavorite(favorite.kind, favorite.target)) "✓ 已收藏" else "＋ 收藏") { }.apply {
-                setOnClickListener { val added = store.toggleFavorite(favorite); text = if (added) "✓ 已收藏" else "＋ 收藏"; contentDescription = text; toast(if (added) "已收藏" else "已取消收藏") }
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-        })
-    }
-    private fun shelfHeading(title: String, more: String, click: () -> Unit) = row().apply {
-        setPadding(dp(16), dp(18), dp(8), dp(4))
-        addView(label(title, 18f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
-        addView(quietAction("$more ›", click))
-    }
-    private fun shelf(cards: List<View>, wide: Boolean = false): View {
-        val cardWidth = dp((resources.configuration.screenWidthDp * if (wide) .68f else .52f).toInt().coerceAtMost(if (wide) 330 else 270))
-        return HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false; clipToPadding = false; setPadding(dp(11), 0, dp(11), 0)
-            addView(row().apply { gravity = Gravity.TOP; cards.forEach { addView(it, LinearLayout.LayoutParams(cardWidth, -2)) } })
-        }
+        load()
     }
     private fun watchProgress(watch: Watch) = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
         max = 1000; progress = if (watch.duration > 0) (watch.position * 1000 / watch.duration).toInt() else 0
@@ -289,7 +285,7 @@ class MainActivity : ComponentActivity() {
             minimumHeight = dp(if (subtitle.isBlank()) 56 else 72); setPadding(dp(16), dp(8), dp(12), dp(8))
             addView(column().apply { addView(label(title, 16f, bold = true)); if (subtitle.isNotBlank()) addView(label(subtitle, 12f, Palette.muted)) }, LinearLayout.LayoutParams(0, -2, 1f))
             addView(ImageView(this@MainActivity).apply { setImageResource(R.drawable.ic_chevron_down); rotation = -90f }, LinearLayout.LayoutParams(dp(20), dp(20))); setOnClickListener { click() }; isFocusable = true; contentDescription = title
-            background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22ffffff), rounded(Palette.surface, dp(8).toFloat()), null)
+            background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22ffffff), rounded(Palette.surface, dp(3).toFloat()), null)
         }
         show(scroll(column(16).apply {
             addView(label("找到下一部想看的", 22f, bold = true)); addView(label("从榜单、分类和创作者开始", 14f, Palette.muted)); space(18)
@@ -386,7 +382,7 @@ class MainActivity : ComponentActivity() {
         fun display(items: MutableList<Tile>) {
             val position = (listFrame.getChildAt(0) as? RecyclerView)?.layoutManager?.onSaveInstanceState()
             listFrame.removeAllViews()
-            if (items.isEmpty()) items.add(Tile { column(24).apply { gravity = Gravity.CENTER; addView(label("这里还没有内容", 18f, bold = true)); addView(label(when (libraryTab) { "记录" -> "播放视频后，进度会自动保存在这里"; "缓存" -> "在播放详情中下载，即可离线观看"; else -> "收藏的视频与条目会保存在这里" }, 14f, Palette.muted)) } })
+            if (items.isEmpty()) items.add(Tile { column().apply { setPadding(dp(5), dp(24), dp(5), dp(24)); gravity = Gravity.CENTER; addView(label("这里还没有内容", 18f, bold = true)); addView(label(when (libraryTab) { "记录" -> "播放视频后，进度会自动保存在这里"; "缓存" -> "在播放详情中下载，即可离线观看"; else -> "收藏的视频与条目会保存在这里" }, 14f, Palette.muted)) } })
             val list = grid(items).first; listFrame.addView(list); position?.let { list.layoutManager?.onRestoreInstanceState(it) }
         }
         when (libraryTab) {

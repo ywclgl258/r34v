@@ -29,12 +29,14 @@ object Palette {
     val canvas = Color.BLACK
     val surface = Color.rgb(20, 20, 20)
     val raised = Color.rgb(31, 31, 31)
-    val red = Color.rgb(255, 89, 100)
-    val text = Color.rgb(243, 243, 239)
-    val secondary = Color.rgb(198, 198, 194)
-    val muted = Color.rgb(160, 160, 160)
+    val control = Color.rgb(42, 42, 42)
+    val red = Color.rgb(229, 9, 20)
+    val loading = Color.rgb(228, 105, 93)
+    val text = Color.WHITE
+    val secondary = Color.rgb(179, 179, 179)
+    val muted = Color.rgb(140, 140, 140)
     val faint = Color.rgb(102, 102, 102)
-    val border = Color.rgb(34, 34, 34)
+    val border = Color.rgb(31, 31, 31)
 }
 fun Context.dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 fun Context.column(padding: Int = 0) = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(padding), dp(padding), dp(padding), dp(padding)) }
@@ -44,53 +46,63 @@ fun Context.label(text: String, size: Float = 14f, color: Int = Palette.text, bo
     includeFontPadding = false
     setPadding(0, dp(5), 0, dp(5))
 }
-fun rounded(color: Int, radius: Float = 8f) = GradientDrawable().apply { setColor(color); cornerRadius = radius }
+fun rounded(color: Int, radius: Float = 4f) = GradientDrawable().apply { setColor(color); cornerRadius = radius }
 fun Context.action(text: String, accent: Boolean = false, click: () -> Unit) = Button(this).apply {
     this.text = text; isAllCaps = false; textSize = 14f
     typeface = Typeface.create("sans-serif", if (accent) Typeface.BOLD else Typeface.NORMAL)
     minHeight = dp(44); minimumHeight = dp(44); minWidth = 0; minimumWidth = dp(44)
-    setPadding(dp(if (accent) 22 else 14), dp(10), dp(if (accent) 22 else 14), dp(10)); includeFontPadding = false
+    setPadding(dp(if (accent) 22 else 18), dp(10), dp(if (accent) 22 else 18), dp(10)); includeFontPadding = false
     setTextColor(ColorStateList(arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()), intArrayOf(Palette.faint, if (accent) Palette.canvas else Palette.text)))
     backgroundTintList = null; stateListAnimator = null; elevation = 0f
-    background = RippleDrawable(ColorStateList.valueOf(0x30ffffff), rounded(if (accent) Palette.text else Palette.raised, dp(6).toFloat()), null)
+    background = RippleDrawable(ColorStateList.valueOf(0x30ffffff), rounded(if (accent) Palette.text else Palette.control, dp(4).toFloat()), null)
     setOnClickListener { click() }; contentDescription = text
 }
+fun Button.leadingIcon(icon: Int) = apply {
+    val drawable = androidx.core.content.ContextCompat.getDrawable(context, icon)?.mutate()
+    drawable?.setBounds(0, 0, context.dp(18), context.dp(18))
+    setCompoundDrawablesRelative(drawable, null, null, null)
+    compoundDrawableTintList = ColorStateList.valueOf(currentTextColor)
+    compoundDrawablePadding = context.dp(8)
+}
 fun Context.quietAction(text: String, click: () -> Unit) = action(text, click = click).apply {
-    background = RippleDrawable(ColorStateList.valueOf(0x22ffffff), rounded(Color.TRANSPARENT, dp(6).toFloat()), null)
+    background = RippleDrawable(ColorStateList.valueOf(0x22ffffff), rounded(Color.TRANSPARENT, dp(4).toFloat()), null)
     setTextColor(Palette.secondary)
 }
-fun Context.outlineAction(text: String, click: () -> Unit) = action(text, click = click).apply {
-    background = RippleDrawable(ColorStateList.valueOf(0x22ffffff), rounded(Color.TRANSPARENT, dp(6).toFloat()).apply { setStroke(dp(1), 0xff555555.toInt()) }, null)
-}
+fun Context.outlineAction(text: String, click: () -> Unit) = action(text, click = click)
 fun Context.chip(text: String, selected: Boolean = false, click: () -> Unit) = action(text, click = click).apply {
     isSelected = selected
     setTextColor(if (selected) Palette.canvas else Palette.secondary)
-    background = RippleDrawable(ColorStateList.valueOf(0x30ffffff), rounded(if (selected) Palette.text else Palette.canvas, dp(22).toFloat()).apply { if (!selected) setStroke(dp(1), Palette.border) }, null)
+    background = RippleDrawable(ColorStateList.valueOf(0x30ffffff), rounded(if (selected) Palette.text else Color.rgb(28, 28, 28), dp(3).toFloat()).apply { if (!selected) setStroke(dp(1), Palette.border) }, null)
 }
 fun Context.iconAction(icon: Int, description: String, click: () -> Unit) = ImageButton(this).apply {
     setImageResource(icon); imageTintList = ColorStateList.valueOf(Palette.text)
-    background = RippleDrawable(ColorStateList.valueOf(0x22ffffff), null, null)
+    background = RippleDrawable(ColorStateList.valueOf(0x22ffffff), rounded(Color.TRANSPARENT, dp(22).toFloat()), null)
     setPadding(dp(10), dp(10), dp(10), dp(10)); contentDescription = description
     setOnClickListener { click() }
     layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
 }
 fun Context.choiceAction(text: String, click: () -> Unit) = chip(text, click = click).apply {
+    textSize = 13f
+    setPadding(dp(12), dp(6), dp(10), dp(6))
+    background = RippleDrawable(ColorStateList.valueOf(0x22ffffff),
+        android.graphics.drawable.InsetDrawable(rounded(Color.TRANSPARENT, dp(3).toFloat()).apply { setStroke(dp(1), Palette.border) }, 0, dp(4), 0, dp(4)), null)
     setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, com.r34v.r34v.R.drawable.ic_chevron_down, 0)
-    compoundDrawablePadding = dp(6)
+    compoundDrawableTintList = ColorStateList.valueOf(Palette.muted)
+    compoundDrawablePadding = dp(5)
 }
+fun Context.animationsEnabled() = if (android.os.Build.VERSION.SDK_INT >= 26) android.animation.ValueAnimator.areAnimatorsEnabled()
+    else android.provider.Settings.Global.getFloat(contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
 fun View.enterQuietly() {
-    val enabled = if (android.os.Build.VERSION.SDK_INT >= 26) android.animation.ValueAnimator.areAnimatorsEnabled()
-        else android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
-    if (enabled) { alpha = 0f; animate().alpha(1f).setDuration(160).start() }
+    if (context.animationsEnabled()) { alpha = 0f; animate().alpha(1f).setDuration(160).start() }
 }
 fun Context.line() = View(this).apply { setBackgroundColor(Palette.border); layoutParams = LinearLayout.LayoutParams(-1, dp(1).coerceAtLeast(1)) }
 fun Context.surface(content: LinearLayout) = content.apply {
-    background = rounded(Palette.surface, dp(8).toFloat())
+    background = rounded(Palette.surface, dp(3).toFloat())
 }
 fun Context.inputField(hintText: String) = EditText(this).apply {
-    hint = hintText; isSingleLine = true; textSize = 16f
-    setTextColor(Palette.text); setHintTextColor(Palette.faint)
-    background = rounded(Palette.raised, dp(6).toFloat()); minHeight = dp(48)
+    hint = hintText; isSingleLine = true; textSize = 15f
+    setTextColor(Palette.text); setHintTextColor(Palette.muted)
+    background = rounded(Palette.surface, dp(3).toFloat()).apply { setStroke(dp(1), Palette.border) }; minHeight = dp(46)
     setPadding(dp(14), dp(12), dp(14), dp(12))
 }
 fun LinearLayout.space(height: Int = 12) = addView(Space(context), LinearLayout.LayoutParams(1, context.dp(height)))
@@ -149,8 +161,10 @@ object Images {
         if (image.isAttachedToWindow) binding.onViewAttachedToWindow(image)
     }
 }
+private fun String.keepEndingTogether() = if (length < 2 || contains('\n')) this else substring(0, lastIndex) + "\u2060" + substring(lastIndex)
+private fun String.keepMetaWordsTogether() = replace("观看", "观\u2060看")
 fun ComponentActivity.videoTile(video: com.r34v.r34v.data.Video, menu: List<Pair<String, () -> Unit>> = emptyList(), click: () -> Unit): LinearLayout = column().apply {
-    val cover = RatioImage(this@videoTile).apply { background = rounded(Palette.surface, dp(8).toFloat()); clipToOutline = true }
+    val cover = RatioImage(this@videoTile).apply { background = rounded(Palette.surface, dp(3).toFloat()); clipToOutline = true }
     val frame = FrameLayout(this@videoTile).apply {
         addView(cover, FrameLayout.LayoutParams(-1, -2))
         if (menu.isNotEmpty()) {
@@ -162,7 +176,9 @@ fun ComponentActivity.videoTile(video: com.r34v.r34v.data.Video, menu: List<Pair
         }
     }
     addView(frame, LinearLayout.LayoutParams(-1, -2)); Images.load(this@videoTile, cover, video.thumb)
-    addView(label(video.title, 14f, bold = true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
-    addView(label(listOf(video.duration, video.views, video.rating).filter { it.isNotBlank() }.joinToString(" · "), 12f, Palette.muted).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
-    setPadding(dp(5), dp(5), dp(5), dp(12)); setOnClickListener { click() }; contentDescription = video.title
+    addView(label(video.title.keepEndingTogether(), 14f).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
+    addView(label(listOf(video.duration, video.views, video.rating).filter { it.isNotBlank() }.joinToString(" · ").keepMetaWordsTogether(), 12f, Palette.muted).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
+    setPadding(dp(5), dp(5), dp(5), dp(12)); isFocusable = true
+    foreground = RippleDrawable(ColorStateList.valueOf(0x18ffffff), rounded(Color.TRANSPARENT, dp(3).toFloat()), null)
+    setOnClickListener { click() }; contentDescription = video.title
 }

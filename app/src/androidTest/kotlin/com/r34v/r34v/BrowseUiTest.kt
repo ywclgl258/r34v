@@ -102,6 +102,7 @@ class BrowseUiTest {
         val client=oldClient.newBuilder().addInterceptor { chain ->
             val request=chain.request(); val path=request.url.encodedPath
             if(path.startsWith("/most-popular/")) releaseHot.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            if(path.endsWith(".mp4") && InstrumentationRegistry.getArguments().getString("capture_loading")=="true") Thread.sleep(1800)
             val (body,type)=when {
                 path.endsWith(".png") -> covers[(Regex("cover-(\\d+)").find(path)?.groupValues?.get(1)?.toIntOrNull() ?: 0)%6] to "image/png"
                 path.endsWith(".mp4") -> clip to "video/mp4"
@@ -116,13 +117,40 @@ class BrowseUiTest {
         try {
             val homeStarted=System.currentTimeMillis()
             val main=ins.startActivitySync(Intent(ins.targetContext,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
-            waitUi("Home did not load") { hasText(main,"今日精选") }
+            waitUi("Home did not load") { hasText(main,"最新视频") }
             if(InstrumentationRegistry.getArguments().getString("slow_hot")=="true") assertTrue("Optional popular feed blocked home",System.currentTimeMillis()-homeStarted<5000)
             releaseHot.countDown()
+            ins.runOnMainSync {
+                assertTrue(nodes(main.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().isNotEmpty())
+                assertFalse(hasText(main,"继续观看"))
+                assertEquals(6,nodes(main.window.decorView).filterIsInstance<ViewFlipper>().single().childCount)
+            }
             shot("home")
-            ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<ScrollView>().first().fullScroll(View.FOCUS_DOWN) }; shot("home-shelves")
-            ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<ScrollView>().first().fullScroll(View.FOCUS_UP) }
-            click("＋ 收藏"); assertTrue(store.isFavorite("video","900001"))
+            fun swipeHomeCarousel() {
+                var startX=0f; var endX=0f; var y=0f
+                ins.runOnMainSync {
+                    val cover=nodes(main.window.decorView).filterIsInstance<com.r34v.r34v.ui.RatioImage>().first { it.isShown }
+                    val location=IntArray(2); cover.getLocationOnScreen(location)
+                    startX=location[0]+cover.width*.85f; endX=location[0]+cover.width*.15f; y=location[1]+cover.height/2f
+                }
+                val down=android.os.SystemClock.uptimeMillis()
+                for(step in 0..7) {
+                    val action=if(step==0) android.view.MotionEvent.ACTION_DOWN else if(step==7) android.view.MotionEvent.ACTION_UP else android.view.MotionEvent.ACTION_MOVE
+                    val event=android.view.MotionEvent.obtain(down,down+step*16L,action,startX+(endX-startX)*step/7f,y,0)
+                    assertTrue(ins.uiAutomation.injectInputEvent(event,true)); event.recycle()
+                }
+            }
+            swipeHomeCarousel()
+            waitUi("Carousel swipe did not open the next slide") { hasText(main,"热门榜 · 第 2 位") }
+            click("切换到第 4 部：${titles.first()}")
+            waitUi("Rated carousel slide did not open") { hasText(main,"高分榜 · 第 1 位") }
+            shot("home-rated")
+            click("切换到第 1 部：${titles.first()}")
+            waitUi("Carousel did not advance automatically") { nodes(main.window.decorView).filterIsInstance<ViewFlipper>().single().displayedChild==1 }
+            click("切换到第 1 部：${titles.first()}")
+            ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().first().let { it.scrollBy(0,it.height*2) } }; shot("home-grid")
+            ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().first().let { it.scrollBy(0,-it.height*2) } }
+            click("收藏"); assertTrue(store.isFavorite("video","900001"))
             Thread.sleep(2200); click("发现"); shot("discover")
             click("搜索")
             ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<EditText>().single().setText("night city") }
@@ -135,12 +163,15 @@ class BrowseUiTest {
                 assertTrue(nodes(main.window.decorView).any { it is Button && it.text=="作者" && it.isSelected })
             }
             click("片库"); click("收藏"); shot("library")
-            click("${titles.first()} 的更多操作"); click("取消收藏"); assertFalse(store.isFavorite("video","900001"))
+            click("${titles.first()} 的更多操作"); shot("favorite-menu")
+            waitUi("Favorite menu did not open") { ins.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("取消收藏")?.isNotEmpty() == true }
+            click("取消收藏"); assertFalse(store.isFavorite("video","900001"))
             click("下载"); shot("downloads")
             click("设置"); shot("settings")
             click("首页")
-            waitUi("Home did not reload") { hasText(main,"今日精选") }
-            click("▶  播放")
+            waitUi("Home did not reload") { hasText(main,"最新视频") }
+            click("播放")
+            if(InstrumentationRegistry.getArguments().getString("capture_loading")=="true") shot("player-loading")
             var playerActivity: PlayerActivity?=null
             val engineField=PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible=true }
             val deadline=System.currentTimeMillis()+15000
