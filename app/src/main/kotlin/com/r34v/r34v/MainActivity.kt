@@ -168,7 +168,9 @@ class MainActivity : ComponentActivity() {
                     catch (error: Exception) { if (error is CancellationException) throw error; null }
                 }
                 val latest = app.repository.feed(FeedRequest())
-                val top = hot.await()?.videos.orEmpty().filter(store::allowed).ifEmpty { latest.videos.filter(store::allowed) }
+                // Latest content can render even when the optional popular feed is slow.
+                val top = withTimeoutOrNull(400) { hot.await() }?.videos.orEmpty().filter(store::allowed).ifEmpty { latest.videos.filter(store::allowed) }
+                hot.cancel()
                 val content = column().apply { setPadding(0, dp(4), 0, dp(24)) }
                 content.addView(FlowLayout(this@MainActivity).apply {
                     setPadding(dp(16), 0, dp(16), dp(14))

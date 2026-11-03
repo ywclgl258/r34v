@@ -98,8 +98,10 @@ class BrowseUiTest {
         val covers=(0..5).map(::cover)
         val listing="<div class='thumbs'>${cards()}</div><button class='page-of'>Page 1 of 1</button>"
         val detail="""<h1>${titles.first()}</h1><script>var flashvars={video_id:'900001',video_title:'${titles.first()}',video_url:'https://ui-fixture.invalid/movie.mp4',video_url_text:'720p',preview_url:'https://ui-fixture.invalid/cover-0.png'};</script><span class='item_info'>12:48</span><div class='vp-desc'>走进夜色，沿街灯与天际线缓缓前行。用一段安静的影像，记录城市的另一面。</div><h3 class='vp-group__title'>Tags</h3><div><a href='/tags/city/'>城市</a><a href='/tags/night/'>夜景</a></div><div id='custom_list_videos_related_videos_items'>${cards()}</div>"""
+        val releaseHot=java.util.concurrent.CountDownLatch(if(InstrumentationRegistry.getArguments().getString("slow_hot")=="true") 1 else 0)
         val client=oldClient.newBuilder().addInterceptor { chain ->
             val request=chain.request(); val path=request.url.encodedPath
+            if(path.startsWith("/most-popular/")) releaseHot.await(10, java.util.concurrent.TimeUnit.SECONDS)
             val (body,type)=when {
                 path.endsWith(".png") -> covers[(Regex("cover-(\\d+)").find(path)?.groupValues?.get(1)?.toIntOrNull() ?: 0)%6] to "image/png"
                 path.endsWith(".mp4") -> clip to "video/mp4"
@@ -112,8 +114,11 @@ class BrowseUiTest {
         store.prefs.edit().putString("watch_history_v1",store.gson.toJson(listOf(Watch("900002",titles[1],"https://ui-fixture.invalid/cover-1.png","/video/900002/sample/",180,768),Watch("900003",titles[2],"https://ui-fixture.invalid/cover-2.png","/video/900003/sample/",240,768))))
             .putString("favorites_v1","[]").putString("native_search_history",store.gson.toJson(listOf("城市","风景","旅行"))).putString("settings_v1_blocked_tags","[]").commit()
         try {
+            val homeStarted=System.currentTimeMillis()
             val main=ins.startActivitySync(Intent(ins.targetContext,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
             waitUi("Home did not load") { hasText(main,"今日精选") }
+            if(InstrumentationRegistry.getArguments().getString("slow_hot")=="true") assertTrue("Optional popular feed blocked home",System.currentTimeMillis()-homeStarted<5000)
+            releaseHot.countDown()
             shot("home")
             ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<ScrollView>().first().fullScroll(View.FOCUS_DOWN) }; shot("home-shelves")
             ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<ScrollView>().first().fullScroll(View.FOCUS_UP) }
@@ -151,6 +156,7 @@ class BrowseUiTest {
             ins.waitForIdleSync()
             ins.runOnMainSync { player.finish() }
         } finally {
+            releaseHot.countDown()
             ins.runOnMainSync { ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).forEach { it.finish() } }
             field.set(app.network,oldClient)
             store.prefs.edit().apply {

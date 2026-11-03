@@ -17,6 +17,9 @@ import android.widget.*
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import com.r34v.r34v.R34Application
+import com.r34v.r34v.data.readResponse
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.*
 import okhttp3.Request
 import java.io.File
@@ -106,34 +109,44 @@ class RatioImage(context: Context, private val ratio: Float = 16f / 9f) : ImageV
 /** Bounded memory + disk thumbnails. Binding token prevents recycled cards showing stale images. */
 object Images {
     private val memory = object : LruCache<String, Bitmap>(24 * 1024 * 1024) { override fun sizeOf(key: String, value: Bitmap) = value.byteCount }
+    private val requests = Semaphore(3)
+    private class Binding(val image: ImageView, val start: () -> Job) : View.OnAttachStateChangeListener {
+        var job: Job? = null
+        override fun onViewAttachedToWindow(view: View) { if (job?.isActive != true) job = start() }
+        override fun onViewDetachedFromWindow(view: View) { job?.cancel(); job = null }
+        fun cancel() { job?.cancel(); image.removeOnAttachStateChangeListener(this) }
+    }
     fun load(activity: ComponentActivity, image: ImageView, url: String) {
-        (image.getTag(com.r34v.r34v.R.id.image_job) as? Job)?.cancel()
+        (image.getTag(com.r34v.r34v.R.id.image_job) as? Binding)?.cancel()
         image.tag = url; image.setImageDrawable(null)
         memory.get(url)?.let { image.setImageBitmap(it); return }
         if (!url.startsWith("https://")) return
         val app = activity.application as R34Application
-        val job = activity.lifecycleScope.launch {
-            val bitmap = withContext(Dispatchers.IO) {
-                runCatching {
-                    val name = MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
-                    val directory = File(activity.cacheDir, "images").apply { mkdirs() }
-                    val file = File(directory, name)
-                    val bytes = if (file.isFile) file.readBytes() else app.network.client.newCall(Request.Builder().url(url).build()).execute().use { response ->
-                        if (!response.isSuccessful) return@use null
-                        response.body?.bytes()?.takeIf { it.size <= 8 * 1024 * 1024 }?.also { data -> file.writeBytes(data) }
-                    }
-                    if (directory.listFiles().orEmpty().sumOf { it.length() } > 64L * 1024 * 1024) directory.listFiles()?.sortedBy { it.lastModified() }?.take(40)?.forEach { it.delete() }
-                    bytes?.let {
-                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                        BitmapFactory.decodeByteArray(it, 0, it.size, bounds)
-                        val sample = Integer.highestOneBit((bounds.outWidth / 700).coerceAtLeast(1))
-                        BitmapFactory.decodeByteArray(it, 0, it.size, BitmapFactory.Options().apply { inSampleSize = sample })
-                    }
-                }.getOrNull()
+        val binding = Binding(image) {
+            activity.lifecycleScope.launch {
+                val bitmap = requests.withPermit { withContext(Dispatchers.IO) {
+                    memory.get(url) ?: runCatching {
+                        val name = MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
+                        val directory = File(activity.cacheDir, "images").apply { mkdirs() }
+                        val file = File(directory, name)
+                        val bytes = if (file.isFile) file.readBytes() else app.network.client.readResponse(Request.Builder().url(url).build()) { response ->
+                            if (!response.isSuccessful) null else response.body?.bytes()?.takeIf { it.size <= 8 * 1024 * 1024 }
+                        }?.also { data -> file.writeBytes(data) }
+                        if (directory.listFiles().orEmpty().sumOf { it.length() } > 64L * 1024 * 1024) directory.listFiles()?.sortedBy { it.lastModified() }?.take(40)?.forEach { it.delete() }
+                        bytes?.let {
+                            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeByteArray(it, 0, it.size, bounds)
+                            val sample = Integer.highestOneBit((bounds.outWidth / 700).coerceAtLeast(1))
+                            BitmapFactory.decodeByteArray(it, 0, it.size, BitmapFactory.Options().apply { inSampleSize = sample })
+                        }
+                    }.getOrElse { error -> if (error is CancellationException) throw error; null }
+                } }
+                if (bitmap != null) { memory.put(url, bitmap); if (image.tag == url) image.setImageBitmap(bitmap) }
             }
-            if (bitmap != null) { memory.put(url, bitmap); if (image.tag == url) image.setImageBitmap(bitmap) }
         }
-        image.setTag(com.r34v.r34v.R.id.image_job, job)
+        image.setTag(com.r34v.r34v.R.id.image_job, binding)
+        image.addOnAttachStateChangeListener(binding)
+        if (image.isAttachedToWindow) binding.onViewAttachedToWindow(image)
     }
 }
 fun ComponentActivity.videoTile(video: com.r34v.r34v.data.Video, menu: List<Pair<String, () -> Unit>> = emptyList(), click: () -> Unit): LinearLayout = column().apply {

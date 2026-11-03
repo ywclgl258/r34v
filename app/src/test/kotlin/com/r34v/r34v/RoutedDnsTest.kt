@@ -17,7 +17,7 @@ class RoutedDnsTest {
     }
     @Test fun historicalPoolAndFallbackSurviveBothProvidersFailing() {
         val dns = RoutedDns({ RoutedDns.Policy() }, listOf("first" to broken, "second" to broken), answer("104.244.46.57"), { listOf("190.115.31.242") })
-        assertEquals(listOf("190.115.31.242", "190.115.31.243", "104.244.46.57"), dns.lookup("rule34video.com").map { it.hostAddress })
+        assertEquals(listOf("190.115.31.242", "190.115.31.243"), dns.lookup("rule34video.com").map { it.hostAddress })
     }
     @Test fun secondProviderCanRescueFirst() {
         val dns = RoutedDns({ RoutedDns.Policy() }, listOf("first" to broken, "second" to answer("190.115.31.241")), broken)
@@ -52,4 +52,32 @@ class RoutedDnsTest {
         dns.lookup("rule34video.com"); dns.lookup("rule34video.com")
         assertEquals(1, calls.get()); dns.clear(); dns.lookup("rule34video.com"); assertEquals(2, calls.get())
     }
+    @Test fun validatedPoolDoesNotWaitForEitherDnsProviderOrSystem() {
+        val release = java.util.concurrent.CountDownLatch(1)
+        val systemCalls = AtomicInteger()
+        val slow = object : Dns { override fun lookup(hostname: String): List<InetAddress> { release.await(); return answer("190.115.31.241").lookup(hostname) } }
+        val dns = RoutedDns({ RoutedDns.Policy() }, listOf("slow" to slow), object : Dns { override fun lookup(hostname: String): List<InetAddress> { systemCalls.incrementAndGet(); error("warm path must not wait for system DNS") } }, { listOf("190.115.31.242") })
+        val caller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val result = caller.submit<List<InetAddress>> { dns.lookup("rule34video.com") }.get(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            assertEquals("190.115.31.242", result.first().hostAddress); assertEquals(0, systemCalls.get())
+        } finally { release.countDown(); caller.shutdownNow() }
+    }
+    @Test fun fastSecondProviderDoesNotWaitForSlowFirst() {
+        val release = java.util.concurrent.CountDownLatch(1)
+        val slow = object : Dns { override fun lookup(hostname: String): List<InetAddress> { release.await(); return answer("190.115.31.242").lookup(hostname) } }
+        val dns = RoutedDns({ RoutedDns.Policy() }, listOf("slow" to slow, "fast" to answer("190.115.31.241")), broken)
+        val caller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val result = caller.submit<List<InetAddress>> { dns.lookup("rule34video.com") }.get(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            assertEquals("190.115.31.241", result.first().hostAddress)
+        } finally { release.countDown(); caller.shutdownNow() }
+    }
+    @Test fun usableDohDoesNotInvokeSystemDns() {
+        val calls = AtomicInteger()
+        val dns = RoutedDns({ RoutedDns.Policy() }, listOf("fast" to answer("190.115.31.241")), object : Dns { override fun lookup(hostname: String): List<InetAddress> { calls.incrementAndGet(); return emptyList() } })
+        dns.lookup("rule34video.com"); dns.lookup("rule34video.com")
+        assertEquals(0, calls.get())
+    }
+
 }

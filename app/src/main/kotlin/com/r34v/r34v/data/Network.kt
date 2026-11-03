@@ -77,7 +77,7 @@ class Network(private val context: Context, private val store: LibraryStore) {
             saveSitePool = { ips -> store.prefs.edit().putString("site_ip_pool_v1", store.gson.toJson(ips)).putLong("site_ip_pool_v1_at", System.currentTimeMillis()).apply() })
     }
     val client: OkHttpClient get() = current ?: synchronized(this) { current ?: build().also { current = it } }
-    val mediaClient: OkHttpClient get() = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).cache(null)
+    val mediaClient: OkHttpClient get() = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).cache(null)
         .dns(object : Dns { override fun lookup(hostname: String): List<InetAddress> =
             if (!Site.isSite(hostname) && !store.bool("cdn_direct", true)) Dns.SYSTEM.lookup(hostname) else resolver.lookup(hostname) }).build()
     fun invalidate() { current?.connectionPool?.evictAll(); current = null; resolver.clear() }
@@ -88,15 +88,30 @@ class Network(private val context: Context, private val store: LibraryStore) {
     }.getOrDefault(false)
     private fun build(): OkHttpClient {
         val proxyText = store.string("player_proxy").trim()
-        return OkHttpClient.Builder().connectTimeout(12, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
-            .callTimeout(60, TimeUnit.SECONDS).cookieJar(session)
-            .cache(diskCache)
+        val pool = ConnectionPool()
+        return OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
+            .callTimeout(25, TimeUnit.SECONDS).cookieJar(session)
+            .cache(diskCache).connectionPool(pool)
             .dns(resolver)
             .eventListenerFactory { object : EventListener() {
+                private var directPeer: Pair<String, String>? = null
                 override fun connectionAcquired(call: Call, connection: Connection) {
                     val route = connection.route(); val host = route.address.url.host; val peer = route.socketAddress.address?.hostAddress.orEmpty()
                     lastPeer = "$peer · ${if (route.proxy.type() == Proxy.Type.DIRECT) "直连" else "代理"}"
-                    if (route.proxy.type() == Proxy.Type.DIRECT && connection.handshake() != null) resolver.succeeded(host, peer)
+                    if (route.proxy.type() == Proxy.Type.DIRECT && connection.handshake() != null) directPeer = host to peer
+                }
+                override fun responseBodyEnd(call: Call, byteCount: Long) {
+                    // A completed TLS handshake alone doesn't prove that this route serves data.
+                    if (byteCount > 0) directPeer?.let { (host, peer) -> resolver.succeeded(host, peer) }
+                }
+                override fun callFailed(call: Call, ioe: IOException) {
+                    if (!call.isCanceled() || ioe is java.io.InterruptedIOException) directPeer?.let { (host, peer) ->
+                        resolver.failed(host, peer)
+                        if (Site.isSite(host)) {
+                            synchronized(this@Network) { if (current?.connectionPool === pool) current = null }
+                            pool.evictAll()
+                        }
+                    }
                 }
                 override fun connectFailed(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy, protocol: Protocol?, ioe: IOException) {
                     if (proxy.type() == Proxy.Type.DIRECT) resolver.failed(call.request().url.host, inetSocketAddress.address?.hostAddress.orEmpty())
@@ -116,24 +131,35 @@ class Network(private val context: Context, private val store: LibraryStore) {
     suspend fun diagnose(): String = withContext(Dispatchers.IO) {
         val start = System.currentTimeMillis()
         try {
-            client.await(Request.Builder().url("${Site.BASE}/latest-updates/").cacheControl(CacheControl.FORCE_NETWORK).build()).use { response ->
-                check(response.isSuccessful) { "HTTP ${response.code}" }
-                HtmlParser.feed(response.body?.string().orEmpty(), FeedRequest())
-                "实时请求成功 · HTTP ${response.code} · ${System.currentTimeMillis() - start} ms\n$lastPeer\n${resolver.lastResolution}"
-            }
+            val text = getText(Request.Builder().url("${Site.BASE}/latest-updates/").cacheControl(CacheControl.FORCE_NETWORK).build())
+            HtmlParser.feed(text, FeedRequest())
+            "实时请求成功 · HTTP 200 · ${System.currentTimeMillis() - start} ms\n$lastPeer\n${resolver.lastResolution}"
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             "实时请求失败：${error.message}\n$lastPeer\n${resolver.lastResolution}"
         }
     }
-    suspend fun html(url: String): String = withContext(Dispatchers.IO) {
-        client.await(Request.Builder().url(url).build()).use { response ->
+    private suspend fun getText(request: Request): String {
+        suspend fun read(http: OkHttpClient) = http.readResponse(request) { response ->
             if (!response.isSuccessful) error("请求失败：HTTP ${response.code}")
-            val body = response.body?.string().orEmpty()
-            if (body.contains("Checking your browser", true) || body.contains("DDoS-Guard", true) && !body.contains("class=\"thumbs")) error("站点要求浏览器验证，请稍后重试或调整网络")
-            if (body.contains("id=\"login_username\"")) error("此页面需要登录，请在设置中登录")
-            body
+            response.body?.string().orEmpty()
         }
+        try { return read(client) }
+        catch (error: IOException) {
+            // Retry a safe page read on another route, including failures while consuming its body.
+            // A separate pool prevents reusing the same unhealthy HTTP/2 connection.
+            if (!Site.isSite(request.url.host) || !store.bool("direct_ip", true) || vpn() || systemProxy() || store.string("player_proxy").isNotBlank()) throw error
+            val pool = ConnectionPool()
+            try { return read(client.newBuilder().connectionPool(pool).build()) }
+            catch (retry: IOException) { retry.addSuppressed(error); throw retry }
+            finally { pool.evictAll() }
+        }
+    }
+    suspend fun html(url: String): String = withContext(Dispatchers.IO) {
+        val body = getText(Request.Builder().url(url).build())
+        if (body.contains("Checking your browser", true) || body.contains("DDoS-Guard", true) && !body.contains("class=\"thumbs")) error("站点要求浏览器验证，请稍后重试或调整网络")
+        if (body.contains("id=\"login_username\"")) error("此页面需要登录，请在设置中登录")
+        body
     }
     suspend fun login(username: String, password: String) = withContext(Dispatchers.IO) {
         require(username.isNotBlank() && password.isNotEmpty()) { "请填写用户名和密码" }
@@ -178,13 +204,17 @@ class Repository(private val network: Network) {
     suspend fun ranking(url: String) = HtmlParser.ranking(network.html(Site.absolute(url)))
 }
 
-private suspend fun OkHttpClient.await(request: Request): Response = suspendCancellableCoroutine { continuation ->
+/** Cancellation remains connected to the call until the full body has been consumed. */
+internal suspend fun <T> OkHttpClient.readResponse(request: Request, consume: (Response) -> T): T = suspendCancellableCoroutine { continuation ->
     val call = newCall(request)
     continuation.invokeOnCancellation { call.cancel() }
     call.enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) { if (!continuation.isCancelled) continuation.resumeWithException(e) }
         override fun onResponse(call: Call, response: Response) {
-            continuation.resume(response) { _, value, _ -> value.close() }
+            try {
+                val value = response.use(consume)
+                if (!continuation.isCancelled) continuation.resume(value)
+            } catch (error: Exception) { if (!continuation.isCancelled) continuation.resumeWithException(error) }
         }
     })
 }
