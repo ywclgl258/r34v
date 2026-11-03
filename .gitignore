@@ -1,42 +1,38 @@
-# Flutter / Dart
-.dart_tool/
-.packages
-build/
-.flutter-plugins
-.flutter-plugins-dependencies
-*.iml
+# Gradle / Android local state
+.gradle/
+.kotlin/
+**/build/
+local.properties
 .idea/
+*.iml
+.cxx/
+captures/
 
-# Android
-android/.gradle/
-android/local.properties
-android/key.properties
-android/app/upload-keystore.jks
-android/app/*.jks
-android/app/*.keystore
-**/*.keystore
-**/*.jks
+# Signing material stays local
 key.properties
+**/*.jks
+**/*.keystore
+**/keystore.properties
 
-# 构建产物
+# Build outputs and private runtime evidence
+dist/
 *.apk
 *.aab
-build/symbols/
+.workflow-lite/
+.spike/
 
-# 上一版 Tauri 脚手架（保留源码，忽略它的构建产物）
-legacy-tauri/src-tauri/target/
-legacy-tauri/src-tauri/gen/
-legacy-tauri/node_modules/
+# Local-only historical archives
+archive/
+archives/
+legacy-*/
+*-before-kotlin-*.zip
+*.backup
 
-# 探测用的临时文件
-.spike/*.html
-.spike/*.jpg
-.spike/*.log
+# Old generated Flutter state
+.dart_tool/
+.flutter-plugins*
+.packages
+/android/
 
-# 系统
 .DS_Store
 Thumbs.db
-
-# 字体子集的源文件（1558KB），只在跑 tool/subset_font.py 时需要
-assets/fonts/NotoSansSC-Regular.woff2
-dist/

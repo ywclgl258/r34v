@@ -1,0 +1,2 @@
+-keepattributes Signature,*Annotation*
+-keep class com.r34v.r34v.data.** { *; }

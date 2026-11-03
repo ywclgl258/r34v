@@ -14,8 +14,8 @@
 
 # Shell 脚本必须是 LF，且要可执行
 *.sh text eol=lf
-android/gradlew text eol=lf
-android/gradlew.bat text eol=crlf
+gradlew text eol=lf
+gradlew.bat text eol=crlf
 
 # 二进制文件不要做任何换行转换
 *.png binary

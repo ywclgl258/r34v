@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用内更新：把下载到私有目录的 APK 通过 content:// 交给系统安装器。
+
+  只开放 cache/updates 暂存目录；只向系统安装器临时授予文件读取权限。
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>
