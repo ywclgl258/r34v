@@ -19,6 +19,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnLayout
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.exoplayer.offline.Download
 import androidx.recyclerview.widget.GridLayoutManager
@@ -51,6 +53,8 @@ class MainActivity : ComponentActivity() {
     private val backStack = ArrayDeque<Pair<String, FeedRequest>>()
     private var feedList: RecyclerView? = null
     private lateinit var switcher: SiteSwitcher
+    private var siteSwitchAnchor: View? = null
+    private var siteSwitchTutorial: SiteSwitchTutorial? = null
     private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) navigate("home", false)
     }
@@ -113,6 +117,7 @@ class MainActivity : ComponentActivity() {
         navigationTab = savedInstanceState?.getString("navigationTab") ?: "home"
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (siteSwitchTutorial?.isShowing == true) { siteSwitchTutorial?.dismiss(); return }
                 if (::switcher.isInitialized && switcher.isShowing) { switcher.close(); return }
                 if (backStack.isNotEmpty()) { val old = backStack.removeLast(); request = old.second; navigate(old.first, false) }
                 else if (screen != "home") navigate("home", false) else finish()
@@ -133,14 +138,30 @@ class MainActivity : ComponentActivity() {
     }
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        siteSwitchTutorial?.dismiss()
         (feedList?.layoutManager as? GridLayoutManager)?.spanCount = columns()
         (feedList?.layoutManager as? StaggeredGridLayoutManager)?.spanCount = columns()
     }
-    override fun onDestroy() { screenScope.cancel(); super.onDestroy() }
+    override fun onPause() { siteSwitchTutorial?.dismiss(); super.onPause() }
+    override fun onDestroy() { siteSwitchTutorial?.dismiss(); screenScope.cancel(); super.onDestroy() }
     override fun onResume() {
         super.onResume()
         if (::body.isInitialized && screen == "library") navigate("library", false)
         else if (::body.isInitialized && screen != "settings" && needsExLogin()) navigate("home", false)
+        maybeShowSiteSwitchTutorial()
+    }
+    private fun maybeShowSiteSwitchTutorial() {
+        if (!store.needsSiteSwitchTutorial || screen != "home") return
+        val anchor = siteSwitchAnchor ?: return
+        anchor.post {
+            anchor.doOnLayout {
+                if (isFinishing || isDestroyed || screen != "home" || siteSwitchAnchor !== anchor || !anchor.isAttachedToWindow ||
+                    !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || switcher.isShowing) return@doOnLayout
+                if (store.consumeSiteSwitchTutorial()) {
+                    siteSwitchTutorial = SiteSwitchTutorial(this, anchor, ::openSiteSwitcher).also { it.show() }
+                }
+            }
+        }
     }
     private fun needsExLogin() = SiteRegistry.current.id == SiteRegistry.EXHENTAI.id && !app.network.session.hasGallerySession(SiteRegistry.EXHENTAI)
     private fun exLoginGate() = show(scroll(column(24).apply {
@@ -152,6 +173,7 @@ class MainActivity : ComponentActivity() {
     }))
     private fun columns() = if (resources.configuration.screenWidthDp >= 600) 3 else 2
     private fun navigate(target: String, push: Boolean = true) {
+        siteSwitchTutorial?.dismiss()
         (body.getChildAt(0) as? ScrollView)?.let { scrollPositions[screen] = it.scrollY }
         if (push && screen != target) backStack.addLast(screen to request)
         screenScope.cancel(); screenScope = CoroutineScope(SupervisorJob(lifecycleScope.coroutineContext[Job]) + Dispatchers.Main.immediate)
@@ -164,6 +186,7 @@ class MainActivity : ComponentActivity() {
             maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(0, -2, 1f))
         toolbar.addView(row().apply {
+            siteSwitchAnchor = this
             isFocusable = true
             minimumHeight = dp(48)
             minimumWidth = dp(48); buttonSemantics()
@@ -210,6 +233,7 @@ class MainActivity : ComponentActivity() {
         languageBar.visibility = if (SiteRegistry.current.mediaKind == MediaKind.GALLERY && target in listOf("home", "explore", "search", "feed") && !needsExLogin()) View.VISIBLE else View.GONE
         if (target != "settings" && needsExLogin()) { exLoginGate(); return }
         when (target) { "home" -> home(); "explore" -> explore(); "search" -> search(); "library" -> library(); "settings" -> settings(); "feed" -> feed(); "index" -> index(request.target) }
+        maybeShowSiteSwitchTutorial()
     }
     private fun show(view: View) {
         body.removeAllViews(); body.addView(view, FrameLayout.LayoutParams(-1, -1)); view.enterQuietly()

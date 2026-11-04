@@ -1,10 +1,12 @@
 ---
 project_id: r34v-android
 updated: 2026-11-04
-status: reader-controls-prefetch-release-2.1.6
+status: site-switch-tutorial-release-2.1.7
 ---
 
 # 当前续接入口
+
+**2.1.7 / 33 当前增量：** 全新安装首次进入首页时提供一次性站点切换提示，高亮真实入口，主操作打开原有站点抽屉。关闭、返回、重启、重建和切站均不重复；升级用户不弹出，首次离线照常提示。86项JVM、7项独立Android测试分批通过，375dp / 200%字体复跑及正式包安装、结束进程重启通过；Debug/Release Lint无错误。标准与旧2.0.0兼容APK在 `dist`，签名继承链及证书已核验。用户随后明确授权提交、推送与上传；发布版本为 [v2.1.7](https://github.com/ywclgl258/r34v/releases/tag/v2.1.7)。见 [教程说明](site-switch-tutorial.md) 与 [HANDOVER.md](HANDOVER.md)。下方为历史记录。
 
 **2.1.6 / 32 当前增量：** 漫画单击隐藏/唤出上下菜单并进入沉浸全屏；连续预读后面三页，可见页和预读复用任务，最多两个并发，屏外解码预算24MiB；语言栏改为单排短标签，下滑隐藏、上滑恢复；修复视频清晰度/倍速按钮贴边。签名APK输出在 `dist`，用户随后授权提交、推送与上传，发布入口为 [v2.1.6](https://github.com/ywclgl258/r34v/releases/tag/v2.1.6)。见 [说明](reader-controls-prefetch.md) 和 [HANDOVER.md](HANDOVER.md)。下方2.1.5内容为历史记录。
 

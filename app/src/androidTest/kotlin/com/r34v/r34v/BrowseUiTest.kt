@@ -28,6 +28,7 @@ import java.io.File
 /** Real native navigation against isolated neutral network fixtures; never shipped in the app. */
 @RunWith(AndroidJUnit4::class)
 class BrowseUiTest {
+    @get:org.junit.Rule val existingUser = ExistingUserRule()
     private val ins get() = InstrumentationRegistry.getInstrumentation()
     private val app get() = ins.targetContext.applicationContext as R34Application
     private val titles = listOf("夜色之下 · 城市漫游", "山海之间", "沿着海岸线", "落日之后", "远方的灯火", "穿过旷野")

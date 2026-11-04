@@ -19,6 +19,7 @@ import android.util.Base64
  * about any particular catalogue.
  */
 class LibraryStore(context: Context, name: String = "r34v_native", legacyName: String = "FlutterSharedPreferences") {
+    companion object { const val SITE_SWITCH_TUTORIAL_SEEN = "site_switch_tutorial_seen" }
     val prefs: SharedPreferences = context.getSharedPreferences(name, Context.MODE_PRIVATE)
     val gson = Gson()
     private val dataDir = File(context.applicationInfo.dataDir).canonicalFile
@@ -27,11 +28,22 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     @Volatile var siteId: String = SiteRegistry.R34V.id
 
     init {
-        migrate(context.getSharedPreferences(legacyName, Context.MODE_PRIVATE))
+        val legacy = context.getSharedPreferences(legacyName, Context.MODE_PRIVATE)
+        // Decide before migration writes its own flags: upgrades and legacy users need no first-use tip.
+        if (!prefs.contains(SITE_SWITCH_TUTORIAL_SEEN)) {
+            prefs.edit().putBoolean(SITE_SWITCH_TUTORIAL_SEEN, prefs.all.isNotEmpty() || legacy.all.isNotEmpty()).apply()
+        }
+        migrate(legacy)
         siteId = SiteRegistry.byIdOrDefault(prefs.getString("active_site", null) ?: SiteRegistry.R34V.id).id
         migrateToSiteNamespaced()
         retireNetworkOverrides()
     }
+
+    val needsSiteSwitchTutorial get() = !prefs.getBoolean(SITE_SWITCH_TUTORIAL_SEEN, true)
+
+    /** Claim once globally, before showing; dismissing, switching sites and restarting cannot replay it. */
+    @Synchronized fun consumeSiteSwitchTutorial(): Boolean = needsSiteSwitchTutorial &&
+        prefs.edit().putBoolean(SITE_SWITCH_TUTORIAL_SEEN, true).commit()
 
     private fun retireNetworkOverrides() {
         val retired = listOf("direct_ip", "doh", "cdn_direct", "player_proxy", "custom_site_ips").map { "settings_v1_$it" } +

@@ -28,6 +28,7 @@ import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class GalleryUiTest {
+    @get:org.junit.Rule val existingUser = ExistingUserRule()
     private val ins get() = InstrumentationRegistry.getInstrumentation()
     private val app get() = ins.targetContext.applicationContext as R34Application
     private fun nodes(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { nodes(view.getChildAt(it)) } else emptyList()

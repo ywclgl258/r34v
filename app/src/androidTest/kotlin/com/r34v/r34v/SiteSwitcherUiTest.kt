@@ -31,6 +31,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 /** Real touch dispatch and native navigation, with neutral fixtures isolated from live sites. */
 @RunWith(AndroidJUnit4::class)
 class SiteSwitcherUiTest {
+    @get:org.junit.Rule val existingUser = ExistingUserRule()
     private val ins get() = InstrumentationRegistry.getInstrumentation()
     private val app get() = ins.targetContext.applicationContext as R34Application
     private lateinit var main: MainActivity

@@ -87,11 +87,11 @@ object SiteRegistry {
     )
     val NHENTAI = SiteContext(
         id = "nhentai", name = "nhentai", base = "https://nhentai.net", host = "nhentai.net",
-        userAgent = "R34V/2.1.6 (Android)", mediaDomains = setOf("nhentai.net"), mediaKind = MediaKind.GALLERY,
+        userAgent = "R34V/2.1.7 (Android)", mediaDomains = setOf("nhentai.net"), mediaKind = MediaKind.GALLERY,
     )
     val HITOMI = SiteContext(
         id = "hitomi", name = "Hitomi", base = "https://hitomi.la", host = "hitomi.la",
-        userAgent = "R34V/2.1.6 (Android)", mediaDomains = setOf("gold-usergeneratedcontent.net"), mediaKind = MediaKind.GALLERY,
+        userAgent = "R34V/2.1.7 (Android)", mediaDomains = setOf("gold-usergeneratedcontent.net"), mediaKind = MediaKind.GALLERY,
     )
 
     val all: List<SiteContext> get() = listOf(R34V, HANIME1, IWARA, EHENTAI, EXHENTAI, NHENTAI, HITOMI)
