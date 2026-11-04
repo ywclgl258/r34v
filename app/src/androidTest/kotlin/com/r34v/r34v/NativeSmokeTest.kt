@@ -11,6 +11,7 @@ import com.r34v.r34v.data.*
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import androidx.compose.ui.test.*
 import java.io.File
 import androidx.media3.datasource.DataSpec
 import androidx.media3.exoplayer.offline.Download
@@ -24,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 class NativeSmokeTest {
+    @get:org.junit.Rule val ui = androidx.compose.ui.test.junit4.createEmptyComposeRule()
     @get:org.junit.Rule val existingUser = ExistingUserRule()
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
@@ -145,16 +147,16 @@ class NativeSmokeTest {
             Thread.sleep(1000)
             instrumentation.runOnMainSync {
                 assertTrue((engineField.get(activity) as ExoPlayer).currentPosition >= 2000)
-                val frameField = PlayerActivity::class.java.getDeclaredField("playerFrame").apply { isAccessible = true }
-                val frame = frameField.get(activity) as android.view.ViewGroup
-                (0 until frame.childCount).map { frame.getChildAt(it) }.filterIsInstance<android.widget.Button>().first { it.text == "全屏" }.performClick()
             }
-            instrumentation.waitForIdleSync()
+            if (ui.onAllNodesWithContentDescription("全屏").fetchSemanticsNodes().isEmpty()) ui.onNodeWithTag("player-surface").performTouchInput { click() }
+            ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("全屏").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithContentDescription("全屏").performClick()
+            ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("退出全屏").fetchSemanticsNodes().isNotEmpty() }
             instrumentation.runOnMainSync {
-                val field = PlayerActivity::class.java.getDeclaredField("fullscreen").apply { isAccessible = true }
-                assertTrue(field.getBoolean(activity)); activity?.onBackPressedDispatcher?.onBackPressed()
-                assertFalse(field.getBoolean(activity)); activity?.finish()
+                activity?.onBackPressedDispatcher?.onBackPressed()
             }
+            ui.onNodeWithContentDescription("清晰度，当前 本地").assertExists()
+            instrumentation.runOnMainSync { activity?.finish() }
             instrumentation.waitForIdleSync()
             val releaseDeadline = System.currentTimeMillis() + 5000
             var released = false
@@ -179,5 +181,18 @@ class NativeSmokeTest {
         native.edit().clear().commit()
         try { assertEquals(listOf("first", "second"), LibraryStore(context, "migration_list_native", "migration_list_old").searches()) }
         finally { old.edit().clear().commit(); native.edit().clear().commit() }
+    }
+
+    @Test fun playbackHistoryKeepsItsOwnerWhenActiveSiteChanges() {
+        val previous = SiteRegistry.current
+        val name = "compose-watch-owner-${System.nanoTime()}"
+        try {
+            val store = LibraryStore(context, name, "$name-old")
+            store.switchSite("hanime1")
+            store.saveWatch(Watch("owner-test", "Owner test", position = 20, duration = 60, site = "r34v"))
+            assertTrue(store.history().isEmpty())
+            assertEquals(20L, store.watch("owner-test", "r34v")!!.position)
+            store.switchSite("r34v"); assertEquals("owner-test", store.history().single().id)
+        } finally { context.deleteSharedPreferences(name); context.deleteSharedPreferences("$name-old"); SiteRegistry.current = previous }
     }
 }

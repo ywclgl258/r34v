@@ -1,221 +1,168 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 package com.r34v.r34v
 
-import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
-import android.text.InputType
-import android.text.TextUtils
-import android.view.Gravity
-import android.view.View
-import android.widget.*
 import androidx.activity.ComponentActivity
-import androidx.activity.OnBackPressedCallback
-import androidx.core.view.ViewCompat
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.r34v.r34v.data.*
-import com.r34v.r34v.data.adapter.GalleryLoginRequiredException
+import com.r34v.r34v.data.adapter.*
 import com.r34v.r34v.ui.*
 import kotlinx.coroutines.*
 
 class GalleryActivity : ComponentActivity() {
     private val app get() = application as R34Application
     private val store get() = app.library
-    private lateinit var entry: Video
+    private var entry by mutableStateOf(Video())
     private val site get() = SiteRegistry.byIdOrDefault(entry.site)
-    private var detail: GalleryDetail? = null
-    private val images = mutableMapOf<Int, GalleryImage>()
-    private var page = 1
-    private var reading = false
-    private var pageJob: Job? = null
-    private lateinit var root: LinearLayout
-    private var strip: ComicStripView? = null
+    private var detail by mutableStateOf<GalleryDetail?>(null)
+    private var error by mutableStateOf<String?>(null)
+    private var gate by mutableStateOf(false)
+    private var offlineOnly = false
+    private var reading by mutableStateOf(false)
+    private var controlsVisible by mutableStateOf(true)
+    private var page by mutableIntStateOf(1)
     private var stripOffset = 0
-    private lateinit var pageLabel: TextView
-    private lateinit var seek: SeekBar
-    private var readerToolbar: View? = null
-    private var readerControls: View? = null
-    private var controlsVisible = true
-    private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
-        if (it.resultCode == RESULT_OK) load(reading)
-    }
-    private fun loginGate() {
-        root.removeAllViews(); root.addView(toolbar(site.name))
-        root.addView(column(24).apply {
-            addView(label("ExHentai 必须登录并具备访问权限", 19f, bold = true)); space()
-            addView(action("官方网页登录", true) { officialLogin.launch(Intent(this@GalleryActivity, SiteAuthActivity::class.java).putExtra("site", site.id)) })
-        })
-    }
-
+    private var jump by mutableStateOf(ReaderJump(0, 1))
+    private var revision by mutableIntStateOf(0)
+    private var saveReader: (() -> Unit)? = null
+    private var pageJob: Job? = null
+    private val images = mutableMapOf<Int, GalleryImage>()
+    private val dialogs = ComposeDialogs()
+    private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { if (it.resultCode == RESULT_OK) load(reading) }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         entry = runCatching { store.gson.fromJson(intent.getStringExtra("gallery"), Video::class.java) }.getOrNull() ?: run { finish(); return }
-        if (site.mediaKind != MediaKind.GALLERY) { finish(); return }
+        if (site.mediaKind != MediaKind.GALLERY || entry.id.isBlank()) { finish(); return }
         page = savedInstanceState?.getInt("page") ?: store.reading(entry.id, site.id)?.page ?: 1
         stripOffset = savedInstanceState?.getInt("stripOffset") ?: store.reading(entry.id, site.id)?.offset ?: 0
-        val resume = savedInstanceState?.getBoolean("reading") ?: intent.getBooleanExtra("read", false)
+        reading = savedInstanceState?.getBoolean("reading") ?: intent.getBooleanExtra("read", false)
+        offlineOnly = savedInstanceState?.getBoolean("offline") ?: intent.getBooleanExtra("offline", false)
         controlsVisible = savedInstanceState?.getBoolean("controlsVisible") ?: true
+        jump = ReaderJump(0, page, stripOffset)
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        root = column().apply { setBackgroundColor(Palette.canvas) }
-        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val types = WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime() or
-                if (reading && !controlsVisible) 0 else WindowInsetsCompat.Type.systemBars()
-            val bars = insets.getInsets(types)
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
-        }
-        setContentView(root)
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                when { reading && !controlsVisible -> setReaderControlsVisible(true); reading -> overview(); else -> finish() }
-            }
-        })
-        if (site.id == SiteRegistry.EXHENTAI.id && !app.network.session.hasGallerySession(site)) loginGate() else load(resume)
-    }
-    override fun onSaveInstanceState(outState: Bundle) {
-        strip?.savePosition()
-        outState.putInt("page", page); outState.putInt("stripOffset", stripOffset); outState.putBoolean("reading", reading)
-        outState.putBoolean("controlsVisible", controlsVisible)
-        super.onSaveInstanceState(outState)
-    }
-    override fun onStop() { strip?.savePosition(); super.onStop() }
-    override fun onDestroy() { strip?.release(); pageJob?.cancel(); super.onDestroy() }
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && reading && !controlsVisible) applyReaderControls()
-    }
-    private fun toolbar(title: String) = row().apply {
-        minimumHeight = dp(56); setPadding(dp(8), dp(4), dp(16), dp(4))
-        addView(iconAction(R.drawable.ic_back, "返回") { onBackPressedDispatcher.onBackPressed() })
-        addView(label(title, 17f, bold = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f))
+        setContent { R34Theme { Content() } }
+        load(reading)
     }
     private fun load(resume: Boolean) {
-        root.removeAllViews(); root.addView(toolbar(entry.title)); root.addView(ProgressBar(this))
-        pageJob?.cancel()
-        pageJob = lifecycleScope.launch {
-            try {
-                detail = app.galleries.detail(entry); entry = detail!!.entry; page = page.coerceIn(1, detail!!.pageCount)
-                if (resume) reader(page) else overview()
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                if (error is GalleryLoginRequiredException) { app.network.session.clear(site); loginGate(); return@launch }
-                root.removeAllViews(); root.addView(toolbar(entry.title))
-                root.addView(column(24).apply { addView(label(error.message ?: "画廊加载失败", 15f, Palette.muted)); space(); addView(action("重试") { load(resume) }) })
-            }
-        }
+        gate = !offlineOnly && site.id == "exhentai" && !app.network.session.hasGallerySession(site)
+        if (gate) return
+        error = null; pageJob?.cancel()
+        pageJob = lifecycleScope.launch { try {
+            val gallery = app.galleries.detail(entry, offlineOnly); detail = gallery; entry = gallery.entry; page = page.coerceIn(1, gallery.pageCount)
+            if (resume) reader(page, stripOffset) else { reading = false; controlsVisible = true }
+        } catch (e: Exception) { if (e is CancellationException) throw e; if (e is GalleryLoginRequiredException) { app.network.session.clear(site); gate = true } else error = e.message ?: "画廊加载失败" } }
     }
-    private fun overview() {
-        strip?.savePosition(); strip?.release(); strip = null
-        pageJob?.cancel(); reading = false
-        controlsVisible = true; applyReaderControls()
-        val gallery = detail ?: return
-        root.removeAllViews(); root.addView(toolbar(site.name))
-        val content = column(20)
-        content.addView(ImageView(this).apply {
-            adjustViewBounds = true; scaleType = ImageView.ScaleType.FIT_CENTER; maxHeight = dp(280)
-            Images.load(this@GalleryActivity, this, entry.thumb, site)
-        }, LinearLayout.LayoutParams(-1, dp(250)))
-        content.addView(label(entry.title, 23f, bold = true))
-        if (gallery.alternativeTitle.isNotBlank() && gallery.alternativeTitle != entry.title) content.addView(label(gallery.alternativeTitle, 14f, Palette.secondary))
-        content.addView(label(listOf(entry.duration, gallery.language, entry.rating).filter { it.isNotBlank() }.joinToString(" · "), 13f, Palette.muted))
-        content.space(16)
-        val progress = store.reading(entry.id, site.id)
-        content.addView(action(if (progress == null) "开始阅读" else "继续阅读 · 第 ${progress.page} 页", true) { reader(progress?.page ?: 1, progress?.offset ?: 0) }.leadingIcon(R.drawable.ic_bookmark))
-        content.space(8)
-        fun renderFavorite(): Button = outlineAction(if (store.isFavorite("gallery", entry.id, site.id)) "已收藏画廊" else "收藏画廊") {
-            store.toggleFavorite(Favorite("gallery", entry.id, entry.title, entry.url, entry.thumb, entry.duration, site = site.id), site.id)
-            overview()
-        }
-        content.addView(renderFavorite())
-        if (gallery.cached) { content.space(); content.addView(label("当前使用已保存的画廊信息；已缓存图页可离线阅读。", 13f, Palette.muted)) }
-        content.space(20); content.addView(label(gallery.description, 13f, Palette.muted))
-        for ((name, links) in gallery.groups) {
-            content.space(18); content.addView(label(name, 17f, bold = true))
-            content.addView(FlowLayout(this).apply { links.forEach { link ->
-                addView(chip(link.label) { startActivity(Intent(this@GalleryActivity, MainActivity::class.java).putExtra("link", link.url)) }.apply {
-                    setOnLongClickListener {
-                        store.toggleFavorite(Favorite(if (name == "上传者" || name == "画师") "model" else "tag", link.slug, link.label, link.url, site = site.id), site.id)
-                        toast("已更新收藏"); true
-                    }
-                })
-            } })
-        }
-        content.space(20); content.addView(quietAction("跳到指定页") { jump() })
-        root.addView(scroll(content), LinearLayout.LayoutParams(-1, 0, 1f))
-    }
-    private fun reader(target: Int, offset: Int = stripOffset) {
-        val gallery = detail ?: return
-        reading = true
-        strip?.release()
-        root.removeAllViews()
-        readerToolbar = toolbar(entry.title).apply {
-            addView(iconAction(R.drawable.ic_fullscreen, "全屏阅读") { setReaderControlsVisible(false) })
-        }.also { root.addView(it) }
-        val reader = ComicStripView(this, gallery.pageCount, lifecycleScope, ::loadStripPage, { current, image, scrollOffset ->
-            page = current; stripOffset = scrollOffset
-            pageLabel.text = "$page / ${gallery.pageCount}"; seek.progress = page - 1
-            if (image != null) store.saveReading(ReadingProgress(entry, page, gallery.pageCount, image.pageUrl, offset = scrollOffset))
-        }, { setReaderControlsVisible(!controlsVisible) })
-        strip = reader
-        root.addView(reader, LinearLayout.LayoutParams(-1, 0, 1f))
-        val controls = column()
-        controls.addView(row().apply {
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            addView(label("单击画面隐藏菜单", 13f, Palette.muted), LinearLayout.LayoutParams(0, -2, 1f))
-            pageLabel = label("", 14f, Palette.text, true).apply {
-                gravity = Gravity.CENTER; minimumHeight = dp(48); minimumWidth = dp(48)
-                background = controlBackground(android.graphics.Color.TRANSPARENT)
-                isFocusable = true; setOnClickListener { jump() }; contentDescription = "跳转页码"
-            }
-            addView(pageLabel)
-        })
-        seek = SeekBar(this).apply {
-            max = gallery.pageCount - 1; contentDescription = "漫画阅读进度"; progressTintList = android.content.res.ColorStateList.valueOf(Palette.red)
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onStartTrackingTouch(seekBar: SeekBar) {}
-                override fun onProgressChanged(seekBar: SeekBar, value: Int, fromUser: Boolean) { if (fromUser) pageLabel.text = "${value + 1} / ${gallery.pageCount}" }
-                override fun onStopTrackingTouch(seekBar: SeekBar) { reader.scrollToPage(seekBar.progress + 1) }
-            })
-        }
-        controls.addView(seek, LinearLayout.LayoutParams(-1, dp(48)))
-        readerControls = controls; root.addView(controls)
-        applyReaderControls()
-        pageLabel.text = "$target / ${gallery.pageCount}"; seek.progress = target - 1
-        reader.scrollToPage(target, offset)
-    }
-    private fun setReaderControlsVisible(visible: Boolean) {
-        if (!reading || controlsVisible == visible) return
-        val reader = strip ?: return
-        val anchor = reader.currentPage; val offset = reader.readingOffset
-        controlsVisible = visible; applyReaderControls()
-        reader.post { if (strip === reader) reader.scrollToPage(anchor, offset) }
-    }
-    private fun applyReaderControls() {
-        val fullscreen = reading && !controlsVisible
-        readerToolbar?.visibility = if (fullscreen) View.GONE else View.VISIBLE
-        readerControls?.visibility = if (fullscreen) View.GONE else View.VISIBLE
-        val bars = WindowCompat.getInsetsController(window, root)
+    private fun reader(target: Int, offset: Int = 0) { page = target; stripOffset = offset; jump = ReaderJump(jump.serial + 1, target, offset); reading = true }
+    private fun applyBars() {
+        val bars = WindowCompat.getInsetsController(window, window.decorView)
         bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (fullscreen) bars.hide(WindowInsetsCompat.Type.systemBars()) else bars.show(WindowInsetsCompat.Type.systemBars())
-        ViewCompat.requestApplyInsets(root)
+        if (reading && !controlsVisible) bars.hide(WindowInsetsCompat.Type.systemBars()) else bars.show(WindowInsetsCompat.Type.systemBars())
+    }
+    @Composable private fun Content() {
+        BackHandler { when { reading && !controlsVisible -> controlsVisible = true; reading -> { saveReader?.invoke(); reading = false; controlsVisible = true }; else -> finish() } }
+        SideEffect { applyBars() }
+        Column(Modifier.fillMaxSize().background(CanvasColor).then(if (reading && !controlsVisible) Modifier.displayCutoutPadding() else Modifier.safeDrawingPadding())) {
+            if (!reading || controlsVisible || gate || error != null) Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconAction(R.drawable.ic_back, "返回") { if (reading) { saveReader?.invoke(); reading = false; controlsVisible = true } else finish() }
+                Text(if (reading) entry.title else site.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (reading) IconAction(R.drawable.ic_fullscreen, "全屏阅读") { controlsVisible = false }
+            }
+            when {
+                gate -> EmptyState("ExHentai 必须登录并具备访问权限", "请在官方页面完成登录，再验证本站访问权限。", "官方网页登录") { officialLogin.launch(Intent(this@GalleryActivity, SiteAuthActivity::class.java).putExtra("site", site.id)) }
+                error != null -> EmptyState("画廊加载失败", error.orEmpty()) { load(reading) }
+                detail == null -> Loading("正在加载画廊")
+                reading -> {
+                    val gallery = detail!!
+                    Box(Modifier.weight(1f)) { ComicReader(gallery.pageCount, jump, ::loadStripPage, { controlsVisible = !controlsVisible }, { current, image, offset ->
+                        page = current; stripOffset = offset
+                        if (image != null) store.saveReading(ReadingProgress(entry, current, gallery.pageCount, image.pageUrl, offset = offset))
+                    }, { saveReader = it }) }
+                    if (controlsVisible) {
+                        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { Copy("单击画面隐藏菜单", Modifier.weight(1f)); TextAction(::jumpDialog) { Text("$page / ${gallery.pageCount}") } }
+                        if (gallery.pageCount > 1) {
+                            var slider by remember(page) { mutableFloatStateOf(page.toFloat()) }
+                            Slider(slider, { slider = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp).semantics { contentDescription = "漫画阅读进度" }, valueRange = 1f..gallery.pageCount.toFloat(), colors = SliderDefaults.colors(thumbColor = androidx.compose.ui.graphics.Color.White, activeTrackColor = BrandColor, inactiveTrackColor = RaisedColor), onValueChangeFinished = { reader(slider.toInt().coerceIn(1, gallery.pageCount)) })
+                        }
+                    }
+                }
+                else -> Overview()
+            }
+        }
+        dialogs.Host()
+    }
+    @Composable private fun Overview() {
+        val gallery = detail ?: return
+        @Suppress("UNUSED_VARIABLE") val observedRevision = revision
+        val progress = store.reading(entry.id, site.id)
+        val downloadRevision by app.galleryDownloads.changes.collectAsState()
+        val download = remember(downloadRevision, entry.id, entry.site) { app.galleryDownloads.task(entry) }
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            if (!offlineOnly) SiteImage(entry.thumb, site, Modifier.fillMaxWidth().height(250.dp), true)
+            else Copy("已下载整本 · ${gallery.pageCount} 页 · 离线阅读")
+            Title(entry.title, large = true)
+            if (gallery.alternativeTitle.isNotBlank() && gallery.alternativeTitle != entry.title) Copy(gallery.alternativeTitle)
+            Copy(listOf(entry.duration, gallery.language, entry.rating).filter(String::isNotBlank).joinToString(" · "))
+            Action(if (progress == null) "开始阅读" else "继续阅读 · 第 ${progress.page} 页", true, modifier = Modifier.fillMaxWidth()) { reader(progress?.page ?: 1, progress?.offset ?: 0) }
+            Action(if (store.isFavorite("gallery", entry.id, site.id)) "已收藏画廊" else "收藏画廊", modifier = Modifier.fillMaxWidth()) { store.toggleFavorite(Favorite("gallery", entry.id, entry.title, entry.url, entry.thumb, entry.duration, site = site.id), site.id); revision++ }
+            Action(when (download?.state) {
+                GalleryDownloadState.COMPLETED -> "离线阅读"
+                GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED -> "暂停下载 · ${download.pages} / ${download.total} 页"
+                GalleryDownloadState.PAUSED -> "继续下载"
+                GalleryDownloadState.FAILED -> "重试下载"
+                GalleryDownloadState.REMOVING -> "正在删除下载"
+                null -> "下载整本"
+            }, enabled = download?.state != GalleryDownloadState.REMOVING, modifier = Modifier.fillMaxWidth()) {
+                if (download?.state == GalleryDownloadState.COMPLETED) { offlineOnly = true; load(true) }
+                else lifecycleScope.launch { try {
+                    if (download?.state in listOf(GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED)) app.galleryDownloads.pause(download!!.id)
+                    else {
+                        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 42)
+                        app.galleryDownloads.add(entry); toast("已加入下载，可在统一下载中心查看")
+                    }
+                } catch (e: Exception) { if (e is CancellationException) throw e; showError(e) } }
+            }
+            TextAction({ startActivity(Intent(this@GalleryActivity, MainActivity::class.java).putExtra("downloads", true)) }) { Glyph(R.drawable.ic_download, null); Spacer(Modifier.width(8.dp)); Text("管理下载") }
+            if (download?.state == GalleryDownloadState.FAILED) Copy(download.error)
+            if (gallery.cached && !offlineOnly) Copy("当前使用已保存的画廊信息；已保存图页可离线阅读，整本下载可在下载中心查看。")
+            Copy(gallery.description)
+            gallery.groups.forEach { (name, links) -> Title(name); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { links.forEach { link ->
+                Box(Modifier.combinedClickable(onClick = { startActivity(Intent(this@GalleryActivity, MainActivity::class.java).putExtra("link", link.url)) }, onLongClick = {
+                    store.toggleFavorite(Favorite(if (name == "上传者" || name == "画师") "model" else "tag", link.slug, link.label, link.url, site = site.id), site.id); toast("已更新收藏")
+                }).padding(12.dp).heightIn(min = 24.dp)) { Text(link.label) }
+            } } }
+            Action("跳到指定页", click = ::jumpDialog)
+        }
     }
     private suspend fun loadStripPage(target: Int, force: Boolean): GalleryRepository.RenderedPage {
         val gallery = detail ?: error("画廊信息尚未载入")
         val remembered = store.reading(entry.id, site.id)?.takeIf { it.page == target }?.pageUrl
         val cached = withContext(Dispatchers.IO) { app.galleries.cachedPageUrl(entry, target) }
         val url = cached ?: images[target]?.pageUrl ?: images[target - 1]?.nextUrl ?: images[target + 1]?.previousUrl ?: remembered
-            ?: AdapterRegistry.adapter(site, app.network).galleryPageLink(gallery, target)
-        return app.galleries.page(site, url, force, galleryUrl = entry.url).also { images[target] = it.image }
+            ?: if (offlineOnly) error("下载图页目录缺失，请重新下载") else AdapterRegistry.adapter(site, app.network).galleryPageLink(gallery, target)
+        return app.galleries.page(site, url, force, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly).also { images[target] = it.image }
     }
-    private fun jump() {
-        val gallery = detail ?: return
-        val input = inputField("1 – ${gallery.pageCount}").apply { inputType = InputType.TYPE_CLASS_NUMBER; setText(page.toString()); selectAll() }
-        val dialog = AlertDialog.Builder(this).setTitle("跳到指定页").setView(column(20).apply { addView(input) }).setPositiveButton("阅读", null).setNegativeButton("取消", null).create()
-        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val target = input.text.toString().toIntOrNull()
-            if (target == null || target !in 1..gallery.pageCount) { input.error = "请输入 1 – ${gallery.pageCount}"; return@setOnClickListener }
-            dialog.dismiss(); if (reading) strip?.scrollToPage(target) else reader(target, 0)
-        } }; dialog.show()
+    private fun jumpDialog() {
+        val count = detail?.pageCount ?: return
+        dialogs.edit("跳到指定页", page.toString(), "1 – $count", keyboard = androidx.compose.ui.text.input.KeyboardType.Number, validate = { if (it.toIntOrNull() in 1..count) null else "请输入 1 – $count" }) { reader(it.toInt()) }
     }
+    override fun onSaveInstanceState(outState: Bundle) { saveReader?.invoke(); outState.putBoolean("offline", offlineOnly); outState.putInt("page", page); outState.putInt("stripOffset", stripOffset); outState.putBoolean("reading", reading); outState.putBoolean("controlsVisible", controlsVisible); super.onSaveInstanceState(outState) }
+    override fun onStop() { saveReader?.invoke(); super.onStop() }
+    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) applyBars() }
 }

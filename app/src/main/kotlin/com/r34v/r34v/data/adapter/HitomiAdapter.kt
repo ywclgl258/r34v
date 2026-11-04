@@ -20,7 +20,7 @@ class HitomiAdapter(private val network: Network) : SiteAdapter {
     override val site = SiteRegistry.HITOMI
     override val creatorTitle = "画师"
     override val catalogueTitle = "画廊分类"
-    override val capabilities = setOf(Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.CATEGORY, Capability.RANKING)
+    override val capabilities = setOf(Capability.DOWNLOAD, Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.CATEGORY, Capability.RANKING)
     override val sorts = listOf(Sort.NEWEST, Sort.POPULARITY)
     override val sections = listOf(Section("latest", "最新画廊", feed = FeedRequest()), Section("popular", "年度热门", feed = FeedRequest(FeedKind.POPULAR))) +
         listOf("doujinshi" to "同人志", "manga" to "漫画", "artistcg" to "画师 CG", "gamecg" to "游戏 CG").map { Section(it.first, it.second, feed = FeedRequest(FeedKind.CATEGORY, it.first)) }

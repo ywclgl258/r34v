@@ -1,6 +1,6 @@
 # R34V
 
-支持 Rule34Video、Hanime1、Iwara、E-Hentai、ExHentai、nhentai 和 Hitomi 的 Kotlin 原生 Android 客户端。浏览、片库、下载、播放器和漫画阅读器均为原生实现，不依赖 Flutter；EH/EX 官方网页登录使用独立 WebView，仅用于认证。
+支持 Rule34Video、Hanime1、Iwara、E-Hentai、ExHentai、nhentai 和 Hitomi 的 Kotlin 原生 Android 客户端。界面使用 Jetpack Compose + Material 3，包括浏览、片库、设置、视频控件和条漫阅读器。Media3 播放画面与仅用于 EH/EX 官方认证的 WebView 通过 AndroidView 接入；不依赖 Flutter。迁移说明见 [Compose 重构](docs/dev/compose-migration.md)。
 
 ## 功能
 
@@ -8,17 +8,17 @@
 - 分页视频列表、多种排序、视频/标签/作者搜索及搜索历史。
 - Media3 播放器：清晰度、0.25×–3× 倍速、横竖屏全屏、双击快进/后退、滑动调节进度/亮度/音量、长按临时倍速和断点续播。
 - 视频、角色、作者、标签收藏；观看历史、内容屏蔽和标签中文词典。
-- 边播边缓存、前台后台下载、暂停/继续、完整缓存离线播放；旧版本已完成的离线文件可继续使用。
+- 视频按清晰度下载，四个漫画站支持整本下载；统一下载中心汇总各站视频、漫画与旧版本离线文件，支持类型/站点筛选、暂停/继续、失败重试、删除、离线播放和离线阅读。漫画按页续传，已下载整本独立持久保存，不随阅读临时数据清理。
 - 站点账号登录与网络诊断。页面、封面、图页、播放、下载和更新统一跟随系统代理；未设置代理时使用系统 DNS 直连，代理失败不回退直连。已移除应用内 DoH、固定/手填 IP、IP 池和单独代理设置。
 - GitHub Release 更新检查及系统安装器。
 - 顶栏抽屉切换站点；每站历史、收藏、搜索与下载隔离。Iwara 支持公开列表、趋势/热门/点赞/播放榜、视频/标签/作者查询、清晰度播放和离线缓存；账号登录、私密内容、图库与站外嵌入尚未接入。见 [Iwara 接入说明](docs/dev/iwara-adapter.md)。
 - 全新安装首次进入首页时，高亮站点切换入口，提供“打开站点列表”和“知道了”；提示仅显示一次，关闭、返回、重启或切站后均不重复。已有用户升级不弹出。见 [首次切站教程](docs/dev/site-switch-tutorial.md)。
-- E-Hentai / ExHentai 支持画廊列表、分类、热门、搜索、标签与上传者查询；原生漫画阅读采用上下连续滚动的条漫形式，保留跳页、双指/双击缩放、页内阅读位置、画廊收藏和已读图页离线缓存。ExHentai 明确标注需要账号权限，未登录时显示登录门禁，可打开官方论坛登录或导入 Cookie；验证权限后才保存加密会话。真实 ExHentai 账号联网尚未验收。当前不提供整本批量下载。见 [漫画站接入说明](docs/dev/eh-adapter.md)。
+- E-Hentai / ExHentai 支持画廊列表、分类、热门、搜索、标签与上传者查询；原生漫画阅读采用上下连续滚动的条漫形式，保留跳页、双指/双击缩放、页内阅读位置、画廊收藏和已读图页离线保存。漫画详情可下载整本并在统一下载中心离线打开。ExHentai 在线访问仍需要账号权限，未登录时显示登录门禁，可打开官方论坛登录或导入 Cookie；验证权限后才保存加密会话。真实 ExHentai 账号联网尚未验收。见 [漫画站接入说明](docs/dev/eh-adapter.md) 与 [统一下载](docs/dev/unified-downloads.md)。
 - 四个漫画站的首页、搜索列表和画廊片库采用原生瀑布流，封面保留比例，横屏自动增加列数；视频站保留现有列表。网络与登录机制见 [系统网络、官方登录与瀑布流](docs/dev/system-network-auth-masonry.md)。
 - 四个漫画站提供“全部 / 中文 / 日文 / 中＋日”单排语言筛选，按站点记忆，并应用于首页、分类、搜索与翻页；下滑收起、上滑显示。切站入口只显示紧凑站名和箭头，抽屉不再重复展示域名。条漫支持单击隐藏/显示菜单和沉浸全屏，并连续预读后续三页，限制并发和图片内存。见 [语言筛选与条漫阅读](docs/dev/comic-language-strip.md) 与 [阅读控件与连续预读](docs/dev/reader-controls-prefetch.md)。
-- nhentai 使用官网公开 v2 API，支持最新/今日热门、分类、关键词/标签/画师查询；Hitomi 支持最新/年度热门、分类、关键词组合与排除词、标签/画师查询，原生解析二进制索引和动态 WebP 图片路由。两站复用漫画阅读器与分站收藏、进度、已读缓存，无需登录；不含账号同步和整本下载。见 [nhentai / Hitomi 接入说明](docs/dev/nhentai-hitomi-adapters.md)。
+- nhentai 使用官网公开 v2 API，支持最新/今日热门、分类、关键词/标签/画师查询；Hitomi 支持最新/年度热门、分类、关键词组合与排除词、标签/画师查询，原生解析二进制索引和动态 WebP 图片路由。两站复用漫画阅读器、整本下载与分站收藏/进度，无需登录；不含账号同步。见 [nhentai / Hitomi 接入说明](docs/dev/nhentai-hitomi-adapters.md)。
 
-界面使用纯黑底、白色文字与少量红色状态提示。首页/发现/搜索/片库四个入口固定，片库按观看/收藏/下载分组。搜索支持一键清除、空输入提示并保留范围和关键词；首页轮播支持暂停、手动切换与宽屏图文并排。共享按钮触控区至少48dp，支持大字体换行、键盘焦点和明确的空态入口。播放详情将清晰度、倍速、收藏下载和展开信息分层。见 [界面规范](docs/ui.md)。
+界面使用纯黑底、Netflix 红与克制的透明渐变。首页为沉浸式 Hero、继续观看、人气榜和120×180dp海报片架；顶栏覆盖海报，封面经黑色渐变融入背景。共享字号、圆角和轻量玻璃卡片统一，封面使用 Coil AsyncImage 并保留分站请求/缓存隔离。首页/发现/搜索/片库四个入口固定，片库按观看/收藏/下载分组。搜索支持一键清除、空输入提示并保留范围和关键词；轮播支持暂停与手动切换。共享按钮触控区至少48dp，支持大字体换行、键盘焦点和明确的空态入口。见 [界面规范](docs/ui.md)。
 
 应用不托管内容，与原站无关联。仅供个人使用。
 
@@ -59,7 +59,7 @@ LEGACY_KEY_PASSWORD=historical-key-password
 
 发布构建会核对 `release.properties` 中固定的证书指纹，缺少密钥或指纹不符就失败，禁止新建替代密钥或回退 debug 签名。`app/signing/upgrade.lineage` 是公开证书的签名继承证明，不含私钥。
 
-2.1.1 的标准 APK 在 Android 9 及以上支持从原签名 1.18.0 和迁移版 2.0.0 直接覆盖安装；Android 7/8 原签名版本也使用标准 APK。**仅 Android 7/8 上已装 2.0.0 的用户**使用 `*-compat-2.0.0.apk`，保留该版本签名。无需卸载应用。应用内更新会选择对应的包，并在安装前核验包名、版本和签名。
+2.2.2 的标准 APK 在 Android 9 及以上支持从原签名 1.18.0 和迁移版 2.0.0 直接覆盖安装；Android 7/8 原签名版本也使用标准 APK。**仅 Android 7/8 上已装 2.0.0 的用户**使用 `*-compat-2.0.0.apk`，保留该版本签名。无需卸载应用。应用内更新会选择对应的包，并在安装前核验包名、版本和签名。
 
 独立包名的“R34V 开发版”用于开发测试，不是正式版更新包。CI 的发布密钥必须与本机固定指纹一致；密钥缺失时仅产生明确标记的开发版。配置方法见 [签名与升级](docs/signing.md)。
 
@@ -73,7 +73,7 @@ LEGACY_KEY_PASSWORD=historical-key-password
 
 ## 技术与许可
 
-Kotlin / 原生 Android View / RecyclerView / OkHttp / Jsoup / Media3。应用源码遵循 [MIT License](LICENSE)。技术方向参考 [Han1meViewer](https://github.com/YenalyLiew/Han1meViewer)，未复制其应用源码。
+Kotlin / Jetpack Compose / Material 3 / OkHttp / Jsoup / Media3。应用源码遵循 [MIT License](LICENSE)。技术方向参考 [Han1meViewer](https://github.com/YenalyLiew/Han1meViewer)，未复制其应用源码。
 
 Iwara 的 API、封面字段与公开视频源签名参考 [LoveIwara](https://github.com/FoxSensei001/LoveIwara) 的 MIT 实现，使用 Kotlin 原生适配器接入；其许可声明随开发包一并保留于 `assets/licenses/LoveIwara.txt`。
 

@@ -1,32 +1,39 @@
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package com.r34v.r34v
 
 import android.Manifest
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
-import android.content.res.Configuration
-import android.graphics.drawable.RippleDrawable
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.view.*
-import android.widget.*
 import androidx.activity.ComponentActivity
-import androidx.activity.OnBackPressedCallback
-import androidx.core.view.ViewCompat
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.*
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.*
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.r34v.r34v.data.*
@@ -36,396 +43,211 @@ import kotlinx.coroutines.*
 class PlayerActivity : ComponentActivity() {
     private val app get() = application as R34Application
     private val store get() = app.library
-    private lateinit var video: Video
-    private var detail: Detail? = null
-    private var stream: Stream? = null
+    private var video by mutableStateOf(Video())
+    private var detail by mutableStateOf<Detail?>(null)
+    private var stream by mutableStateOf<Stream?>(null)
     private var player: ExoPlayer? = null
-    private lateinit var root: FrameLayout
-    private lateinit var playerFrame: FrameLayout
-    private lateinit var playerView: PlayerView
-    private lateinit var details: ScrollView
-    private lateinit var hint: TextView
-    private lateinit var status: TextView
-    private lateinit var loadingView: CinemaLoadingView
-    private lateinit var bufferingView: CinemaLoadingView
-    private var hasPresented = false
-    private var fullscreen = false
+    private var playerView: PlayerView? = null
+    private var engineRevision by mutableIntStateOf(0)
+    private var fullscreen by mutableStateOf(false)
+    private var controls by mutableStateOf(true)
+    private var status by mutableStateOf("正在获取播放地址…")
+    private var phase by mutableStateOf<String?>("正在连接放映厅")
+    private var hint by mutableStateOf("")
+    private var userRate by mutableFloatStateOf(1f)
+    private var failureVisible by mutableStateOf(false)
+    private var revision by mutableIntStateOf(0)
     private var position = 0L
-    private var refreshed = false
-    private var autoFullscreenApplied = false
-    private var offline = false
     private var local: String? = null
     private var offlineId: String? = null
-    private var userRate = 1f
+    private val offline get() = local != null || offlineId != null
+    private var refreshed = false
+    private var opening = false
+    private var presented = false
+    private var autoFullscreenApplied = false
+    private var resumePlay = true
     private var pendingError: Throwable? = null
-    private var isOpening = false
-    private var failureVisible = false
-    private var retryButton: Button? = null
-    private val expandedSections = mutableMapOf<String, Boolean>()
+    private var hintJob: Job? = null
+    private val dialogs = ComposeDialogs()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val restored = runCatching { store.gson.fromJson(intent.getStringExtra("video"), Video::class.java) }.getOrNull()
-        if (restored == null || restored.id.isBlank()) { finish(); return }
-        video = restored
-        local = intent.getStringExtra("local"); offlineId = intent.getStringExtra("download"); offline = local != null || offlineId != null
-        position = savedInstanceState?.getLong("position") ?: store.watch(video.id)?.takeUnless { it.finished }?.position?.times(1000) ?: 0L
+        video = runCatching { store.gson.fromJson(intent.getStringExtra("video"), Video::class.java) }.getOrNull()?.takeIf { it.id.isNotBlank() } ?: run { finish(); return }
+        local = intent.getStringExtra("local"); offlineId = intent.getStringExtra("download")
+        position = savedInstanceState?.getLong("position") ?: store.watch(video.id, video.site)?.takeUnless { it.finished }?.position?.times(1000) ?: 0
         userRate = store.string("native_speed", "1.0").toFloatOrNull()?.coerceIn(.25f, 3f) ?: 1f
-        root = FrameLayout(this).apply { setBackgroundColor(Palette.canvas) }
-        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
-            view.setPadding(bars.left, if (fullscreen) 0 else bars.top, bars.right, if (fullscreen) 0 else bars.bottom); insets
-        }
-        val content = column()
-        playerFrame = FrameLayout(this).apply { setBackgroundColor(Palette.canvas) }
-        playerView = PlayerView(this).apply { setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER); setShowNextButton(false); setShowPreviousButton(false); setShowSubtitleButton(false); keepScreenOn = true }
-        playerFrame.addView(playerView, FrameLayout.LayoutParams(-1, -1))
-        bufferingView = CinemaLoadingView(this, compact = true, translucent = true).apply {
-            showStage("正在缓冲", "同步画面与音轨")
-            visibility = View.GONE
-        }
-        playerFrame.addView(bufferingView, FrameLayout.LayoutParams(-1, -1))
-        hint = label("", 17f, bold = true).apply { gravity = Gravity.CENTER; background = rounded(0xb0000000.toInt()); visibility = View.GONE; setPadding(dp(16), dp(12), dp(16), dp(12)) }
-        playerFrame.addView(hint, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-        val fullButton = quietAction("全屏") { toggleFullscreen() }.apply {
-            setTextColor(Palette.text)
-            background = RippleDrawable(ColorStateList.valueOf(0x30ffffff), rounded(0x70000000, dp(4).toFloat()), null)
-        }
-        playerFrame.addView(fullButton, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(dp(8), dp(8), dp(8), 0) })
-        playerFrame.addView(iconAction(R.drawable.ic_back, "返回") { onBackPressedDispatcher.onBackPressed() }.apply {
-            background = RippleDrawable(ColorStateList.valueOf(0x30ffffff), rounded(0x70000000, dp(4).toFloat()), null)
-        }, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.START).apply { setMargins(dp(8), dp(8), dp(8), 0) })
-        content.addView(playerFrame, LinearLayout.LayoutParams(-1, inlineHeight()))
-        status = label("正在获取播放地址…", 12f, Palette.muted)
-        details = scroll(column())
-        content.addView(details, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(content, FrameLayout.LayoutParams(-1, -1))
-        loadingView = CinemaLoadingView(this).apply {
-            showStage(if (offline) "正在打开离线片源" else "正在连接放映厅", if (offline) "读取本地缓存" else "建立播放通道")
-        }
-        root.addView(loadingView, FrameLayout.LayoutParams(-1, -1))
-        setContentView(root)
-        renderDetails()
-        details.enterQuietly()
-        installGestures()
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() { if (fullscreen) toggleFullscreen() else finish() }
-        })
+        fullscreen = savedInstanceState?.getBoolean("fullscreen") ?: false
+        autoFullscreenApplied = savedInstanceState?.getBoolean("autoFullscreenApplied") ?: false
+        resumePlay = savedInstanceState?.getBoolean("resumePlay") ?: true
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        setContent { R34Theme { Content() } }
         load()
         lifecycleScope.launch { while (isActive) { delay(5000); savePosition() } }
     }
-    private fun inlineHeight() = (resources.displayMetrics.widthPixels * 9f / 16f).toInt().coerceAtMost((resources.displayMetrics.heightPixels * .55f).toInt())
     private fun load() {
-        if (isOpening) return
-        isOpening = true; setFailureVisible(false); status.text = "正在加载…"
-        hasPresented = false
-        loadingView.showStage(if (offline) "正在打开离线片源" else "正在连接放映厅", if (offline) "读取本地缓存" else "建立播放通道")
-        bufferingView.hideImmediately()
-        lifecycleScope.launch {
-            try {
-                if (local != null) {
-                    val allowed = store.localVideos().any { it.id == video.id && it.path == local }
-                    check(allowed) { "离线文件不存在" }
-                    stream = Stream("本地", Uri.fromFile(java.io.File(local!!)).toString())
-                    loadingView.showStage("正在加载片源", "读取本地缓存")
-                    renderDetails(); if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) open(stream!!, position)
-                } else if (offlineId != null) {
-                    val download = withContext(Dispatchers.IO) { app.playback.manager.downloadIndex.getDownload(offlineId!!) } ?: error("缓存记录不存在")
-                    check(download.state == androidx.media3.exoplayer.offline.Download.STATE_COMPLETED) { "缓存尚未完成" }
-                    stream = Stream(app.playback.metadata(download)?.quality ?: "缓存", download.request.uri.toString())
-                    loadingView.showStage("正在加载片源", "读取已缓存画面")
-                    renderDetails(); if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) open(stream!!, position)
-                } else {
-                    val result = app.repository.detail(video.url)
-                    detail = result; video = result.video.copy(thumb = result.video.thumb.ifBlank { video.thumb })
-                    val preferred = store.watch(video.id)?.quality?.takeIf { it.isNotBlank() } ?: store.string("quality", "720p")
-                    stream = result.streams.firstOrNull { it.label == preferred } ?: result.streams.firstOrNull { it.height <= (Regex("\\d+").find(preferred)?.value?.toIntOrNull() ?: 720) } ?: result.streams.last()
-                    loadingView.showStage("正在加载片源", "获取 ${stream?.label.orEmpty()} 播放通道")
-                    renderDetails(); if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) open(stream!!, position)
-                    if (store.bool("auto_download")) app.playback.add(video, stream!!)
+        if (opening) return
+        opening = true; failureVisible = false; phase = if (offline) "正在打开离线片源" else "正在连接放映厅"; pendingError = null
+        lifecycleScope.launch { try {
+            stream = when {
+                local != null -> { check(store.localVideos(video.site).any { it.id == video.id && it.path == local }) { "离线文件不存在" }; Stream("本地", Uri.fromFile(java.io.File(local!!)).toString()) }
+                offlineId != null -> {
+                    val download = withContext(Dispatchers.IO) { app.playback.manager.downloadIndex.getDownload(offlineId!!) } ?: error("下载记录不存在")
+                    check(download.state == androidx.media3.exoplayer.offline.Download.STATE_COMPLETED) { "下载尚未完成" }
+                    check(app.playback.metadata(download)?.site == video.site) { "下载不属于当前站点" }
+                    Stream(app.playback.metadata(download)?.quality ?: "下载", download.request.uri.toString())
                 }
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                status.text = error.message ?: "加载失败"; setFailureVisible(true); showError(error)
-            } finally { isOpening = false }
-        }
+                else -> {
+                    val result = app.repository.detail(video.url); detail = result; video = result.video.copy(thumb = result.video.thumb.ifBlank { video.thumb })
+                    val preferred = store.watch(video.id, video.site)?.quality?.takeIf(String::isNotBlank) ?: store.string("quality", "720p")
+                    result.streams.firstOrNull { it.label == preferred } ?: result.streams.firstOrNull { it.height <= (Regex("\\d+").find(preferred)?.value?.toIntOrNull() ?: 720) } ?: result.streams.last()
+                }
+            }
+            open(stream!!, position)
+            if (!offline && store.bool("auto_download")) app.playback.add(video, stream!!)
+        } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } finally { opening = false } }
     }
     private fun open(value: Stream, start: Long, autoplay: Boolean = true) {
-        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { stream = value; position = start; return }
-        pendingError = null; setFailureVisible(false)
-        if (hasPresented) bufferingView.showStage("正在加载片源", "缓冲高清画质")
-        else loadingView.showStage("正在校准画面", "同步音轨与画面")
+        stream = value; position = start
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        pendingError = null; failureVisible = false; phase = if (presented) "正在缓冲" else "正在校准画面"
         val engine = player ?: ExoPlayer.Builder(this)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(8000, 50000, 400, 800).setPrioritizeTimeOverSizeThresholds(true).build())
-            .setMediaSourceFactory(DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site)))
-            .build().also { exo ->
-                player = exo; playerView.player = exo
-                exo.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
-                exo.setHandleAudioBecomingNoisy(true)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site))).build().also { exo ->
+                player = exo; engineRevision++; playerView?.player = exo
+                exo.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true); exo.setHandleAudioBecomingNoisy(true)
                 exo.addListener(object : Player.Listener {
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        status.text = when (playbackState) { Player.STATE_BUFFERING -> "正在缓冲…"; Player.STATE_READY -> "${stream?.label.orEmpty()} · ${if (offline) "离线播放" else "正在播放"}"; Player.STATE_ENDED -> "播放完毕"; else -> "准备播放" }
-                        playerView.keepScreenOn = exo.isPlaying || playbackState == Player.STATE_BUFFERING
-                        when (playbackState) {
-                            Player.STATE_BUFFERING -> if (hasPresented) bufferingView.showStage("正在加载片源", "缓冲高清画质")
-                                else loadingView.showStage("正在校准画面", "同步音轨与画面")
-                            Player.STATE_READY -> {
-                                if (hasPresented) loadingView.hideImmediately() else loadingView.finishAndHide()
-                                bufferingView.hideImmediately()
-                                hasPresented = true
-                                if (!autoFullscreenApplied && store.bool("auto_fullscreen")) { autoFullscreenApplied = true; if (!fullscreen) toggleFullscreen() }
-                            }
-                            Player.STATE_ENDED -> {
-                                loadingView.hideImmediately()
-                                bufferingView.hideImmediately()
-                                savePosition()
-                            }
+                    override fun onPlaybackStateChanged(state: Int) {
+                        status = when (state) { Player.STATE_BUFFERING -> "正在缓冲…"; Player.STATE_READY -> "${stream?.label} · ${if (offline) "离线播放" else if (exo.isPlaying) "正在播放" else "已暂停"}"; Player.STATE_ENDED -> "播放完毕"; else -> "准备播放" }
+                        playerView?.keepScreenOn = exo.isPlaying || state == Player.STATE_BUFFERING
+                        when (state) {
+                            Player.STATE_BUFFERING -> phase = if (presented) "正在缓冲" else "正在校准画面"
+                            Player.STATE_READY -> { phase = null; presented = true; if (!autoFullscreenApplied && store.bool("auto_fullscreen")) { autoFullscreenApplied = true; fullscreen = true } }
+                            Player.STATE_ENDED -> { phase = null; controls = true; savePosition() }
                         }
                     }
-                    override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        playerView.keepScreenOn = isPlaying
-                        if (exo.playbackState == Player.STATE_READY) status.text = "${stream?.label.orEmpty()} · ${if (isPlaying) { if (offline) "离线播放" else "正在播放" } else "已暂停"}"
-                    }
+                    override fun onIsPlayingChanged(playing: Boolean) { playerView?.keepScreenOn = playing; revision++; if (exo.playbackState == Player.STATE_READY) status = "${stream?.label} · ${if (playing) { if (offline) "离线播放" else "正在播放" } else "已暂停"}" }
+                    override fun onVideoSizeChanged(videoSize: VideoSize) { if (fullscreen) applyFullscreen() }
                     override fun onPlayerError(error: PlaybackException) {
                         savePosition()
-                        if (!offline && !refreshed) {
-                            refreshed = true; status.text = "正在刷新播放地址…"
-                            if (hasPresented) bufferingView.showStage("正在加载片源", "刷新播放地址")
-                            else loadingView.showStage("正在连接放映厅", "重新建立播放通道")
-                            lifecycleScope.launch {
-                                try {
-                                    val fresh = app.repository.detail(video.url); detail = fresh
-                                    val selected = fresh.streams.firstOrNull { it.label == stream?.label } ?: fresh.streams.last()
-                                    stream = selected; renderDetails(); open(selected, position)
-                                } catch (refreshError: Exception) { if (refreshError is CancellationException) throw refreshError; playbackError(refreshError) }
-                            }
-                        } else playbackError(error)
+                        if (!offline && !refreshed) { refreshed = true; phase = "正在刷新播放地址"; lifecycleScope.launch { try {
+                            val fresh = app.repository.detail(video.url); detail = fresh
+                            open(fresh.streams.firstOrNull { it.label == stream?.label } ?: fresh.streams.last(), position)
+                        } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } } } else playbackError(error)
                     }
                 })
             }
-        stream = value
         val item = if (local != null) MediaItem.fromUri(value.url) else app.playback.item(video, value)
         engine.setMediaItem(item, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
     }
-    private fun playbackError(error: Throwable) { pendingError = error; status.text = "播放失败：${error.message}"; setFailureVisible(true); showError(error) }
-    private fun setFailureVisible(visible: Boolean) {
-        failureVisible = visible
-        retryButton?.visibility = if (visible) View.VISIBLE else View.GONE
-        if (visible) {
-            loadingView.hideImmediately()
-            bufferingView.hideImmediately()
-        }
-    }
-    private fun restartPlayback() {
-        refreshed = false
-        if (stream != null) open(stream!!, if (pendingError != null) position else 0) else load()
-    }
-    private fun playbackMenu(anchor: View) {
-        PopupMenu(this, anchor).apply {
-            menu.add("重新播放").setOnMenuItemClickListener { restartPlayback(); true }
-            show()
-        }
-    }
-    private fun renderDetails() {
-        val scrollPosition = details.scrollY
-        val content = column(18)
-        content.addView(label(video.title, 22f, bold = true))
-        val metadata = listOf(video.duration, video.views, video.rating).filter { it.isNotBlank() }.joinToString(" · ")
-        if (metadata.isNotBlank()) content.addView(label(metadata, 13f, Palette.secondary))
-        (status.parent as? ViewGroup)?.removeView(status); content.addView(status)
-        retryButton = action("重试", accent = true) {
-            if (pendingError != null) restartPlayback() else load()
-        }.apply { visibility = if (failureVisible) View.VISIBLE else View.GONE }
-        content.addView(retryButton)
-        if (stream != null || detail != null) {
-            content.space(8)
-            content.addView(FlowLayout(this).apply {
-                addView(choiceAction("${stream?.label ?: "清晰度"}") { quality() }.apply {
-                    isEnabled = detail?.streams?.isNotEmpty() == true
-                    contentDescription = "清晰度，当前 ${stream?.label ?: "尚未加载"}"
-                })
-                addView(choiceAction("${userRate}×") { speed() }.apply { contentDescription = "播放速度，当前 ${userRate} 倍" })
-                val more = iconAction(R.drawable.ic_more, "更多播放操作") {}
-                more.setOnClickListener { playbackMenu(more) }
-                addView(more)
-            })
-            content.space(4)
-            content.addView(FlowLayout(this).apply {
-                val saved = store.isFavorite("video", video.id)
-                addView(quietAction(if (saved) "已收藏" else "收藏") {
-                    store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration)); renderDetails()
-                }.apply {
-                    textSize = 13f
-                    setPadding(dp(10), dp(6), dp(10), dp(6))
-                }.leadingIcon(if (saved) R.drawable.ic_check else R.drawable.ic_add))
-                if (!offline) addView(quietAction("下载") { download() }.apply {
-                    textSize = 13f
-                    setPadding(dp(10), dp(6), dp(10), dp(6))
-                }.leadingIcon(R.drawable.ic_download))
-            })
-        }
-        detail?.let { data ->
-            if (data.description.isNotBlank()) addExpandable(content, "description", "简介", initiallyExpanded = true) {
-                addView(label(data.description, 14f, Palette.secondary).apply { setLineSpacing(dp(3).toFloat(), 1f) })
+    private fun playbackError(error: Throwable) { pendingError = error; phase = null; status = "播放失败：${error.message}"; failureVisible = true; controls = true }
+    private fun restart() { refreshed = false; if (stream != null) open(stream!!, if (pendingError != null) position else 0) else load() }
+    @Composable private fun Content() {
+        BackHandler { if (fullscreen) fullscreen = false else finish() }
+        SideEffect { applyFullscreen() }
+        val engine = remember(engineRevision) { player }
+        @Suppress("UNUSED_VARIABLE") val changed = revision
+        val config = LocalConfiguration.current
+        Column(Modifier.fillMaxSize().background(CanvasColor).then(if (fullscreen) Modifier.displayCutoutPadding() else Modifier.safeDrawingPadding())) {
+            Box((if (fullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(minOf(config.screenWidthDp * 9f / 16f, config.screenHeightDp * .55f).dp)).testTag("player-surface")) {
+                AndroidView(factory = { context -> PlayerView(context).also { view ->
+                    playerView = view; view.useController = false; view.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER); installGestures(view); view.player = engine
+                } }, modifier = Modifier.fillMaxSize(), update = { it.player = engine }, onRelease = { it.player = null; playerView = null })
+                if (phase != null) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .75f)), contentAlignment = Alignment.Center) { Loading(phase!!) }
+                if (hint.isNotBlank()) Text(hint, Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = .8f)).padding(16.dp))
+                if (controls || failureVisible) VideoControls(engine)
             }
-            for ((name, links) in data.groups) {
-                if (links.isEmpty()) continue
-                addExpandable(content, "group:$name", "$name · ${links.size}") {
-                    val chips = FlowLayout(this@PlayerActivity)
-                    for (link in links) {
-                        val translated = if (store.bool("translate_tags", true)) TagNames.lookup(this@PlayerActivity, link.slug) else null
-                        chips.addView(chip(translated ?: link.label) {
-                            startActivity(Intent(this@PlayerActivity, MainActivity::class.java).putExtra("link", link.url))
-                        }.apply {
-                            setOnLongClickListener {
-                                val kind = when (name) { "角色" -> "character"; "作者" -> "model"; else -> "tag" }
-                                val choices = if (name == "标签") arrayOf("收藏 / 取消收藏", "屏蔽 / 取消屏蔽") else arrayOf("收藏 / 取消收藏")
-                                AlertDialog.Builder(this@PlayerActivity).setTitle(link.label).setItems(choices) { _, which ->
-                                    if (which == 1) { store.toggleBlocked(link.slug); toast("已更新屏蔽词") }
-                                    else toast(if (store.toggleFavorite(Favorite(kind, link.slug, link.label, link.url, link.thumb))) "已收藏" else "已取消收藏")
-                                }.show(); true
-                            }
-                        })
-                    }
-                    addView(chips)
-                }
+            if (!fullscreen) Details()
+        }
+        dialogs.Host()
+    }
+    @Composable private fun BoxScope.VideoControls(engine: ExoPlayer?) {
+        var current by remember(engine) { mutableLongStateOf(position) }; var duration by remember(engine) { mutableLongStateOf(0) }; var scrubbing by remember { mutableStateOf(false) }
+        LaunchedEffect(engine) { while (isActive) { if (!scrubbing) current = engine?.currentPosition?.coerceAtLeast(0) ?: position; duration = engine?.duration?.coerceAtLeast(0) ?: 0; delay(500) } }
+        LaunchedEffect(controls, status, scrubbing) { if (controls && engine?.isPlaying == true && !failureVisible && !scrubbing) { delay(4500); controls = false } }
+        Column(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .35f)), verticalArrangement = Arrangement.SpaceBetween) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                IconAction(R.drawable.ic_back, "返回") { if (fullscreen) fullscreen = false else finish() }; Spacer(Modifier.weight(1f))
+                TextAction({ quality() }, enabled = detail?.streams?.isNotEmpty() == true) { Text(stream?.label ?: "清晰度") }
+                TextAction({ speed() }) { Text("${userRate}×") }; IconAction(R.drawable.ic_fullscreen, if (fullscreen) "退出全屏" else "全屏") { fullscreen = !fullscreen }
             }
-            if (data.comments.isNotEmpty()) addExpandable(content, "comments", "评论 · ${data.comments.size}") {
-                data.comments.forEachIndexed { index, comment ->
-                    if (index > 0) space(12)
-                    addView(label("${comment.author}  ${comment.date}", 13f, bold = true))
-                    addView(label(comment.text, 14f, Palette.secondary).apply { setLineSpacing(dp(3).toFloat(), 1f) })
-                }
-            }
-            val relatedVideos = data.related.filter(store::allowed).take(24)
-            if (relatedVideos.isNotEmpty()) {
-                content.space(22); content.addView(label("相关推荐", 18f, bold = true)); content.space(6)
-                relatedVideos.chunked(2).forEach { pair ->
-                    content.addView(row().apply {
-                        gravity = Gravity.TOP
-                        pair.forEachIndexed { index, related ->
-                            addView(videoTile(related) {
-                                startActivity(Intent(this@PlayerActivity, PlayerActivity::class.java).putExtra("video", store.gson.toJson(related)))
-                            }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (index == 0) marginEnd = dp(6) else marginStart = dp(6) })
-                        }
-                        if (pair.size == 1) addView(Space(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(6) })
-                    })
-                }
+            if (failureVisible) Action("重试", true, modifier = Modifier.align(Alignment.CenterHorizontally), click = ::restart)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconAction(if (engine?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play, if (engine?.isPlaying == true) "暂停" else "播放") { engine?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); if (it.isPlaying) it.pause() else it.play() } }
+                Text(timeText(current), style = MaterialTheme.typography.labelSmall)
+                Slider(current.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)), { scrubbing = true; current = it.toLong() }, Modifier.weight(1f).semantics { contentDescription = "播放进度" }, valueRange = 0f..duration.toFloat().coerceAtLeast(1f), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = BrandColor, inactiveTrackColor = RaisedColor), enabled = duration > 0, onValueChangeFinished = { engine?.seekTo(current); scrubbing = false })
+                Text(timeText(duration), style = MaterialTheme.typography.labelSmall)
             }
         }
-        details.removeAllViews(); details.addView(content)
-        details.post { details.scrollTo(0, scrollPosition) }
     }
-    private fun addExpandable(content: LinearLayout, key: String, title: String, initiallyExpanded: Boolean = false, body: LinearLayout.() -> Unit) {
-        content.space(16)
-        val expanded = expandedSections[key] ?: initiallyExpanded
-        val bodyContent = column().apply { body(); visibility = if (expanded) View.VISIBLE else View.GONE }
-        val indicator = iconAction(R.drawable.ic_chevron_down, title) {}.apply { rotation = if (expanded) 180f else 0f; contentDescription = "${if (expanded) "收起" else "展开"}$title" }
-        fun toggle() {
-            val show = bodyContent.visibility != View.VISIBLE
-            expandedSections[key] = show; bodyContent.visibility = if (show) View.VISIBLE else View.GONE
-            indicator.contentDescription = "${if (show) "收起" else "展开"}$title"
-            indicator.animate().cancel()
-            val angle = if (show) 180f else 0f
-            if (runCatching { Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f }.getOrDefault(false)) {
-                indicator.animate().rotation(angle).setDuration(180).start()
-            } else indicator.rotation = angle
-        }
-        content.addView(row().apply {
-            minimumHeight = dp(48)
-            addView(label(title, 18f, bold = true).apply { ViewCompat.setAccessibilityHeading(this, true) }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(indicator)
-            setOnClickListener { toggle() }
-        })
-        indicator.setOnClickListener { toggle() }
-        content.addView(bodyContent)
-    }
-    private fun quality() {
-        val options = detail?.streams ?: return
-        AlertDialog.Builder(this).setTitle("清晰度").setSingleChoiceItems(options.map { it.label }.toTypedArray(), options.indexOf(stream)) { dialog, which ->
-            val start = player?.currentPosition ?: position; val playing = player?.playWhenReady ?: true
-            stream = options[which]; store.set("quality", stream!!.label); refreshed = false
-            open(stream!!, start, playing); renderDetails(); dialog.dismiss()
-        }.show()
-    }
-    private fun speed() {
-        val rates = listOf(.25f, .5f, .75f, 1f, 1.25f, 1.5f, 2f, 3f)
-        AlertDialog.Builder(this).setTitle("播放速度").setItems(rates.map { "${it}×" }.toTypedArray()) { _, which ->
-            userRate = rates[which]; store.set("native_speed", userRate.toString()); player?.setPlaybackSpeed(userRate); renderDetails()
-        }.show()
-    }
-    private fun download() {
-        val options = detail?.streams ?: return
-        AlertDialog.Builder(this).setTitle("选择缓存清晰度").setItems(options.map { it.label }.toTypedArray()) { _, which ->
-            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 40)
-            runCatching { app.playback.add(video, options[which]) }.onSuccess { toast("已加入后台下载，可在片库查看") }.onFailure(::showError)
-        }.show()
-    }
-    private fun toggleFullscreen() {
-        fullscreen = !fullscreen
-        details.visibility = if (fullscreen) View.GONE else View.VISIBLE
-        playerFrame.layoutParams = LinearLayout.LayoutParams(-1, if (fullscreen) -1 else inlineHeight())
-        val bars = WindowCompat.getInsetsController(window, root)
-        if (fullscreen) {
-            val size = player?.videoSize
-            requestedOrientation = if (size != null && size.height > size.width) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            bars.hide(WindowInsetsCompat.Type.systemBars())
-        } else { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED; bars.show(WindowInsetsCompat.Type.systemBars()) }
-        ViewCompat.requestApplyInsets(root)
-    }
-    override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); if (!fullscreen) playerFrame.layoutParams = LinearLayout.LayoutParams(-1, inlineHeight()) }
-    private fun savePosition() {
-        val exo = player ?: return
-        position = exo.currentPosition.coerceAtLeast(0)
-        val duration = exo.duration.takeIf { it > 0 } ?: (durationSeconds(video.duration) * 1000)
-        store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000, quality = stream?.label.orEmpty()))
-    }
-    override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); super.onSaveInstanceState(outState) }
-    override fun onResume() {
-        super.onResume()
-        if (::playerView.isInitialized) playerView.post {
-            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && player == null && stream != null) open(stream!!, position)
+    @Composable private fun Details() {
+        @Suppress("UNUSED_VARIABLE") val changed = revision
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Title(video.title, large = true); Copy(listOf(video.duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")); Copy(status)
+            if (failureVisible) Action("重试", true, click = ::restart)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Selector(stream?.label ?: "清晰度", enabled = detail?.streams?.isNotEmpty() == true, modifier = Modifier.semantics { contentDescription = "清晰度，当前 ${stream?.label ?: "尚未加载"}" }, click = ::quality)
+                Selector("${userRate}×", modifier = Modifier.semantics { contentDescription = "播放速度，当前 ${userRate} 倍" }, click = ::speed)
+                IconAction(R.drawable.ic_more, "更多播放操作") { dialogs.choose("播放操作", listOf("重新播放")) { restart() } }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextAction({ store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site); revision++ }) { Text(if (store.isFavorite("video", video.id, video.site)) "已收藏" else "收藏") }
+                if (!offline) TextAction(::download) { Text("下载") }
+            }
+            detail?.let { data ->
+                if (data.description.isNotBlank()) Expandable("简介", true) { Copy(data.description) }
+                data.groups.filterValues { it.isNotEmpty() }.forEach { (name, links) -> Expandable("$name · ${links.size}") { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { links.forEach { link ->
+                    val translated = if (store.bool("translate_tags", true)) TagNames.lookup(this@PlayerActivity, link.slug) else null
+                    Box(Modifier.combinedClickable(onClick = { startActivity(Intent(this@PlayerActivity, MainActivity::class.java).putExtra("link", link.url)) }, onLongClick = {
+                        val kind = when (name) { "角色" -> "character"; "作者" -> "model"; else -> "tag" }
+                        dialogs.choose(link.label, if (name == "标签") listOf("收藏 / 取消收藏", "屏蔽 / 取消屏蔽") else listOf("收藏 / 取消收藏")) { i -> if (i == 1) store.toggleBlocked(link.slug) else store.toggleFavorite(Favorite(kind, link.slug, link.label, link.url, link.thumb, site = video.site), video.site); revision++ }
+                    }).heightIn(min = 48.dp).padding(12.dp)) { Text(translated ?: link.label) }
+                } } } }
+                if (data.comments.isNotEmpty()) Expandable("评论 · ${data.comments.size}") { data.comments.forEach { Copy("${it.author}  ${it.date}"); Text(it.text) } }
+                if (data.related.isNotEmpty()) { Title("相关推荐"); data.related.filter(store::allowed).take(24).chunked(2).forEach { pair -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    pair.forEach { related -> MediaCard(related, Modifier.weight(1f)) { startActivity(Intent(this@PlayerActivity, PlayerActivity::class.java).putExtra("video", store.gson.toJson(related))) } }; if (pair.size == 1) Spacer(Modifier.weight(1f))
+                } } }
+            }
         }
     }
-    override fun onPause() { savePosition(); player?.pause(); super.onPause() }
-    override fun onStop() { savePosition(); if (::playerView.isInitialized) playerView.player = null; player?.release(); player = null; super.onStop() }
-
-    @Suppress("ClickableViewAccessibility")
-    private fun installGestures() {
-        val audio = getSystemService(AudioManager::class.java)
-        var startPosition = 0L; var downX = 0f; var downY = 0f; var mode = 0; var seekTo = 0L; var hold = false
-        var brightness = .5f; var volume = 0
+    private fun quality() { val options = detail?.streams ?: return; dialogs.choose("清晰度", options.map { it.label }, options.indexOf(stream)) { index ->
+        val start = player?.currentPosition ?: position; val playing = player?.playWhenReady ?: true
+        stream = options[index]; store.set("quality", stream!!.label); refreshed = false; open(stream!!, start, playing)
+    } }
+    private fun speed() { val rates = listOf(.25f, .5f, .75f, 1f, 1.25f, 1.5f, 2f, 3f); dialogs.choose("播放速度", rates.map { "${it}×" }, rates.indexOf(userRate)) { userRate = rates[it]; store.set("native_speed", userRate.toString()); player?.setPlaybackSpeed(userRate) } }
+    private fun download() { val options = detail?.streams ?: return; dialogs.choose("选择下载清晰度", options.map { it.label }) {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 40)
+        runCatching { app.playback.add(video, options[it]) }.onSuccess { toast("已加入下载，可在统一下载中心查看") }.onFailure(::showError)
+    } }
+    private fun applyFullscreen() {
+        val bars = WindowCompat.getInsetsController(window, window.decorView)
+        if (fullscreen) { val size = player?.videoSize; requestedOrientation = if (size != null && size.height > size.width) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE; bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE; bars.hide(WindowInsetsCompat.Type.systemBars()) }
+        else { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED; bars.show(WindowInsetsCompat.Type.systemBars()) }
+    }
+    private fun savePosition() { val exo = player ?: return; position = exo.currentPosition.coerceAtLeast(0); val duration = exo.duration.takeIf { it > 0 } ?: durationSeconds(video.duration) * 1000
+        store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000, quality = stream?.label.orEmpty(), site = video.site))
+    }
+    override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); outState.putBoolean("fullscreen", fullscreen); outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied); outState.putBoolean("resumePlay", player?.playWhenReady ?: resumePlay); super.onSaveInstanceState(outState) }
+    override fun onResume() { super.onResume(); window.decorView.post { if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && player == null && stream != null) open(stream!!, position, resumePlay) } }
+    override fun onPause() { resumePlay = player?.playWhenReady ?: resumePlay; savePosition(); player?.pause(); super.onPause() }
+    override fun onStop() { savePosition(); playerView?.player = null; player?.release(); player = null; engineRevision++; super.onStop() }
+    private fun gestureHint(value: String) { hintJob?.cancel(); hint = value; hintJob = lifecycleScope.launch { delay(1000); hint = "" } }
+    @Suppress("ClickableViewAccessibility") private fun installGestures(view: PlayerView) {
+        val audio = getSystemService(AudioManager::class.java); var start = 0L; var x = 0f; var y = 0f; var mode = 0; var seek = 0L; var hold = false; var brightness = .5f; var volume = 0
         val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean { downX = e.x; downY = e.y; startPosition = player?.currentPosition ?: 0; mode = 0; hold = false; brightness = window.attributes.screenBrightness.takeIf { it >= 0 } ?: .5f; volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC); return true }
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean { if (playerView.isControllerFullyVisible) playerView.hideController() else playerView.showController(); return true }
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                val width = playerView.width
-                when { e.x < width * .4f -> { player?.seekTo((startPosition - 10000).coerceAtLeast(0)); gestureHint("后退 10 秒") }
-                    e.x > width * .6f -> { player?.seekTo((startPosition + 10000).coerceAtMost(player?.duration?.takeIf { it > 0 } ?: Long.MAX_VALUE)); gestureHint("前进 10 秒") }
-                    else -> toggleFullscreen() }
-                return true
-            }
+            override fun onDown(e: MotionEvent): Boolean { x = e.x; y = e.y; start = player?.currentPosition ?: 0; mode = 0; hold = false; brightness = window.attributes.screenBrightness.takeIf { it >= 0 } ?: .5f; volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC); return true }
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean { controls = !controls; return true }
+            override fun onDoubleTap(e: MotionEvent): Boolean { when { e.x < view.width * .4f -> { player?.seekTo((start - 10000).coerceAtLeast(0)); gestureHint("后退 10 秒") }; e.x > view.width * .6f -> { player?.seekTo((start + 10000).coerceAtMost(player?.duration?.takeIf { it > 0 } ?: Long.MAX_VALUE)); gestureHint("前进 10 秒") }; else -> fullscreen = !fullscreen }; return true }
             override fun onLongPress(e: MotionEvent) { hold = true; player?.setPlaybackSpeed(2f); gestureHint("2× 临时倍速") }
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-                val dx = e2.x - downX; val dy = e2.y - downY
-                if (mode == 0 && (kotlin.math.abs(dx) > dp(12) || kotlin.math.abs(dy) > dp(12))) mode = if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) 1 else if (downX < playerView.width / 2) 2 else 3
+                val dx = e2.x - x; val dy = e2.y - y
+                if (mode == 0 && (kotlin.math.abs(dx) > dp(12) || kotlin.math.abs(dy) > dp(12))) mode = if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) 1 else if (x < view.width / 2f) 2 else 3
                 when (mode) {
-                    1 -> { val duration = player?.duration?.takeIf { it > 0 } ?: return true; seekTo = (startPosition + dx / playerView.width * 120000).toLong().coerceIn(0, duration); gestureHint(timeText(seekTo)) }
-                    2 -> { val value = (brightness - dy / playerView.height).coerceIn(.02f, 1f); window.attributes = window.attributes.apply { screenBrightness = value }; gestureHint("亮度 ${(value * 100).toInt()}%") }
-                    3 -> { val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC); val value = (volume - dy / playerView.height * max).toInt().coerceIn(0, max); audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0); gestureHint("音量 ${value * 100 / max.coerceAtLeast(1)}%") }
+                    1 -> { val duration = player?.duration?.takeIf { it > 0 } ?: return true; seek = (start + dx / view.width * 120000).toLong().coerceIn(0, duration); gestureHint(timeText(seek)) }
+                    2 -> { val value = (brightness - dy / view.height).coerceIn(.02f, 1f); window.attributes = window.attributes.apply { screenBrightness = value }; gestureHint("亮度 ${(value * 100).toInt()}%") }
+                    3 -> { val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC); val value = (volume - dy / view.height * max).toInt().coerceIn(0, max); audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0); gestureHint("音量 ${value * 100 / max.coerceAtLeast(1)}%") }
                 }; return true
             }
         })
-        playerView.setOnTouchListener { _, event ->
-            detector.onTouchEvent(event)
-            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
-                if (mode == 1 && event.actionMasked == MotionEvent.ACTION_UP) player?.seekTo(seekTo)
-                if (hold) { player?.setPlaybackSpeed(userRate); hold = false }
-                hint.postDelayed({ hint.visibility = View.GONE }, 700)
-            }
-            true
-        }
+        view.setOnTouchListener { _, event -> detector.onTouchEvent(event); if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) { if (mode == 1 && event.actionMasked == MotionEvent.ACTION_UP) player?.seekTo(seek); if (hold) { player?.setPlaybackSpeed(userRate); hold = false } }; true }
     }
-    private fun gestureHint(text: String) { hint.text = text; hint.visibility = View.VISIBLE }
 }

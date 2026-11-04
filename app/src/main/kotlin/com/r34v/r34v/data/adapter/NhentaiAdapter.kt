@@ -13,7 +13,7 @@ import okhttp3.Request
 /** Uses the site's documented public v2 API, not the retired /api/gallery endpoint. */
 class NhentaiAdapter(private val network: Network) : SiteAdapter {
     override val site = SiteRegistry.NHENTAI
-    override val capabilities = setOf(Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.CATEGORY, Capability.RANKING)
+    override val capabilities = setOf(Capability.DOWNLOAD, Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.CATEGORY, Capability.RANKING)
     override val creatorTitle = "画师"
     override val catalogueTitle = "画廊分类"
     override val sorts = listOf(Sort.NEWEST, Sort.POPULARITY)

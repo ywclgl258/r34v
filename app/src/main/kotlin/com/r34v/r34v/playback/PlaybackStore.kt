@@ -170,8 +170,13 @@ class VideoDownloadService : DownloadService(40, DEFAULT_FOREGROUND_NOTIFICATION
     private val notifications by lazy { DownloadNotificationHelper(this, "video-downloads") }
     override fun getDownloadManager() = app.playback.manager
     override fun getScheduler(): Scheduler = PlatformScheduler(this, 41)
-    override fun getForegroundNotification(downloads: MutableList<Download>, notMetRequirements: Int): Notification =
-        notifications.buildProgressNotification(this, android.R.drawable.stat_sys_download, null, "视频缓存", downloads, notMetRequirements)
+    override fun getForegroundNotification(downloads: MutableList<Download>, notMetRequirements: Int): Notification {
+        val open = android.app.PendingIntent.getActivity(this, 40,
+            android.content.Intent(this, com.r34v.r34v.MainActivity::class.java).putExtra("downloads", true)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+        return notifications.buildProgressNotification(this, android.R.drawable.stat_sys_download, open, "视频下载", downloads, notMetRequirements)
+    }
     override fun onTimeout(startId: Int, fgsType: Int) {
         app.playback.manager.pauseDownloads()
         stopSelf()

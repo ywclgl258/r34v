@@ -1,10 +1,16 @@
 ---
 project_id: r34v-android
 updated: 2026-11-04
-status: site-switch-tutorial-release-2.1.7
+status: unified-downloads-release-2.2.2
 ---
 
 # 当前续接入口
+
+**2.2.2 / 36 最新增量：** 漫画整本下载与视频下载合并到统一下载中心，支持暂停/续传、失败重试、删除、后台执行及离线打开，保留旧版视频文件与源站隔离。下载漫画独立持久保存，阅读临时清理不影响整本；删除事务不随页面离开取消。86项JVM、43项独立Android用例分批通过，14项实站探针跳过；375dp/200%字体和812dp横屏各6项、最终3项复测通过。Debug/Release Lint无错误；两份固定签名APK与开发包在dist，标准包覆盖安装2.2.1→2.2.2及下载中心启动通过。用户已授权提交、推送和上传，[发布入口 v2.2.2](https://github.com/ywclgl258/r34v/releases/tag/v2.2.2)，仅上传标准/兼容APK及校验和。见 [统一下载](unified-downloads.md) 与 [HANDOVER.md](HANDOVER.md)。
+
+**2.2.1 / 35 最新增量：** Netflix 沉浸式 Hero、黑色渐变、透明叠层/高光圆角、120×180dp 横向海报、真实继续观看/片单状态、轻量导航与紧凑字体落地；Coil AsyncImage 封面保留分站请求与系统代理。86项JVM、15项相关独立Android用例、375dp/200%字体及横屏检查通过，最终文本控件调整后7项复测通过。Debug/Release Lint无错误；标准与旧2.0.0兼容签名APK在dist，固定证书/继承链、版本/包名核验通过，标准包从2.2.0覆盖安装并冷启动成功。仅本地交付，未提交/推送/发布。见 [本轮记录](netflix-uiux-2026-11-04.md) 与 [HANDOVER.md](HANDOVER.md)。下方为此前迁移记录。
+
+**2.2.0 / 34 当前增量：** 全部应用界面迁移到Jetpack Compose + Material3，Media3画面和官方认证WebView各保留一处AndroidView。旧View组件及RecyclerView/DrawerLayout依赖已移除；站点协议、旧数据格式、语言筛选、连续预读/缩放/全屏、下载及更新签名能力保留。86项JVM、35项独立Android用例分批通过，14项实站探针按配置跳过，数量按XML去重复核；375dp/200%字体、1067dp平板和812dp横屏通过。修复并复测首屏轮播被滚动锚点跳过的问题。Debug/Release Lint无错误，两份固定签名APK在dist，正式标准包覆盖安装与重启切站验证通过。完整构建状态见 [HANDOVER.md](HANDOVER.md)，详细范围与证据见 [Compose说明](compose-migration.md)。本轮仅本地交付，未提交、推送或上传，下方为历史记录。
 
 **2.1.7 / 33 当前增量：** 全新安装首次进入首页时提供一次性站点切换提示，高亮真实入口，主操作打开原有站点抽屉。关闭、返回、重启、重建和切站均不重复；升级用户不弹出，首次离线照常提示。86项JVM、7项独立Android测试分批通过，375dp / 200%字体复跑及正式包安装、结束进程重启通过；Debug/Release Lint无错误。标准与旧2.0.0兼容APK在 `dist`，签名继承链及证书已核验。用户随后明确授权提交、推送与上传；发布版本为 [v2.1.7](https://github.com/ywclgl258/r34v/releases/tag/v2.1.7)。见 [教程说明](site-switch-tutorial.md) 与 [HANDOVER.md](HANDOVER.md)。下方为历史记录。
 

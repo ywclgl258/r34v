@@ -1,23 +1,26 @@
 package com.r34v.r34v
 
-import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.widget.ProgressBar
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
 import androidx.activity.ComponentActivity
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import com.google.gson.JsonParser
 import com.r34v.r34v.ui.showError
 import com.r34v.r34v.ui.toast
+import com.r34v.r34v.ui.ComposeDialogs
 import kotlinx.coroutines.*
 import okhttp3.Request
 import com.r34v.r34v.data.UpgradePackages
 import java.io.File
 
-class UpdateController(private val activity: ComponentActivity, private val app: R34Application) {
+class UpdateController(private val activity: ComponentActivity, private val app: R34Application, private val dialogs: ComposeDialogs) {
     suspend fun check(silent: Boolean) {
         if (BuildConfig.DEBUG) { if (!silent) activity.toast("当前是开发版，请使用 R34V 正式版接收更新"); return }
         try {
@@ -36,14 +39,17 @@ class UpdateController(private val activity: ComponentActivity, private val app:
             val filename = UpgradePackages.select(assets.map { it["name"].asString }, UpgradePackages.needsCompatibility(activity)) ?: error("此版本缺少适配当前安装签名的 APK，请稍后重试")
             val asset = assets.first { it["name"].asString == filename }
             if (activity.isFinishing || activity.isDestroyed) return
-            AlertDialog.Builder(activity).setTitle("新版本 $version").setMessage(release["body"]?.asString.orEmpty().take(1800)).setPositiveButton("下载") { _, _ ->
+            dialogs.confirm("新版本 $version", "下载", release["body"]?.asString.orEmpty().take(1800)) {
                 activity.lifecycleScope.launch { download(asset["browser_download_url"].asString, asset["size"].asLong) }
-            }.setNegativeButton("稍后", null).show()
+            }
         } catch (error: Exception) { if (error is CancellationException) throw error; if (!silent) activity.showError(error) }
     }
     private suspend fun download(url: String, expectedSize: Long) {
-        val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; isIndeterminate = true }
-        val dialog = AlertDialog.Builder(activity).setTitle("正在下载更新").setView(progress).setCancelable(false).create(); dialog.show()
+        var progress by mutableStateOf<Float?>(null)
+        dialogs.content = { AlertDialog({}, title = { Text("正在下载更新") }, text = {
+            val amount = progress
+            if (amount == null) LinearProgressIndicator() else LinearProgressIndicator(progress = { amount })
+        }, confirmButton = {}) }
         val file = File(activity.cacheDir, "updates/r34v-update.apk")
         try {
             withContext(Dispatchers.IO) {
@@ -57,7 +63,7 @@ class UpdateController(private val activity: ComponentActivity, private val app:
                         while (true) {
                             ensureActive(); val count = input.read(buffer); if (count < 0) break
                             output.write(buffer, 0, count); received += count
-                            if (expectedSize > 0) withContext(Dispatchers.Main) { progress.isIndeterminate = false; progress.progress = (received * 100 / expectedSize).toInt() }
+                            if (expectedSize > 0) withContext(Dispatchers.Main) { progress = (received.toFloat() / expectedSize).coerceIn(0f, 1f) }
                         }
                     } }
                     check(expectedSize <= 0 || received == expectedSize) { "安装包不完整，请重新下载" }
@@ -65,9 +71,9 @@ class UpdateController(private val activity: ComponentActivity, private val app:
                 }
                 UpgradePackages.validate(activity, file)
             }
-            dialog.dismiss()
-            AlertDialog.Builder(activity).setTitle("更新已下载").setPositiveButton("安装") { _, _ -> install(file) }.setNegativeButton("稍后", null).show()
-        } catch (error: Exception) { dialog.dismiss(); if (error is CancellationException) throw error; activity.showError(error) }
+            dialogs.dismiss()
+            dialogs.confirm("更新已下载", "安装") { install(file) }
+        } catch (error: Exception) { dialogs.dismiss(); if (error is CancellationException) throw error; activity.showError(error) }
     }
     private fun install(file: File) {
         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {

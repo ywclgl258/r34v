@@ -15,15 +15,21 @@ import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 
-/** Cache opened pages and the reader's bounded pre-read window; no whole-gallery downloads. */
+/** Bounded reading cache and separate, persistent whole-book downloads. */
 class GalleryRepository(private val context: Context, private val network: Network) {
     data class RenderedPage(val image: GalleryImage, val bitmap: Bitmap, val cached: Boolean)
     private data class KnownPages(val links: Map<Int, String> = emptyMap())
     private val gson = Gson()
     private fun directory(site: SiteContext) = File(context.filesDir, "gallery-cache/${site.id}").apply { mkdirs() }
+    private fun bookDirectory(entry: Video): File {
+        val site = SiteRegistry.byId(entry.site) ?: error("未知漫画站点")
+        require(site.mediaKind == MediaKind.GALLERY && entry.id.isNotBlank())
+        return File(context.filesDir, "gallery-downloads/${site.id}/${key(entry.id)}")
+    }
     private fun key(url: String) = MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
     private fun <T> read(file: File, type: Class<T>): T? = runCatching { gson.fromJson(file.readText(), type) }.getOrNull()
     private fun write(file: File, bytes: ByteArray) {
+        check(file.parentFile!!.isDirectory || file.parentFile!!.mkdirs()) { "无法创建下载目录" }
         val temporary = File(file.parentFile, "${file.name}.${System.nanoTime()}.part")
         try {
             temporary.writeBytes(bytes)
@@ -31,7 +37,12 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         } finally { temporary.delete() }
     }
 
-    suspend fun detail(entry: Video): GalleryDetail = withContext(Dispatchers.IO) {
+    suspend fun detail(entry: Video, offlineOnly: Boolean = false): GalleryDetail = withContext(Dispatchers.IO) {
+        val downloaded = read(File(bookDirectory(entry), "book.json"), GalleryDetail::class.java)
+        if (offlineOnly) {
+            check(isDownloaded(entry) && downloaded != null) { "漫画下载不完整，请在下载中心继续下载" }
+            return@withContext downloaded.copy(cached = true)
+        }
         val site = SiteRegistry.byIdOrDefault(entry.site)
         val file = File(directory(site), "${key(entry.url)}.gallery.json")
         val previous = read(file, GalleryDetail::class.java)
@@ -40,13 +51,74 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             if (error is GalleryLoginRequiredException) throw error
-            if (previous != null && (error is IOException || error is GalleryAccessException)) previous.copy(cached = true) else throw error
+            val saved = downloaded ?: previous
+            if (saved != null && (error is IOException || error is GalleryAccessException)) saved.copy(cached = true) else throw error
         }
     }
 
-    fun cachedPageUrl(entry: Video, page: Int): String? = read(
+    fun cachedPageUrl(entry: Video, page: Int): String? = read(File(bookDirectory(entry), "links.json"), KnownPages::class.java)?.links?.get(page) ?: read(
         File(directory(SiteRegistry.byIdOrDefault(entry.site)), "${key(entry.url)}.links.json"), KnownPages::class.java
     )?.links?.get(page)
+
+    @Synchronized private fun rememberDownloadPage(entry: Video, image: GalleryImage) {
+        val file = File(bookDirectory(entry), "links.json")
+        val links = read(file, KnownPages::class.java)?.links.orEmpty() + (image.index to image.pageUrl)
+        write(file, gson.toJson(KnownPages(links)).toByteArray())
+    }
+
+    fun isDownloaded(entry: Video) = File(bookDirectory(entry), "complete").isFile
+
+    suspend fun prepareDownload(entry: Video): GalleryDetail = withContext(Dispatchers.IO) {
+        val folder = bookDirectory(entry)
+        folder.listFiles().orEmpty().filter { it.name.endsWith(".part") }.forEach { it.delete() }
+        val file = File(folder, "book.json")
+        val gallery = read(file, GalleryDetail::class.java) ?: detail(entry)
+        check(gallery.pageCount > 0) { "漫画没有可下载的图页" }
+        check(gallery.entry.id == entry.id && gallery.entry.site == entry.site) { "画廊身份不匹配" }
+        write(file, gson.toJson(gallery).toByteArray())
+        gallery
+    }
+
+    /** Save raw image files; a batch download must not decode every page into a bitmap. */
+    suspend fun downloadPage(entry: Video, index: Int, pageUrl: String): Pair<GalleryImage, Long> = withContext(Dispatchers.IO) {
+        val site = SiteRegistry.byIdOrDefault(entry.site)
+        val folder = bookDirectory(entry)
+        val id = key(pageUrl.substringBefore('?'))
+        val imageFile = File(folder, "$id.image")
+        val metadataFile = File(folder, "$id.page.json")
+        val stored = read(metadataFile, GalleryImage::class.java)
+        if (stored?.index == index && imageFile.isFile && validImage(imageFile.readBytes())) {
+            rememberDownloadPage(entry, stored)
+            return@withContext stored to imageFile.length()
+        }
+        val cachedFolder = directory(site)
+        val cachedImage = File(cachedFolder, "$id.image")
+        val cachedMeta = read(File(cachedFolder, "$id.page.json"), GalleryImage::class.java)
+        val cachedBytes = if (cachedMeta?.index == index && cachedImage.isFile) cachedImage.readBytes().takeIf(::validImage) else null
+        val image = if (cachedBytes != null) cachedMeta!! else AdapterRegistry.adapter(site, network).galleryImage(pageUrl)
+        check(image.index == index) { "原站返回了错误的图页编号" }
+        val bytes = cachedBytes ?: imageBytes(site, image)
+        check(validImage(bytes)) { "图源未返回可识别的图片，请重试下载" }
+        val normalized = image.copy(pageUrl = pageUrl)
+        write(imageFile, bytes)
+        write(metadataFile, gson.toJson(normalized).toByteArray())
+        rememberDownloadPage(entry, normalized)
+        normalized to bytes.size.toLong()
+    }
+
+    suspend fun finishDownload(entry: Video, count: Int) = withContext(Dispatchers.IO) {
+        val folder = bookDirectory(entry)
+        val links = read(File(folder, "links.json"), KnownPages::class.java)?.links.orEmpty()
+        check((1..count).all { page -> links[page]?.let { File(folder, "${key(it.substringBefore('?'))}.image").isFile } == true }) { "漫画下载尚未完整保存" }
+        write(File(folder, "complete"), count.toString().toByteArray())
+    }
+
+    suspend fun removeDownload(entry: Video) = withContext(Dispatchers.IO) {
+        val folder = bookDirectory(entry)
+        val root = File(context.filesDir, "gallery-downloads").canonicalFile
+        check(folder.canonicalPath.startsWith(root.path + File.separator))
+        check(!folder.exists() || folder.deleteRecursively()) { "部分下载图页无法删除，请重试" }
+    }
 
     @Synchronized private fun rememberPage(site: SiteContext, galleryUrl: String?, image: GalleryImage) {
         if (galleryUrl == null) return
@@ -55,7 +127,18 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         write(file, gson.toJson(KnownPages(links)).toByteArray())
     }
 
-    suspend fun page(site: SiteContext, pageUrl: String, force: Boolean = false, galleryUrl: String? = null): RenderedPage = withContext(Dispatchers.IO) {
+    suspend fun page(site: SiteContext, pageUrl: String, force: Boolean = false, galleryUrl: String? = null, entry: Video? = null, offlineOnly: Boolean = false): RenderedPage = withContext(Dispatchers.IO) {
+        if (entry != null) {
+            require(entry.site == site.id)
+            val folder = bookDirectory(entry)
+            val id = key(pageUrl.substringBefore('?'))
+            val image = read(File(folder, "$id.page.json"), GalleryImage::class.java)
+            val file = File(folder, "$id.image")
+            if ((offlineOnly || !force) && image != null && file.isFile) {
+                return@withContext RenderedPage(image, decode(file.readBytes()), true)
+            }
+        }
+        check(!offlineOnly) { "下载图页缺失，请在下载中心重新下载；离线阅读不会连接网络" }
         val folder = directory(site)
         val id = key(pageUrl.substringBefore('?'))
         val metadataFile = File(folder, "$id.page.json")
@@ -71,7 +154,15 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         val requestUrl = if (force) previous?.reloadUrl ?: pageUrl else pageUrl
         val image = AdapterRegistry.adapter(site, network).galleryImage(requestUrl)
         write(metadataFile, gson.toJson(image.copy(pageUrl = pageUrl)).toByteArray())
-        val bytes = network.client.readResponse(Request.Builder().url(image.imageUrl).tag(SiteContext::class.java, site)
+        val bytes = imageBytes(site, image)
+        val bitmap = decode(bytes)
+        write(imageFile, bytes)
+        rememberPage(site, galleryUrl, image.copy(pageUrl = pageUrl))
+        trim(folder)
+        RenderedPage(image.copy(pageUrl = pageUrl), bitmap, false)
+    }
+    private suspend fun imageBytes(site: SiteContext, image: GalleryImage): ByteArray =
+        network.client.readResponse(Request.Builder().url(image.imageUrl).tag(SiteContext::class.java, site)
             .header("Referer", image.pageUrl.substringBefore('#')).header("Cache-Control", "no-store").build()) { response ->
             if (response.code == 509) throw GalleryAccessException("原站图片配额已用尽，请稍后重试")
             check(response.isSuccessful) { "图片读取失败：HTTP ${response.code}，可重试更换图源" }
@@ -88,12 +179,9 @@ class GalleryRepository(private val context: Context, private val network: Netwo
                 output.toByteArray()
             }
         }
-        val bitmap = decode(bytes)
-        write(imageFile, bytes)
-        rememberPage(site, galleryUrl, image.copy(pageUrl = pageUrl))
-        trim(folder)
-        RenderedPage(image.copy(pageUrl = pageUrl), bitmap, false)
-    }
+    private fun validImage(bytes: ByteArray): Boolean = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true; BitmapFactory.decodeByteArray(bytes, 0, bytes.size, this)
+    }.let { bytes.size <= 24 * 1024 * 1024 && it.outWidth > 0 && it.outHeight > 0 }
     private fun decode(bytes: ByteArray): Bitmap {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)

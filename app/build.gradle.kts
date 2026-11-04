@@ -3,7 +3,7 @@ import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
 
-plugins { id("com.android.application") }
+plugins { id("com.android.application"); id("org.jetbrains.kotlin.plugin.compose") }
 
 val signingHome = System.getenv("R34V_SIGNING_HOME")?.takeIf { it.isNotBlank() }?.let(::File)
     ?: File(System.getProperty("user.home"), ".r34v/signing")
@@ -32,7 +32,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures { buildConfig = true; resValues = true }
+    buildFeatures { buildConfig = true; resValues = true; compose = true }
     signingConfigs {
         if (releaseKey != null) create("release") {
             storeFile = releaseKey
@@ -107,11 +107,22 @@ val signUpgradeRelease = tasks.register("signUpgradeRelease") {
 tasks.matching { it.name == "assembleRelease" }.configureEach { dependsOn(signUpgradeRelease) }
 
 dependencies {
+    implementation(platform("androidx.compose:compose-bom:2025.08.01"))
+    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material3:material3")
+    implementation("io.coil-kt.coil3:coil-compose:3.3.0")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2025.08.01"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     implementation("androidx.activity:activity-ktx:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("androidx.recyclerview:recyclerview:1.3.0")
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jsoup:jsoup:1.18.3")

@@ -150,10 +150,10 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     }.getOrDefault(emptyList())
     @Synchronized private fun write(key: String, value: Any) { prefs.edit().putString(key, gson.toJson(value)).apply() }
 
-    fun history() = list(k("watch_history_v1"), Watch::class.java).filter { it.id.isNotBlank() }.sortedByDescending { it.at }
-    fun watch(id: String) = history().firstOrNull { it.id == id }
+    fun history(siteId: String = this.siteId) = list("$siteId:watch_history_v1", Watch::class.java).filter { it.id.isNotBlank() }.sortedByDescending { it.at }
+    fun watch(id: String, siteId: String = this.siteId) = history(siteId).firstOrNull { it.id == id }
     @Synchronized fun saveWatch(watch: Watch) =
-        write(k("watch_history_v1"), (listOf(watch.copy(site = siteId)) + history().filter { it.id != watch.id }).take(500))
+        write("${watch.site}:watch_history_v1", (listOf(watch) + history(watch.site).filter { it.id != watch.id }).take(500))
     @Synchronized fun removeWatch(id: String) = write(k("watch_history_v1"), history().filter { it.id != id })
     fun clearHistory() = prefs.edit().remove(k("watch_history_v1")).apply()
 
@@ -201,12 +201,12 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     fun set(name: String, value: String) = prefs.edit().putString("settings_v1_$name", value).apply()
     fun set(name: String, value: Boolean) = prefs.edit().putBoolean("settings_v1_$name", value).apply()
 
-    fun localVideos() = list(k("video_cache_v1"), LocalVideo::class.java).filter { item ->
+    fun localVideos(siteId: String = this.siteId) = list("$siteId:video_cache_v1", LocalVideo::class.java).filter { item ->
         runCatching { File(item.path).canonicalFile.let { it.path.startsWith(dataDir.path + File.separator) && it.isFile } }.getOrDefault(false)
     }
-    fun removeLocal(id: String) {
-        localVideos().firstOrNull { it.id == id }?.let { File(it.path).delete() }
-        write(k("video_cache_v1"), localVideos().filter { it.id != id })
+    fun removeLocal(id: String, siteId: String = this.siteId) {
+        localVideos(siteId).firstOrNull { it.id == id }?.let { File(it.path).delete() }
+        write("$siteId:video_cache_v1", localVideos(siteId).filter { it.id != id })
     }
 
     var username: String

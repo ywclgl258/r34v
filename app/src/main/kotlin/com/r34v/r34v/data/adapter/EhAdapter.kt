@@ -17,7 +17,7 @@ class GalleryLoginRequiredException(message: String) : GalleryAccessException(me
 
 /** Independent parser for the live gallery HTML; no EhViewer application code is bundled. */
 class EhAdapter(override val site: SiteContext, private val network: Network) : SiteAdapter {
-    override val capabilities = setOf(Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.CATEGORY, Capability.RANKING, Capability.SESSION_IMPORT)
+    override val capabilities = setOf(Capability.DOWNLOAD, Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.CATEGORY, Capability.RANKING, Capability.SESSION_IMPORT)
     override val sorts = listOf(Sort.NEWEST)
     override val catalogueTitle = "画廊分类"
     override val sections = listOf(
