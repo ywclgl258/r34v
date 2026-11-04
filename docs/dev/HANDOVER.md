@@ -1,11 +1,21 @@
 ---
 project_id: r34v-android
 updated: 2026-11-04
-status: comic-language-strip-verified-release
-scope: 漫画语言分类、紧凑切站、条漫连续阅读
+status: reader-controls-prefetch-release-2.1.6
+scope: 漫画全屏菜单、单排语言栏、连续预读、视频选择器排版
 ---
 
-# 漫画语言分类、紧凑切站与条漫阅读（最新，2026-11-04）
+# 漫画全屏菜单、连续预读与控件修复（最新，2026-11-04）
+
+2.1.6 / 32：漫画可单击画面隐藏/恢复上下菜单，顶栏增加明确的全屏按钮，隐藏菜单时同时隐藏系统栏；返回键先恢复菜单，重建保留全屏和页内位置。阅读时连续预读后面三页，最多两个并发，额外屏外解码图像不超过24MiB，跳页取消旧范围，预读不推进历史。
+
+语言栏改为48dp单排短标签，下滑收起、上滑/回顶部显示；大字体可横滑，不折行。视频清晰度/倍速按钮修复背景覆盖内边距导致的贴边排版，统一文字、箭头和触控高度；选择行为继续正常。
+
+86项JVM通过，相关Android UI与播放回归分批验证，Debug/Release Lint无错误；签名包由仓库Gradle构建。交付 `dist/R34V-v2.1.6-android.apk` 和 `dist/R34V-v2.1.6-compat-2.0.0.apk`。用户随后明确授权提交、推送与上传；发布入口为 [v2.1.6](https://github.com/ywclgl258/r34v/releases/tag/v2.1.6)。说明见 [reader-controls-prefetch.md](reader-controls-prefetch.md)，截图见本地 `dist/reader-ui-2.1.6/`。以下为前轮记录。
+
+---
+
+# 漫画语言分类、紧凑切站与条漫阅读（2026-11-04）
 
 四个漫画站新增全部/中文/日文/中日合并筛选，按站点保存，应用到首页、分类、搜索和翻页。顶栏改为小号站名与箭头，抽屉删除重复域名。阅读器改为按宽度连续滚动，保留缩放、跳页和离线已读缓存，增加页内位置恢复；仅附着页加载，离屏取消请求并释放图片。实现和来源见 [comic-language-strip.md](comic-language-strip.md)。
 

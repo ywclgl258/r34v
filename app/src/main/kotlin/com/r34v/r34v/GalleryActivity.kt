@@ -6,11 +6,14 @@ import android.os.Bundle
 import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
+import android.view.View
 import android.widget.*
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.r34v.r34v.data.*
 import com.r34v.r34v.data.adapter.GalleryLoginRequiredException
@@ -32,6 +35,9 @@ class GalleryActivity : ComponentActivity() {
     private var stripOffset = 0
     private lateinit var pageLabel: TextView
     private lateinit var seek: SeekBar
+    private var readerToolbar: View? = null
+    private var readerControls: View? = null
+    private var controlsVisible = true
     private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) load(reading)
     }
@@ -50,24 +56,35 @@ class GalleryActivity : ComponentActivity() {
         page = savedInstanceState?.getInt("page") ?: store.reading(entry.id, site.id)?.page ?: 1
         stripOffset = savedInstanceState?.getInt("stripOffset") ?: store.reading(entry.id, site.id)?.offset ?: 0
         val resume = savedInstanceState?.getBoolean("reading") ?: intent.getBooleanExtra("read", false)
+        controlsVisible = savedInstanceState?.getBoolean("controlsVisible") ?: true
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         root = column().apply { setBackgroundColor(Palette.canvas) }
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
+            val types = WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime() or
+                if (reading && !controlsVisible) 0 else WindowInsetsCompat.Type.systemBars()
+            val bars = insets.getInsets(types)
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
         }
         setContentView(root)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() { if (reading) overview() else finish() }
+            override fun handleOnBackPressed() {
+                when { reading && !controlsVisible -> setReaderControlsVisible(true); reading -> overview(); else -> finish() }
+            }
         })
         if (site.id == SiteRegistry.EXHENTAI.id && !app.network.session.hasGallerySession(site)) loginGate() else load(resume)
     }
     override fun onSaveInstanceState(outState: Bundle) {
         strip?.savePosition()
         outState.putInt("page", page); outState.putInt("stripOffset", stripOffset); outState.putBoolean("reading", reading)
+        outState.putBoolean("controlsVisible", controlsVisible)
         super.onSaveInstanceState(outState)
     }
     override fun onStop() { strip?.savePosition(); super.onStop() }
     override fun onDestroy() { strip?.release(); pageJob?.cancel(); super.onDestroy() }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && reading && !controlsVisible) applyReaderControls()
+    }
     private fun toolbar(title: String) = row().apply {
         minimumHeight = dp(56); setPadding(dp(8), dp(4), dp(16), dp(4))
         addView(iconAction(R.drawable.ic_back, "返回") { onBackPressedDispatcher.onBackPressed() })
@@ -91,6 +108,7 @@ class GalleryActivity : ComponentActivity() {
     private fun overview() {
         strip?.savePosition(); strip?.release(); strip = null
         pageJob?.cancel(); reading = false
+        controlsVisible = true; applyReaderControls()
         val gallery = detail ?: return
         root.removeAllViews(); root.addView(toolbar(site.name))
         val content = column(20)
@@ -130,17 +148,21 @@ class GalleryActivity : ComponentActivity() {
         val gallery = detail ?: return
         reading = true
         strip?.release()
-        root.removeAllViews(); root.addView(toolbar(entry.title))
-        val reader = ComicStripView(this, gallery.pageCount, lifecycleScope, ::loadStripPage) { current, image, scrollOffset ->
+        root.removeAllViews()
+        readerToolbar = toolbar(entry.title).apply {
+            addView(iconAction(R.drawable.ic_fullscreen, "全屏阅读") { setReaderControlsVisible(false) })
+        }.also { root.addView(it) }
+        val reader = ComicStripView(this, gallery.pageCount, lifecycleScope, ::loadStripPage, { current, image, scrollOffset ->
             page = current; stripOffset = scrollOffset
             pageLabel.text = "$page / ${gallery.pageCount}"; seek.progress = page - 1
             if (image != null) store.saveReading(ReadingProgress(entry, page, gallery.pageCount, image.pageUrl, offset = scrollOffset))
-        }
+        }, { setReaderControlsVisible(!controlsVisible) })
         strip = reader
         root.addView(reader, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(row().apply {
+        val controls = column()
+        controls.addView(row().apply {
             setPadding(dp(12), dp(6), dp(12), dp(6))
-            addView(label("上下滑动连续阅读", 13f, Palette.muted), LinearLayout.LayoutParams(0, -2, 1f))
+            addView(label("单击画面隐藏菜单", 13f, Palette.muted), LinearLayout.LayoutParams(0, -2, 1f))
             pageLabel = label("", 14f, Palette.text, true).apply {
                 gravity = Gravity.CENTER; minimumHeight = dp(48); minimumWidth = dp(48)
                 background = controlBackground(android.graphics.Color.TRANSPARENT)
@@ -156,9 +178,27 @@ class GalleryActivity : ComponentActivity() {
                 override fun onStopTrackingTouch(seekBar: SeekBar) { reader.scrollToPage(seekBar.progress + 1) }
             })
         }
-        root.addView(seek, LinearLayout.LayoutParams(-1, dp(48)))
+        controls.addView(seek, LinearLayout.LayoutParams(-1, dp(48)))
+        readerControls = controls; root.addView(controls)
+        applyReaderControls()
         pageLabel.text = "$target / ${gallery.pageCount}"; seek.progress = target - 1
         reader.scrollToPage(target, offset)
+    }
+    private fun setReaderControlsVisible(visible: Boolean) {
+        if (!reading || controlsVisible == visible) return
+        val reader = strip ?: return
+        val anchor = reader.currentPage; val offset = reader.readingOffset
+        controlsVisible = visible; applyReaderControls()
+        reader.post { if (strip === reader) reader.scrollToPage(anchor, offset) }
+    }
+    private fun applyReaderControls() {
+        val fullscreen = reading && !controlsVisible
+        readerToolbar?.visibility = if (fullscreen) View.GONE else View.VISIBLE
+        readerControls?.visibility = if (fullscreen) View.GONE else View.VISIBLE
+        val bars = WindowCompat.getInsetsController(window, root)
+        bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (fullscreen) bars.hide(WindowInsetsCompat.Type.systemBars()) else bars.show(WindowInsetsCompat.Type.systemBars())
+        ViewCompat.requestApplyInsets(root)
     }
     private suspend fun loadStripPage(target: Int, force: Boolean): GalleryRepository.RenderedPage {
         val gallery = detail ?: error("画廊信息尚未载入")

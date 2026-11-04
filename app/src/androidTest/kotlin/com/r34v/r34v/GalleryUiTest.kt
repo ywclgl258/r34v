@@ -73,7 +73,13 @@ class GalleryUiTest {
     private fun editableNodes(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> =
         (if (node.isEditable) listOf(node) else emptyList()) + (0 until node.childCount).flatMap { index -> node.getChild(index)?.let(::editableNodes).orEmpty() }
     private fun type(value: String) {
-        val edit = editableNodes(ins.uiAutomation.rootInActiveWindow).single()
+        val deadline = SystemClock.uptimeMillis() + 5000
+        var edit: AccessibilityNodeInfo? = null
+        while (edit == null && SystemClock.uptimeMillis() < deadline) {
+            edit = ins.uiAutomation.rootInActiveWindow?.let(::editableNodes)?.singleOrNull()
+            if (edit == null) Thread.sleep(50)
+        }
+        checkNotNull(edit) { "Editable input did not become accessible" }
         assertTrue(edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value) }))
         ins.waitForIdleSync()
     }
@@ -150,6 +156,10 @@ class GalleryUiTest {
             }
             assertTrue(cookieReady.await(5, java.util.concurrent.TimeUnit.SECONDS))
             tap("验证登录")
+            ins.runOnMainSync {
+                val web = nodes(activity().window.decorView).filterIsInstance<android.webkit.WebView>().single()
+                web.webViewClient.onPageFinished(web, "${SiteRegistry.EXHENTAI.base}/")
+            }
             waitUi("Denied EX permission was not explained") { nodes(activity().window.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("尚无 ExHentai 访问权限") } }
             ins.runOnMainSync {
                 val web = nodes(activity().window.decorView).filterIsInstance<android.webkit.WebView>().single()
@@ -194,16 +204,16 @@ class GalleryUiTest {
             store.switchSite("r34v")
             ins.startActivitySync(Intent(ins.targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
             waitUi("Initial home missing") { text("最新视频") }
-            fixture.listGate = java.util.concurrent.CountDownLatch(1)
+            fixture.listGate = null
             switchTo(SiteRegistry.R34V, SiteRegistry.NHENTAI)
-            field.set(app.network, client); fixture.listGate!!.countDown()
+            field.set(app.network, client)
             waitUi("nhentai gallery list missing") { text("City sketchbook") }
             fixture.nhLanguages = mapOf("chinese" to listOf(8800), "japanese" to listOf(8801))
             tap("仅中文")
             waitUi("Chinese home filter did not reach the API") { fixture.requests.any { it.url.queryParameter("query") == "language:chinese" } && text("City sketchbook") }
             ins.runOnMainSync { activity().recreate() }
             waitUi("Language selection did not survive recreation") {
-                nodes(activity().window.decorView).any { it is TextView && it.text.toString() == "仅中文" && it.isSelected } && text("City sketchbook")
+                nodes(activity().window.decorView).any { it is TextView && it.contentDescription?.toString() == "仅中文" && it.isSelected } && text("City sketchbook")
             }
             tap("发现"); tap("漫画")
             waitUi("Language filter was dropped from category") { fixture.requests.any { it.url.queryParameter("query") == "category:manga language:chinese" } && text("City sketchbook") }
@@ -237,9 +247,9 @@ class GalleryUiTest {
             assertEquals(images, fixture.requests.count { it.url.host == "i1.nhentai.net" })
             back(); back(); fixture.offline = false
             waitUi("Main did not resume before switching") { activity() is MainActivity }
-            fixture.listGate = java.util.concurrent.CountDownLatch(1)
+            fixture.listGate = null
             switchTo(SiteRegistry.NHENTAI, SiteRegistry.HITOMI)
-            field.set(app.network, client); fixture.listGate!!.countDown()
+            field.set(app.network, client)
             waitUi("Hitomi gallery list missing") { text("City sketchbook") }
             waitUi("Gallery must use a masonry layout") {
                 nodes(activity().window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().any {
@@ -252,6 +262,21 @@ class GalleryUiTest {
                 assertTrue("Covers should retain different aspect ratios", covers.map { it.height }.distinct().size > 1)
             }
             assertTrue(store.readings().isEmpty()); assertFalse(store.isFavorite("gallery", "8800"))
+            ins.runOnMainSync {
+                val bar = nodes(activity().window.decorView).filterIsInstance<com.r34v.r34v.ui.GalleryLanguageBar>().single()
+                val buttons = nodes(bar).filterIsInstance<android.widget.Button>()
+                assertEquals(4, buttons.size)
+                assertEquals(1, buttons.map { it.top }.distinct().size)
+                assertTrue("Language row is too tall", bar.height <= activity().resources.displayMetrics.density * 48 + 1)
+                nodes(activity().window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().first().scrollBy(0, activity().resources.displayMetrics.heightPixels / 3)
+            }
+            waitUi("Language row did not hide while scrolling down") { nodes(activity().window.decorView).filterIsInstance<com.r34v.r34v.ui.GalleryLanguageBar>().single().visibility == View.GONE }
+            shot("languages-hidden-on-scroll")
+            ins.runOnMainSync { nodes(activity().window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().first().scrollBy(0, -activity().resources.displayMetrics.heightPixels / 5) }
+            waitUi("Language row did not return on upward scroll") {
+                nodes(activity().window.decorView).filterIsInstance<com.r34v.r34v.ui.GalleryLanguageBar>().single().let { it.visibility == View.VISIBLE && it.height >= activity().resources.displayMetrics.density * 47 }
+            }
+            ins.runOnMainSync { nodes(activity().window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().first().scrollToPosition(0) }
             shot("hitomi-01-home")
             ins.runOnMainSync { activity().requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }
             waitUi("Masonry did not adapt to landscape") {
@@ -340,19 +365,41 @@ class GalleryUiTest {
             waitUi("Gallery detail did not open") { activity() is GalleryActivity && text("开始阅读") }
             shot("02-gallery-detail")
             tap("收藏画廊"); assertTrue(store.isFavorite("gallery", "8888"))
+            fixture.quotaPage = 3
             tap("开始阅读")
             waitUi("Page one did not render") { store.reading("8888")?.page == 1 && nodes(activity().window.decorView).filterIsInstance<ZoomPageView>().any { it.drawable != null } }
+            waitUi("Future pages were not pre-read before scrolling") { fixture.requests.any { it.url.encodedPath == "/s/a4/8888-4" } }
+            assertEquals("Pre-reading must not advance history", 1, store.reading("8888")!!.page)
+            assertTrue("Pre-reading fetched beyond its window", fixture.requests.none { it.url.encodedPath == "/s/a5/8888-5" })
             assertTrue("The strip eagerly loaded the whole book", fixture.requests.count { it.url.host == "sample.hath.network" } < 5)
-            fixture.quotaPage = 3
+            var inlineHeight = 0
+            ins.runOnMainSync { inlineHeight = nodes(activity().window.decorView).filterIsInstance<com.r34v.r34v.ui.ComicStripView>().single().height }
+            tap("全屏阅读")
+            waitUi("Reading controls did not hide for fullscreen") {
+                !text("1 / 5") && nodes(activity().window.decorView).filterIsInstance<com.r34v.r34v.ui.ComicStripView>().single().height > inlineHeight &&
+                    androidx.core.view.ViewCompat.getRootWindowInsets(activity().window.decorView)?.isVisible(androidx.core.view.WindowInsetsCompat.Type.systemBars()) == false
+            }
+            shot("reader-fullscreen")
+            ins.runOnMainSync { activity().recreate() }
+            waitUi("Fullscreen was lost on recreation") { activity() is GalleryActivity && !text("1 / 5") && nodes(activity().window.decorView).filterIsInstance<ZoomPageView>().any { it.drawable != null } }
+            tap("漫画第 1 页，双击或双指缩放")
+            waitUi("Single tap did not restore reading controls") { text("1 / 5") }
+            tap("漫画第 1 页，双击或双指缩放")
+            waitUi("Single tap did not hide reading controls") { !text("1 / 5") }
+            back()
+            waitUi("Back should restore controls before leaving the reader") { activity() is GalleryActivity && text("1 / 5") }
             val imageBounds = bounds("漫画第 1 页，双击或双指缩放")
             tap(imageBounds); Thread.sleep(80); tap(imageBounds)
             waitUi("Double tap zoom did not work") { nodes(activity().window.decorView).filterIsInstance<ZoomPageView>().any { it.isZoomed } }
+            ins.runOnMainSync { assertTrue("Double tap unexpectedly hid menus", text("1 / 5")) }
             shot("03-reader-zoom")
             tap(imageBounds); Thread.sleep(80); tap(imageBounds)
             waitUi("Double tap did not restore strip scrolling") { nodes(activity().window.decorView).filterIsInstance<ZoomPageView>().none { it.isZoomed } }
             swipeReader(); swipeReader(); waitUi("Vertical scrolling did not advance the reading progress") { (store.reading("8888")?.page ?: 0) >= 2 }
             ins.runOnMainSync { nodes(activity().window.decorView).filterIsInstance<com.r34v.r34v.ui.ComicStripView>().single().scrollToPage(2, -120) }
             waitUi("Strip did not save the within-page offset") { store.reading("8888")?.let { it.page == 2 && kotlin.math.abs(it.offset + 120) < 5 } == true }
+            waitUi("Pre-reading window did not advance with the current page") { fixture.requests.any { it.url.encodedPath == "/s/a5/8888-5" } }
+            assertEquals("Pre-read/visible page fetched the same image twice", 1, fixture.requests.count { it.url.encodedPath == "/s/a2/8888-2" })
             ins.runOnMainSync { activity().recreate() }
             waitUi("Strip position did not survive recreation") {
                 text("2 / 5") && nodes(activity().window.decorView).filterIsInstance<com.r34v.r34v.ui.ComicStripView>().singleOrNull()?.let {
@@ -394,7 +441,7 @@ class GalleryUiTest {
             waitUi("Ex page did not render") { store.reading("8888", "exhentai")?.page == 1 }
             assertEquals(3, store.reading("8888", "ehentai")!!.page)
             assertTrue(store.isFavorite("gallery", "8888", "ehentai")); assertFalse(store.isFavorite("gallery", "8888", "exhentai"))
-            assertEquals("https://exhentai.org/s/a1/8888-1", fixture.requests.last { it.url.host == "sample.hath.network" }.header("Referer"))
+            assertEquals("https://exhentai.org/s/a1/8888-1", fixture.requests.first { it.url.host == "sample.hath.network" && it.url.encodedPath == "/page1.png" && it.header("Referer")?.startsWith("https://exhentai.org/") == true }.header("Referer"))
             shot("07-exhentai-reader")
         } finally {
             runCatching { shot("08-final") }

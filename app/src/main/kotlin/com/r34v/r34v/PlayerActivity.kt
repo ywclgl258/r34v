@@ -240,8 +240,11 @@ class PlayerActivity : ComponentActivity() {
         if (stream != null || detail != null) {
             content.space(8)
             content.addView(FlowLayout(this).apply {
-                addView(choiceAction("${stream?.label ?: "清晰度"}") { quality() }.apply { isEnabled = detail?.streams?.isNotEmpty() == true })
-                addView(choiceAction("${userRate}×") { speed() })
+                addView(choiceAction("${stream?.label ?: "清晰度"}") { quality() }.apply {
+                    isEnabled = detail?.streams?.isNotEmpty() == true
+                    contentDescription = "清晰度，当前 ${stream?.label ?: "尚未加载"}"
+                })
+                addView(choiceAction("${userRate}×") { speed() }.apply { contentDescription = "播放速度，当前 ${userRate} 倍" })
                 val more = iconAction(R.drawable.ic_more, "更多播放操作") {}
                 more.setOnClickListener { playbackMenu(more) }
                 addView(more)

@@ -1,10 +1,12 @@
 ---
 project_id: r34v-android
 updated: 2026-11-04
-status: comic-language-strip-verified-release
+status: reader-controls-prefetch-release-2.1.6
 ---
 
 # 当前续接入口
+
+**2.1.6 / 32 当前增量：** 漫画单击隐藏/唤出上下菜单并进入沉浸全屏；连续预读后面三页，可见页和预读复用任务，最多两个并发，屏外解码预算24MiB；语言栏改为单排短标签，下滑隐藏、上滑恢复；修复视频清晰度/倍速按钮贴边。签名APK输出在 `dist`，用户随后授权提交、推送与上传，发布入口为 [v2.1.6](https://github.com/ywclgl258/r34v/releases/tag/v2.1.6)。见 [说明](reader-controls-prefetch.md) 和 [HANDOVER.md](HANDOVER.md)。下方2.1.5内容为历史记录。
 
 **2026-11-04 最新增量：** 漫画站增加全部/中文/日文/中日合并分类，按站记忆并保留搜索条件；切站入口缩小并去掉重复域名；阅读方式改为上下连续条漫，按可见页加载，支持缩放、跳页、页内进度恢复和离线缓存。86项JVM、10项独立Android适配器/UI测试分批通过，Debug/Release Lint无错误。2.1.5 / 31标准及旧2.0.0兼容签名APK已生成到 `dist`，继承链和不同Android版本对应证书已核验；用户随后授权提交、推送与上传，发布入口为 [v2.1.5](https://github.com/ywclgl258/r34v/releases/tag/v2.1.5)。详见 [本轮说明](comic-language-strip.md) 和 [HANDOVER.md](HANDOVER.md)。下方是历史记录。
 

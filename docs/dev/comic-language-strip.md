@@ -2,6 +2,8 @@
 
 2026-11-04，覆盖 E-Hentai、ExHentai、nhentai、Hitomi。
 
+2.1.6 后续更新：语言栏现为单排且随滚动收起，条漫增加隐藏菜单/全屏与后续三页连续预读，替代下方2.1.5的常驻筛选栏和仅附着页加载策略。见 [后续说明](reader-controls-prefetch.md)。
+
 ## 语言与分页
 
 `FeedRequest.language` 提供 ALL、CHINESE、JAPANESE、CHINESE_JAPANESE；旧请求反序列化默认 ALL。选择保存在各站自己的 `gallery_language` 偏好中。首页、发现、搜索和结果页共用常驻筛选栏；切换保留关键词/分类/排序，清空旧游标，重新从第一页读取。离线列表缓存同时区分语言与合并游标。

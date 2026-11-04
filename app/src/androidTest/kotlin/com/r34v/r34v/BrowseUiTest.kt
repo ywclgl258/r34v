@@ -101,7 +101,7 @@ class BrowseUiTest {
         val clip=ins.context.assets.open("test-pattern.mp4").use { it.readBytes() }
         val covers=(0..5).map(::cover)
         val listing="<div class='thumbs'>${cards()}</div><button class='page-of'>Page 1 of 1</button>"
-        val detail="""<h1>${titles.first()}</h1><script>var flashvars={video_id:'900001',video_title:'${titles.first()}',video_url:'https://ui-fixture.invalid/movie.mp4',video_url_text:'720p',preview_url:'https://ui-fixture.invalid/cover-0.png'};</script><span class='item_info'>12:48</span><div class='vp-desc'>走进夜色，沿街灯与天际线缓缓前行。用一段安静的影像，记录城市的另一面。</div><h3 class='vp-group__title'>Tags</h3><div><a href='/tags/city/'>城市</a><a href='/tags/night/'>夜景</a></div><div id='custom_list_videos_related_videos_items'>${cards()}</div>"""
+        val detail="""<h1>${titles.first()}</h1><script>var flashvars={video_id:'900001',video_title:'${titles.first()}',video_url:'https://ui-fixture.invalid/movie.mp4',video_url_text:'720p',video_alt_url:'https://ui-fixture.invalid/movie-1080.mp4',video_alt_url_text:'1080p',preview_url:'https://ui-fixture.invalid/cover-0.png'};</script><span class='item_info'>12:48</span><div class='vp-desc'>走进夜色，沿街灯与天际线缓缓前行。用一段安静的影像，记录城市的另一面。</div><h3 class='vp-group__title'>Tags</h3><div><a href='/tags/city/'>城市</a><a href='/tags/night/'>夜景</a></div><div id='custom_list_videos_related_videos_items'>${cards()}</div>"""
         val releaseHot=java.util.concurrent.CountDownLatch(if(InstrumentationRegistry.getArguments().getString("slow_hot")=="true") 1 else 0)
         val client=oldClient.newBuilder().addInterceptor { chain ->
             val request=chain.request(); val path=request.url.encodedPath
@@ -221,8 +221,26 @@ class BrowseUiTest {
             }
             val player=playerActivity ?: error("Player was not opened")
             ins.runOnMainSync { val engine=engineField.get(player) as ExoPlayer; assertEquals(Player.STATE_READY,engine.playbackState); engine.pause() }
+            ins.runOnMainSync {
+                val choices = nodes(player.window.decorView).filterIsInstance<Button>().filter { it.text.toString() in listOf("720p", "1.0×") }
+                assertEquals(2, choices.size)
+                choices.forEach { button ->
+                    val density = player.resources.displayMetrics.density
+                    assertTrue("Selector text touches the border", button.paddingStart >= density * 12)
+                    assertTrue("Selector arrow touches the border", button.paddingEnd >= density * 10)
+                    assertEquals("Selector text should stay on one line", 1, button.lineCount)
+                    assertTrue("Selector touch target is too short", button.height >= density * 48 - 1)
+                    val required = button.paint.measureText(button.text.toString()) + button.compoundPaddingLeft + button.compoundPaddingRight
+                    assertTrue("Selector content is clipped", button.width >= required - 1)
+                }
+                assertEquals("Playback selectors should align", choices[0].top, choices[1].top)
+            }
             shot("player")
-            click("1.0×"); ins.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+            click("720p"); click("1080p")
+            waitUi("Quality selection did not update") { hasText(player, "1080p") && (engineField.get(player) as ExoPlayer).playbackState == Player.STATE_READY }
+            click("1.0×"); click("1.5×")
+            waitUi("Playback speed selection did not update") { hasText(player, "1.5×") && (engineField.get(player) as ExoPlayer).playbackParameters.speed == 1.5f }
+            shot("player-controls-selected")
             ins.waitForIdleSync()
             ins.runOnMainSync { player.finish() }
         } finally {

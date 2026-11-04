@@ -103,14 +103,18 @@ fun Context.iconAction(icon: Int, description: String, click: () -> Unit) = Imag
     setOnClickListener { click() }
     layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
 }
-fun Context.choiceAction(text: String, click: () -> Unit) = chip(text, click = click).apply {
+fun Context.choiceAction(text: String, click: () -> Unit) = action(text, click = click).apply {
     textSize = 13f
-    setPadding(dp(12), dp(6), dp(10), dp(6))
-    background = RippleDrawable(ColorStateList.valueOf(0x22ffffff),
-        android.graphics.drawable.InsetDrawable(controlBackground(Palette.surface, outline = true), 0, dp(4), 0, dp(4)), null)
-    setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, com.r34v.r34v.R.drawable.ic_chevron_down, 0)
+    gravity = Gravity.CENTER
+    isSingleLine = true
+    background = controlBackground(Palette.surface, radius = 8, outline = true)
+    // Set padding after the background: its empty padding otherwise replaces the text inset.
+    setPaddingRelative(dp(14), dp(10), dp(12), dp(10))
+    val arrow = androidx.core.content.ContextCompat.getDrawable(this@choiceAction, com.r34v.r34v.R.drawable.ic_chevron_down)?.mutate()
+    arrow?.setBounds(0, 0, dp(16), dp(16))
+    setCompoundDrawablesRelative(null, null, arrow, null)
     compoundDrawableTintList = ColorStateList.valueOf(Palette.muted)
-    compoundDrawablePadding = dp(5)
+    compoundDrawablePadding = dp(10)
 }
 fun Context.animationsEnabled() = if (android.os.Build.VERSION.SDK_INT >= 26) android.animation.ValueAnimator.areAnimatorsEnabled()
     else android.provider.Settings.Global.getFloat(contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f

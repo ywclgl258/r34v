@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var root: LinearLayout
     private lateinit var toolbar: LinearLayout
     private lateinit var body: FrameLayout
-    private lateinit var languageBar: FrameLayout
+    private lateinit var languageBar: GalleryLanguageBar
     private lateinit var navigation: LinearLayout
     private var screen = "home"
     private var request = FeedRequest()
@@ -89,7 +89,14 @@ class MainActivity : ComponentActivity() {
         }
         toolbar = row().apply { minimumHeight = dp(64); setPadding(dp(16), dp(4), dp(8), dp(4)) }
         body = FrameLayout(this)
-        languageBar = FrameLayout(this)
+        languageBar = GalleryLanguageBar(this) { language ->
+            if (store.galleryLanguage() != language) {
+                store.setGalleryLanguage(language)
+                request = request.copy(language = language, page = 1, cursor = "")
+                scrollPositions.remove(screen)
+                navigate(screen, false)
+            }
+        }
         navigation = row().apply { minimumHeight = dp(64); setBackgroundColor(Palette.canvas) }
         root.addView(toolbar, LinearLayout.LayoutParams(-1, -2))
         root.addView(languageBar, LinearLayout.LayoutParams(-1, -2))
@@ -199,15 +206,17 @@ class MainActivity : ComponentActivity() {
                 setOnClickListener { backStack.clear(); navigate(key, false) }; contentDescription = name
             }, LinearLayout.LayoutParams(0, -2, 1f))
         }
-        languageBar.removeAllViews()
+        languageBar.configure(store.galleryLanguage())
         languageBar.visibility = if (SiteRegistry.current.mediaKind == MediaKind.GALLERY && target in listOf("home", "explore", "search", "feed") && !needsExLogin()) View.VISIBLE else View.GONE
-        if (languageBar.visibility == View.VISIBLE) languageBar.addView(languageFilters().apply { setPadding(dp(16), 0, dp(16), dp(4)) })
         if (target != "settings" && needsExLogin()) { exLoginGate(); return }
         when (target) { "home" -> home(); "explore" -> explore(); "search" -> search(); "library" -> library(); "settings" -> settings(); "feed" -> feed(); "index" -> index(request.target) }
     }
     private fun show(view: View) {
         body.removeAllViews(); body.addView(view, FrameLayout.LayoutParams(-1, -1)); view.enterQuietly()
-        if (view is ScrollView) scrollPositions[screen]?.let { y -> view.post { view.scrollTo(0, y) } }
+        if (view is ScrollView) {
+            view.setOnScrollChangeListener { _, _, y, _, previousY -> languageBar.onContentScrolled(y - previousY, !view.canScrollVertically(-1)) }
+            scrollPositions[screen]?.let { y -> view.post { view.scrollTo(0, y) } }
+        }
     }
     private fun loading() = show(CinemaLoadingView(this).apply { showStage("正在装载内容", "整理最新片架", "加载中") })
     private fun failure(error: Throwable, retry: () -> Unit) {
@@ -248,6 +257,11 @@ class MainActivity : ComponentActivity() {
             spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() { override fun getSpanSize(position: Int) = if (items[position].full) spanCount else 1 }
         }
         val list = RecyclerView(this).apply { layoutManager = layout; this.adapter = adapter; setPadding(dp(11), 0, dp(11), dp(16)); clipToPadding = false; itemAnimator = null }
+        list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                languageBar.onContentScrolled(dy, !recyclerView.canScrollVertically(-1))
+            }
+        })
         feedList = list
         return list to adapter
     }
@@ -270,22 +284,6 @@ class MainActivity : ComponentActivity() {
 
     private fun filteredRequest(value: FeedRequest) = if (SiteRegistry.current.mediaKind == MediaKind.GALLERY)
         value.copy(language = store.galleryLanguage()) else value
-
-    private fun languageFilters(): View = column().apply {
-        addView(label("语言分类", 14f, Palette.muted).apply { ViewCompat.setAccessibilityHeading(this, true) })
-        addView(FlowLayout(this@MainActivity).apply {
-            GalleryLanguage.entries.forEach { language ->
-                addView(chip(language.title, store.galleryLanguage() == language) {
-                    if (store.galleryLanguage() != language) {
-                        store.setGalleryLanguage(language)
-                        request = request.copy(language = language, page = 1, cursor = "")
-                        scrollPositions.remove(screen)
-                        navigate(screen, false)
-                    }
-                })
-            }
-        })
-    }
 
     private fun home() {
         loading()

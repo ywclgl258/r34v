@@ -15,7 +15,7 @@ import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 
-/** Cache only pages actually opened by the reader; no bulk fetching against gallery quotas. */
+/** Cache opened pages and the reader's bounded pre-read window; no whole-gallery downloads. */
 class GalleryRepository(private val context: Context, private val network: Network) {
     data class RenderedPage(val image: GalleryImage, val bitmap: Bitmap, val cached: Boolean)
     private data class KnownPages(val links: Map<Int, String> = emptyMap())
