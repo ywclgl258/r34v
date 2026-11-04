@@ -29,6 +29,7 @@ class NativeSmokeTest {
 
     @Test fun backgroundDownloadPausesResumesAndPlaysOffline() {
         val app = context.applicationContext as R34Application
+        val previousSite = app.library.siteId
         val clip = instrumentation.context.assets.open("test-pattern.mp4").use { it.readBytes() }
         val ranges = AtomicInteger()
         val server = MockWebServer().apply {
@@ -47,7 +48,8 @@ class NativeSmokeTest {
             start()
         }
         val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        val video = Video("download-smoke-test", "Download test", "https://example.invalid/video/test/")
+        val video = Video("download-smoke-test", "Download test", "https://example.invalid/video/test/", site = "hanime1")
+        app.library.switchSite("iwara")
         val stream = Stream("720p", server.url("/sample.mp4").toString())
         val id = app.playback.key(video, stream.label)
         fun waitFor(timeout: Long = 15000, predicate: (Download?) -> Boolean): Download? {
@@ -69,6 +71,9 @@ class NativeSmokeTest {
             instrumentation.runOnMainSync { app.playback.pause(id, false) }
             val complete = waitFor(30000) { it?.state == Download.STATE_COMPLETED }!!
             assertTrue(complete.bytesDownloaded >= clip.size)
+            val mediaRequest = server.takeRequest(2, TimeUnit.SECONDS)!!
+            assertEquals("https://hanime1.me/", mediaRequest.getHeader("Referer"))
+            assertEquals(SiteRegistry.HANIME1.userAgent, mediaRequest.getHeader("User-Agent")); assertNull(mediaRequest.getHeader("Cookie"))
             assertTrue("Resume did not use HTTP Range", ranges.get() > 0)
             server.shutdown()
             val source = app.playback.sourceFactory(offline = true).createDataSource()
@@ -81,6 +86,7 @@ class NativeSmokeTest {
             assertArrayEquals(clip, output.toByteArray())
         } finally {
             instrumentation.runOnMainSync { app.playback.remove(id); activity.finish() }
+            app.library.switchSite(previousSite)
             runCatching { server.shutdown() }
         }
     }
@@ -99,7 +105,7 @@ class NativeSmokeTest {
             val store = LibraryStore(context, "migration_fixture_native", "migration_fixture_old")
             assertEquals(300L, store.history().single().position)
             assertEquals("42", store.favorites().single().target)
-            assertEquals("1080p", store.string("quality")); assertFalse(store.bool("doh", true))
+            assertEquals("1080p", store.string("quality")); assertFalse(store.prefs.contains("settings_v1_doh"))
             assertEquals("test-user", store.username); assertEquals("test-session", store.legacyCookies()["PHPSESSID"])
             assertEquals(listOf("example query"), store.searches()); assertEquals("1.5", store.string("native_speed"))
             store.saveWatch(store.history().single().copy(position = 400))
@@ -112,9 +118,10 @@ class NativeSmokeTest {
         val app = context.applicationContext as R34Application
         val clip = File(context.filesDir, "native-test-pattern.mp4")
         instrumentation.context.assets.open("test-pattern.mp4").use { input -> clip.outputStream().use(input::copyTo) }
-        val original = app.library.prefs.getString("video_cache_v1", null)
+        val cacheKey = "${app.library.siteId}:video_cache_v1"
+        val original = app.library.prefs.getString(cacheKey, null)
         val meta = LocalVideo("native-test-pattern", "Native playback test", clip.absolutePath)
-        app.library.prefs.edit().putString("video_cache_v1", app.library.gson.toJson(listOf(meta))).commit()
+        app.library.prefs.edit().putString(cacheKey, app.library.gson.toJson(listOf(meta))).commit()
         val intent = Intent(context, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             .putExtra("video", app.library.gson.toJson(Video(meta.id, meta.title)))
             .putExtra("local", clip.absolutePath)
@@ -158,7 +165,7 @@ class NativeSmokeTest {
             assertNotNull(app.library.watch(meta.id))
         } finally {
             instrumentation.runOnMainSync { activity?.finish() }
-            app.library.prefs.edit().apply { if (original == null) remove("video_cache_v1") else putString("video_cache_v1", original) }.commit()
+            app.library.prefs.edit().apply { if (original == null) remove(cacheKey) else putString(cacheKey, original) }.commit()
             app.library.removeWatch(meta.id); clip.delete()
         }
     }

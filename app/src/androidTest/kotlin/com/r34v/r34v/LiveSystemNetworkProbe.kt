@@ -12,23 +12,21 @@ import org.junit.runner.RunWith
 import java.io.File
 
 @RunWith(AndroidJUnit4::class)
-class LiveDirectProbe {
-    @Test fun freshDirectRequestBypassesCachesAndAppProxy() = runBlocking {
+class LiveSystemNetworkProbe {
+    @Test fun freshRequestUsesTheSystemRoute() = runBlocking {
         assumeTrue(InstrumentationRegistry.getArguments().getString("live") == "true")
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val store = LibraryStore(context, "live_direct_probe", "no_legacy_live_probe")
         store.prefs.edit().clear().commit()
-        store.set("direct_ip", true); store.set("doh", true); store.set("player_proxy", "")
         val report = Network(context, store).diagnose()
-        File(context.filesDir, "direct-probe.txt").writeText(report)
-        assertTrue(report, report.contains("实时请求成功") && report.contains("直连"))
+        File(context.filesDir, "system-network-probe.txt").writeText(report)
+        assertTrue(report, report.contains("实时请求成功") && report.contains("系统"))
     }
     @Test fun profileColdWarmPageDetailAndThumbnail() = runBlocking<Unit> {
         assumeTrue(InstrumentationRegistry.getArguments().getString("live") == "true")
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val store = LibraryStore(context, "live_direct_profile", "no_legacy_profile")
         store.prefs.edit().clear().commit()
-        store.set("direct_ip", true); store.set("doh", true); store.set("player_proxy", "")
         val network = Network(context, store)
         val rows = mutableListOf<String>()
         val base = network.client.newBuilder().cache(null).eventListenerFactory {
@@ -55,10 +53,10 @@ class LiveDirectProbe {
         try {
             val listing = fetch("cold page", "${com.r34v.r34v.data.Site.BASE}/latest-updates/")
             fetch("warm page", "${com.r34v.r34v.data.Site.BASE}/most-popular/")
-            val video = com.r34v.r34v.data.HtmlParser.feed(listing.toString(Charsets.UTF_8), com.r34v.r34v.data.FeedRequest()).videos.first()
+            val video = com.r34v.r34v.data.HtmlParser.feed(listing.toString(Charsets.UTF_8), com.r34v.r34v.data.FeedRequest(), com.r34v.r34v.data.SiteRegistry.current).videos.first()
             fetch("detail", video.url)
             fetch("thumbnail", video.thumb)
-        } finally { File(context.filesDir, "direct-profile.txt").writeText(rows.joinToString("\n")) }
+        } finally { File(context.filesDir, "system-network-profile.txt").writeText(rows.joinToString("\n")) }
     }
 
 }

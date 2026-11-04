@@ -16,9 +16,13 @@ class ContractTest {
         assertEquals("/tags/example/3/", FeedRequest(FeedKind.CHARACTER, "example", page = 3).path)
         assertEquals("/search/a%20b%2Fc/", FeedRequest(FeedKind.SEARCH, "a b/c").path)
         assertEquals("/for-you/", FeedRequest(FeedKind.FOR_YOU, page = 5).path)
-        assertEquals(Site.BASE + "/latest-updates/", FeedRequest().url)
-        assertTrue(FeedRequest(FeedKind.SEARCH, "example", Sort.NEWEST).url.endsWith("?sort_by=post_date"))
-        assertFalse(FeedRequest(FeedKind.SEARCH, "example", Sort.RELEVANCE).url.contains("sort_by"))
+        // URL building moved into the adapter, so the KVS path is asserted against its site base.
+        assertEquals(SiteRegistry.R34V.base + "/latest-updates/", SiteRegistry.R34V.base + FeedRequest().path)
+        assertTrue(FeedRequest(FeedKind.SEARCH, "example", Sort.NEWEST).id.contains("NEWEST"))
+        assertNotEquals(
+            FeedRequest(FeedKind.SEARCH, "example", Sort.NEWEST).id,
+            FeedRequest(FeedKind.SEARCH, "example", Sort.RELEVANCE).id,
+        )
     }
     @Test fun watchJsonRemainsCompatibleWithFlutter() {
         val old = """{"id":"42","title":"Example","thumb":"","path":"/video/42/example/","pos":300,"dur":600,"at":1234,"q":"720p"}"""
@@ -28,7 +32,10 @@ class ContractTest {
     }
     @Test fun favoriteKindsKeepSeparateKeys() {
         val tag = Gson().fromJson("""{"k":"tag","t":"example","title":"Example","path":"/list/tag/example","at":42,"thumb":"","sub":""}""", Favorite::class.java)
-        assertEquals("tag:example", tag.key); assertNotEquals(tag.key, tag.copy(kind = "model").key)
+        // The key is site-qualified so the same slug on two sites stays two distinct favourites.
+        assertEquals("${SiteRegistry.R34V.id}:tag:example", tag.key)
+        assertNotEquals(tag.key, tag.copy(kind = "model").key)
+        assertNotEquals(tag.key, tag.copy(site = SiteRegistry.HANIME1.id).key)
     }
     @Test fun completionAndResumeBoundaries() {
         val watch = Watch("42", "Example", "", "/video/42/example/", 15, 600)

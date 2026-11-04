@@ -4,12 +4,12 @@ package com.r34v.r34v.playback
 import android.app.Notification
 import android.content.Context
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import androidx.media3.common.MediaItem
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.NoOpCacheEvictor
@@ -34,10 +34,51 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     private val streamCache by lazy { SimpleCache(File(context.cacheDir, "streams"), LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024), database) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val refreshed = mutableSetOf<String>()
-    // Build each source against the current network settings, including proxy and DoH.
-    private val http = DataSource.Factory { OkHttpDataSource.Factory(network.mediaClient).setUserAgent(Site.UA).setDefaultRequestProperties(mapOf("Referer" to Site.BASE + "/")).createDataSource() }
+
+    /**
+     * Builds a data source for one URL.
+     *
+     * Media3's download manager only accepts a single DataSource.Factory, but a request's host is
+     * only known when the source opens. Resolving User-Agent and Referer here keeps media working
+     * after a site switch, including on CDNs that check the referer.
+     */
+    private fun httpFor(url: String, owner: SiteContext? = null): DataSource.Factory {
+        val host = runCatching { Uri.parse(url).host.orEmpty() }.getOrDefault("")
+        val site = owner ?: SiteRegistry.forMediaHost(host)
+        val transport = network.mediaClient.newBuilder().apply {
+            if (site != null) interceptors().add(0, okhttp3.Interceptor { chain ->
+                chain.proceed(chain.request().newBuilder().tag(SiteContext::class.java, site).build())
+            })
+        }.build()
+        return OkHttpDataSource.Factory(transport)
+            .setUserAgent(site?.userAgent?.takeIf { it.isNotBlank() } ?: SiteContext.DEFAULT_UA)
+            .setDefaultRequestProperties(mapOf("Referer" to (site?.mediaReferer ?: "https://$host/")))
+    }
+
+    /** Data source factory for the download manager (host resolved per open). */
+    private fun httpFactory(owner: SiteContext? = null) = DataSource.Factory {
+        object : DataSource {
+            private var impl: DataSource? = null
+            override fun addTransferListener(transferListener: TransferListener) {
+                impl?.addTransferListener(transferListener)
+            }
+            override fun open(dataSpec: DataSpec): Long {
+                val keyOwner = dataSpec.key?.substringBefore(':')?.let(SiteRegistry::byId)
+                val created = httpFor(dataSpec.uri.toString(), owner ?: keyOwner).createDataSource()
+                created.addTransferListener(NoOpTransferListener)
+                impl = created
+                return created.open(dataSpec)
+            }
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                impl?.read(buffer, offset, length) ?: -1
+            override fun getUri(): Uri? = impl?.uri
+            override fun getResponseHeaders(): Map<String, List<String>> = impl?.responseHeaders.orEmpty()
+            override fun close() { runCatching { impl?.close() }; impl = null }
+        }
+    }
+
     val manager: DownloadManager by lazy {
-        DownloadManager(context, database, downloadCache, http, Executors.newFixedThreadPool(3)).apply {
+        DownloadManager(context, database, downloadCache, httpFactory(), Executors.newFixedThreadPool(3)).apply {
             maxParallelDownloads = 2
             minRetryCount = 3
             addListener(object : DownloadManager.Listener {
@@ -46,7 +87,9 @@ class PlaybackStore(private val context: Context, private val network: Network, 
                         scope.launch {
                             runCatching {
                                 val meta = metadata(download) ?: return@runCatching
-                                val detail = Repository(network).detail(meta.video.url)
+                                // Signed stream URLs expire; re-resolve against the owning site.
+                                val site = SiteRegistry.byIdOrDefault(meta.site)
+                                val detail = AdapterRegistry.adapter(site, network).detail(meta.video.url)
                                 val fresh = detail.streams.firstOrNull { it.label == meta.quality } ?: return@runCatching
                                 add(meta.video, fresh)
                             }
@@ -57,17 +100,27 @@ class PlaybackStore(private val context: Context, private val network: Network, 
             resumeDownloads()
         }
     }
-    fun sourceFactory(offline: Boolean = false): DataSource.Factory {
+
+    fun sourceFactory(offline: Boolean = false, siteId: String? = null): DataSource.Factory {
         val streaming = CacheDataSource.Factory().setCache(streamCache)
-            .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context, http)).setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+            .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context, httpFactory(siteId?.let(SiteRegistry::byId))))
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         return CacheDataSource.Factory().setCache(downloadCache).setCacheWriteDataSinkFactory(null)
             .setUpstreamDataSourceFactory(if (offline) null else streaming)
     }
-    fun key(video: Video, quality: String) = "${video.id}:$quality"
-    fun item(video: Video, stream: Stream) = MediaItem.Builder().setUri(stream.url).setMediaId(video.id).setCustomCacheKey(key(video, stream.label)).build()
+
+    fun key(video: Video, quality: String) = key(video.site, video.id, quality)
+
+    fun item(video: Video, stream: Stream) =
+        MediaItem.Builder().setUri(stream.url).setMediaId("${video.site}:${video.id}")
+            .setCustomCacheKey(key(video, stream.label)).build()
+
     fun add(video: Video, stream: Stream) {
-        val request = DownloadRequest.Builder(key(video, stream.label), Uri.parse(stream.url))
-            .setCustomCacheKey(key(video, stream.label)).setData(library.gson.toJson(DownloadMeta(video, stream.label)).toByteArray()).build()
+        val site = SiteRegistry.byIdOrDefault(video.site)
+        val normalized = video.copy(site = site.id)
+        val request = DownloadRequest.Builder(key(normalized, stream.label), Uri.parse(stream.url))
+            .setCustomCacheKey(key(normalized, stream.label))
+            .setData(library.gson.toJson(DownloadMeta(normalized, stream.label, site.id)).toByteArray()).build()
         DownloadService.sendResumeDownloads(context, VideoDownloadService::class.java, false)
         DownloadService.sendAddDownload(context, VideoDownloadService::class.java, request, false)
     }
@@ -79,13 +132,37 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     fun downloads(): List<Download> = buildList {
         manager.downloadIndex.getDownloads().use { cursor -> while (cursor.moveToNext()) add(cursor.download) }
     }
-    fun metadata(download: Download): DownloadMeta? = runCatching { library.gson.fromJson(String(download.request.data), DownloadMeta::class.java) }.getOrNull()
-    fun completed(video: Video): Download? = downloads().firstOrNull { it.state == Download.STATE_COMPLETED && metadata(it)?.video?.id == video.id }
+    fun metadata(download: Download): DownloadMeta? =
+        runCatching { library.gson.fromJson(String(download.request.data), DownloadMeta::class.java) }.getOrNull()
+
+    /** Downloads belonging to the site that is currently open. */
+    fun downloadsFor(siteId: String = library.siteId): List<Download> =
+        downloads().filter { metadata(it)?.site == siteId }
+
+    fun completed(video: Video): Download? = downloads().firstOrNull {
+        it.state == Download.STATE_COMPLETED && metadata(it)?.video?.id == video.id && metadata(it)?.site == video.site
+    }
     fun clearStreaming() {
         // All access is serialized by Media3's cache. Completed downloads use a separate cache.
         streamCache.keys.toList().forEach(streamCache::removeResource)
     }
     val streamingBytes get() = streamCache.cacheSpace
+
+    private object NoOpTransferListener : TransferListener {
+        override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+        override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+        override fun onBytesTransferred(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean, bytesTransferred: Int) = Unit
+        override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+    }
+
+    companion object {
+        /**
+         * Cache identity. The site prefix is not cosmetic: Media3 indexes both the cache and the
+         * download database by this string, so two sites sharing a video id would silently reuse
+         * each other's media file.
+         */
+        fun key(siteId: String, videoId: String, quality: String) = "$siteId:$videoId:$quality"
+    }
 }
 
 class VideoDownloadService : DownloadService(40, DEFAULT_FOREGROUND_NOTIFICATION_UPDATE_INTERVAL, "video-downloads", com.r34v.r34v.R.string.download_channel, 0) {

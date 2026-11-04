@@ -15,28 +15,32 @@ import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 class NetworkRecoveryTest {
-    private fun fixture(proxy: Boolean = false): Pair<Network, AtomicInteger> {
+    @Test fun ioFailureRemainsVisibleUntilTheUserRetries() = runBlocking<Unit> {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val store = LibraryStore(context,"network_retry_fixture","no_legacy_retry")
-        store.prefs.edit().clear().commit(); store.set("direct_ip",true)
-        if(proxy) store.set("player_proxy","http://127.0.0.1:65530")
+        val store = LibraryStore(context,"network-retry-${System.nanoTime()}","no_legacy_retry")
         val network = Network(context,store)
         val calls = AtomicInteger()
-        val client = OkHttpClient.Builder().addInterceptor { chain ->
+        val client = network.client.newBuilder().addInterceptor { chain ->
             if(calls.incrementAndGet()==1) throw SocketTimeoutException("stalled response")
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
                 .body("<div class='thumbs'></div>".toResponseBody("text/html".toMediaType())).build()
         }.build()
         Network::class.java.getDeclaredField("current").apply { isAccessible=true; set(network,client) }
-        return network to calls
+        try {
+            try { network.html("https://rule34video.com/latest-updates/"); fail("Automatic route retry must be removed") } catch (_: SocketTimeoutException) { assertEquals(1,calls.get()) }
+            assertTrue(network.html("https://rule34video.com/latest-updates/").contains("thumbs")); assertEquals(2,calls.get())
+        } finally { client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown() }
     }
-    @Test fun safeSiteReadCanRecoverAfterAnIoFailure() = runBlocking<Unit> {
-        val (network,calls) = fixture()
-        assertTrue(network.html("${Site.BASE}/latest-updates/").contains("thumbs")); assertEquals(2,calls.get())
-    }
-    @Test fun configuredProxyIsNotBypassedOnFailure() = runBlocking<Unit> {
-        val (network,calls) = fixture(proxy=true)
-        try { network.html("${Site.BASE}/latest-updates/"); fail("Proxy failure must remain visible") }
-        catch (_: SocketTimeoutException) { assertEquals(1,calls.get()) }
+    @Test fun legacyOverridesAreRetiredAndEveryClientUsesSystemRouting() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext; val name = "retired-network-${System.nanoTime()}"
+        context.getSharedPreferences(name, 0).edit().putString("settings_v1_player_proxy", "http://bad.invalid:1234")
+            .putBoolean("settings_v1_direct_ip", true).putString("r34v:ip_pool", "[\"192.0.2.1\"]").putString("sentinel", "keep").commit()
+        try {
+            val store = LibraryStore(context, name, "$name-legacy"); val network = Network(context, store)
+            assertFalse(store.prefs.contains("settings_v1_player_proxy")); assertFalse(store.prefs.contains("r34v:ip_pool")); assertEquals("keep", store.prefs.getString("sentinel", null))
+            assertSame(Dns.SYSTEM, network.client.dns); assertSame(Dns.SYSTEM, network.mediaClient.dns)
+            assertTrue(network.client.proxySelector is SystemProxySelector); assertSame(network.client.proxySelector, network.mediaClient.proxySelector)
+            assertNull(network.client.proxy); assertNull(network.mediaClient.proxy)
+        } finally { context.deleteSharedPreferences(name); context.deleteSharedPreferences("$name-legacy") }
     }
 }

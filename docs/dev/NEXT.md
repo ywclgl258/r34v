@@ -1,10 +1,16 @@
 ---
 project_id: r34v-android
-updated: 2026-11-03
-status: uiux-verified
+updated: 2026-11-04
+status: comic-language-strip-verified-release
 ---
 
 # 当前续接入口
+
+**2026-11-04 最新增量：** 漫画站增加全部/中文/日文/中日合并分类，按站记忆并保留搜索条件；切站入口缩小并去掉重复域名；阅读方式改为上下连续条漫，按可见页加载，支持缩放、跳页、页内进度恢复和离线缓存。86项JVM、10项独立Android适配器/UI测试分批通过，Debug/Release Lint无错误。2.1.5 / 31标准及旧2.0.0兼容签名APK已生成到 `dist`，继承链和不同Android版本对应证书已核验；用户随后授权提交、推送与上传，发布入口为 [v2.1.5](https://github.com/ywclgl258/r34v/releases/tag/v2.1.5)。详见 [本轮说明](comic-language-strip.md) 和 [HANDOVER.md](HANDOVER.md)。下方是历史记录。
+
+**2026-11-04 UI/UX 最新增量：** 已按 `ui-ux-pro-max` 完成共享控件、顶栏/导航、搜索、空态和宽屏轮播优化，补充暂停及无障碍语义，并修复官方登录权限提示被延迟回调覆盖。最终83项JVM、5项Android UI与Debug Lint通过；另通过375dp / 200%字体 / 关闭动画和1067dp平板、横屏验证。交付 `dist/R34V-dev-uiux.apk`。详见 [本轮 UI/UX 记录](uiux-2026-11-04.md)；保留下方网络与多站接入成果，不推送、不发布，正式版本仍为2.1.4 / 30。
+
+**2026-11-04 最新状态以 [HANDOVER.md](HANDOVER.md) 开头的“系统网络、EX 官方登录与漫画瀑布流”为准。** 当前共七站，已移除 Host/IP/DoH/手填代理，统一使用系统代理（未配置时系统 DNS 直连，代理失败不回退）。EX 增加官方论坛认证和强制登录门禁；四个漫画站改为原生封面瀑布流。83 项 JVM、32 项独立 Android 测试分批通过，含电脑代理下六个公开站的列表/详情/首个媒体和 Hanime 原生播放；另通过横屏及 200% 字体 UI 复跑。开发包 `dist/R34V-dev-system-proxy.apk`，不是正式更新。真实 EX 账号权限访问仍未验收，Android 7/8 本轮未运行。详见 [本轮说明](system-network-auth-masonry.md)。以下内容为历史记录，旧直连/IP 路由说明已被本轮取代；`release.properties` 仍为 2.1.4 / 30。
 
 用户已授权将整个项目改用 Kotlin，旧源码仅本地归档，不推送备份。无需再次询问重写许可。
 

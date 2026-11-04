@@ -94,7 +94,7 @@ class PlayerActivity : ComponentActivity() {
         playerFrame.addView(fullButton, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(dp(8), dp(8), dp(8), 0) })
         playerFrame.addView(iconAction(R.drawable.ic_back, "返回") { onBackPressedDispatcher.onBackPressed() }.apply {
             background = RippleDrawable(ColorStateList.valueOf(0x30ffffff), rounded(0x70000000, dp(4).toFloat()), null)
-        }, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.START).apply { setMargins(dp(8), dp(8), dp(8), 0) })
+        }, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.START).apply { setMargins(dp(8), dp(8), dp(8), 0) })
         content.addView(playerFrame, LinearLayout.LayoutParams(-1, inlineHeight()))
         status = label("正在获取播放地址…", 12f, Palette.muted)
         details = scroll(column())
@@ -157,7 +157,7 @@ class PlayerActivity : ComponentActivity() {
         else loadingView.showStage("正在校准画面", "同步音轨与画面")
         val engine = player ?: ExoPlayer.Builder(this)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(8000, 50000, 400, 800).setPrioritizeTimeOverSizeThresholds(true).build())
-            .setMediaSourceFactory(DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null)))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site)))
             .build().also { exo ->
                 player = exo; playerView.player = exo
                 exo.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)

@@ -1,0 +1,14 @@
+{
+  "page": 0, "limit": 20, "count": 21,
+  "results": [
+    {
+      "id": "Sample9AbCdEf", "slug": "city-walk", "title": "City walk", "body": "A neutral sample.",
+      "thumbnail": 3, "numLikes": 12, "numViews": 345, "embedUrl": null, "private": false,
+      "file": {"id": "01234567-89ab-cdef-0123-456789abcdef", "duration": 125, "height": 1080},
+      "customThumbnail": null,
+      "user": {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "username": "sample_author", "name": "Sample author"},
+      "tags": [{"id": "city_walk", "type": "general"}]
+    },
+    {"id": "", "title": "Invalid card"}
+  ]
+}

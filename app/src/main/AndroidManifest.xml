@@ -19,6 +19,10 @@
         </activity>
         <activity android:name=".PlayerActivity" android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity android:name=".GalleryActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity android:name=".SiteAuthActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize" />
         <service android:name=".playback.VideoDownloadService" android:exported="false"
             android:foregroundServiceType="dataSync">
             <intent-filter><action android:name="androidx.media3.exoplayer.downloadService.action.RESTART" />

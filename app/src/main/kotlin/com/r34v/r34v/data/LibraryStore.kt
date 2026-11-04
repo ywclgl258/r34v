@@ -10,11 +10,36 @@ import java.io.ObjectInputStream
 import java.io.ObjectStreamClass
 import android.util.Base64
 
+/**
+ * Local storage.
+ *
+ * Browsing data (history, favourites, searches, blocklist, downloads, cookies)
+ * is namespaced per site so that switching sites never mixes two catalogues. User
+ * preferences (quality, speed, update checks) stay global because they are not
+ * about any particular catalogue.
+ */
 class LibraryStore(context: Context, name: String = "r34v_native", legacyName: String = "FlutterSharedPreferences") {
     val prefs: SharedPreferences = context.getSharedPreferences(name, Context.MODE_PRIVATE)
     val gson = Gson()
     private val dataDir = File(context.applicationInfo.dataDir).canonicalFile
-    init { migrate(context.getSharedPreferences(legacyName, Context.MODE_PRIVATE)) }
+
+    /** The site whose data [history], [favorites] and friends currently resolve to. */
+    @Volatile var siteId: String = SiteRegistry.R34V.id
+
+    init {
+        migrate(context.getSharedPreferences(legacyName, Context.MODE_PRIVATE))
+        siteId = SiteRegistry.byIdOrDefault(prefs.getString("active_site", null) ?: SiteRegistry.R34V.id).id
+        migrateToSiteNamespaced()
+        retireNetworkOverrides()
+    }
+
+    private fun retireNetworkOverrides() {
+        val retired = listOf("direct_ip", "doh", "cdn_direct", "player_proxy", "custom_site_ips").map { "settings_v1_$it" } +
+            listOf("site_ip_pool_v1", "site_ip_pool_at_v1") + SiteRegistry.all.flatMap { listOf("${it.id}:ip_pool", "${it.id}:ip_pool_at") }
+        if (retired.any(prefs::contains)) prefs.edit().apply { retired.forEach(::remove) }.apply()
+    }
+
+    private fun k(name: String) = "$siteId:$name"
 
     /** Copy once; leave the original preferences and media files available for rollback. */
     private fun migrate(old: SharedPreferences) {
@@ -53,6 +78,57 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         if (!prefs.contains("settings_v1_native_speed") && speed != null) edit.putString("settings_v1_native_speed", speed.coerceIn(.25f, 3f).toString())
         check(edit.putBoolean("kotlin_migration_v1", true).commit()) { "无法迁移旧版本数据，请检查设备存储空间" }
     }
+
+    /**
+     * Move single-site data onto the default site's namespace.
+     *
+     * Copies rather than moves: the original keys stay on disk so this is reversible, and a
+     * crash mid-way simply re-runs on next launch.
+     */
+    private fun migrateToSiteNamespaced() {
+        if (prefs.getBoolean("site_namespace_v1", false)) return
+        val first = SiteRegistry.R34V.id
+        val edit = prefs.edit()
+        val carried = listOf(
+            "watch_history_v1", "favorites_v1", "native_search_history",
+            "video_cache_v1", "native_cookies", "auth_session_v1", "native_username",
+        )
+        for (key in carried) {
+            val target = "$first:$key"
+            if (prefs.contains(target)) continue
+            val value = prefs.all[key] ?: continue
+            when (value) {
+                is String -> edit.putString(target, value)
+                is Set<*> -> edit.putStringSet(target, value.filterIsInstance<String>().toSet())
+                is Boolean -> edit.putBoolean(target, value)
+                is Long -> edit.putLong(target, value)
+                is Int -> edit.putInt(target, value)
+            }
+        }
+        // The blocklist used to live under a global settings key.
+        val legacyBlocked = prefs.getString("settings_v1_blocked_tags", null)
+        if (legacyBlocked != null && !prefs.contains("$first:blocked_tags")) edit.putString("$first:blocked_tags", legacyBlocked)
+        edit.remove("settings_v1_blocked_tags")
+        edit.putBoolean("site_namespace_v1", true)
+        check(edit.commit()) { "无法迁移站点数据，请检查设备存储空间" }
+    }
+
+    /** Switches the active namespace and remembers the choice across launches. */
+    fun switchSite(id: String) {
+        val site = SiteRegistry.byIdOrDefault(id)
+        siteId = site.id
+        SiteRegistry.current = site
+        prefs.edit().putString("active_site", site.id).apply()
+    }
+
+    fun galleryLanguage(): GalleryLanguage = GalleryLanguage.entries.firstOrNull {
+        it.name == prefs.getString(k("gallery_language"), null)
+    } ?: GalleryLanguage.ALL
+
+    fun setGalleryLanguage(value: GalleryLanguage) {
+        prefs.edit().putString(k("gallery_language"), value.name).apply()
+    }
+
     @Synchronized private fun <T> list(key: String, type: Class<T>): List<T> = runCatching {
         val array = JsonParser.parseString(prefs.getString(key, "[]")).asJsonArray
         array.mapNotNull { raw -> runCatching {
@@ -61,45 +137,80 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         }.getOrNull() }
     }.getOrDefault(emptyList())
     @Synchronized private fun write(key: String, value: Any) { prefs.edit().putString(key, gson.toJson(value)).apply() }
-    fun history() = list("watch_history_v1", Watch::class.java).filter { it.id.isNotBlank() }.sortedByDescending { it.at }
+
+    fun history() = list(k("watch_history_v1"), Watch::class.java).filter { it.id.isNotBlank() }.sortedByDescending { it.at }
     fun watch(id: String) = history().firstOrNull { it.id == id }
-    @Synchronized fun saveWatch(watch: Watch) = write("watch_history_v1", (listOf(watch) + history().filter { it.id != watch.id }).take(500))
-    @Synchronized fun removeWatch(id: String) = write("watch_history_v1", history().filter { it.id != id })
-    fun clearHistory() = prefs.edit().remove("watch_history_v1").apply()
-    fun favorites() = list("favorites_v1", Favorite::class.java).filter { it.target.isNotBlank() }.sortedByDescending { it.at }
-    fun isFavorite(kind: String, target: String) = favorites().any { it.kind == kind && it.target == target }
-    @Synchronized fun toggleFavorite(entry: Favorite): Boolean {
-        val all = favorites(); val exists = all.any { it.key == entry.key }
-        write("favorites_v1", if (exists) all.filter { it.key != entry.key } else listOf(entry) + all)
+    @Synchronized fun saveWatch(watch: Watch) =
+        write(k("watch_history_v1"), (listOf(watch.copy(site = siteId)) + history().filter { it.id != watch.id }).take(500))
+    @Synchronized fun removeWatch(id: String) = write(k("watch_history_v1"), history().filter { it.id != id })
+    fun clearHistory() = prefs.edit().remove(k("watch_history_v1")).apply()
+
+    fun favorites(siteId: String = this.siteId) = list("$siteId:favorites_v1", Favorite::class.java).filter { it.target.isNotBlank() }.sortedByDescending { it.at }
+    fun isFavorite(kind: String, target: String, siteId: String = this.siteId) = favorites(siteId).any { it.kind == kind && it.target == target }
+    @Synchronized fun toggleFavorite(entry: Favorite, siteId: String = this.siteId): Boolean {
+        val normalized = entry.copy(site = siteId)
+        val all = favorites(siteId); val exists = all.any { it.key == normalized.key }
+        write("$siteId:favorites_v1", if (exists) all.filter { it.key != normalized.key } else listOf(normalized) + all)
         return !exists
     }
-    fun searches(): List<String> = list("native_search_history", String::class.java)
-    fun addSearch(query: String) = write("native_search_history", (listOf(query) + searches().filter { it != query }).take(30))
-    fun clearSearches() = prefs.edit().remove("native_search_history").apply()
-    fun blockedTags() = list("settings_v1_blocked_tags", String::class.java)
-    fun toggleBlocked(slug: String) { val tags = blockedTags(); write("settings_v1_blocked_tags", if (slug in tags) tags - slug else tags + slug) }
+
+    fun readings(siteId: String = this.siteId) = list("$siteId:reading_history_v1", ReadingProgress::class.java).filter { it.entry.id.isNotBlank() }.sortedByDescending { it.at }
+    fun reading(id: String, siteId: String = this.siteId) = readings(siteId).firstOrNull { it.entry.id == id }
+    @Synchronized fun saveReading(progress: ReadingProgress) {
+        val siteId = progress.entry.site
+        require(SiteRegistry.byId(siteId)?.mediaKind == MediaKind.GALLERY)
+        write("$siteId:reading_history_v1", (listOf(progress) + readings(siteId).filter { it.entry.id != progress.entry.id }).take(500))
+    }
+    fun removeReading(id: String) = write(k("reading_history_v1"), readings().filter { it.entry.id != id })
+    fun clearReadings() = prefs.edit().remove(k("reading_history_v1")).apply()
+
+    fun galleryCookies(site: SiteContext): Set<String>? = prefs.getString("${site.id}:encrypted_cookies", null)?.let { encoded ->
+        runCatching { gson.fromJson(SessionVault.open(encoded), Array<String>::class.java).toSet() }.getOrNull()
+    }
+    fun saveGalleryCookies(site: SiteContext, cookies: Set<String>) {
+        val encrypted = SessionVault.seal(gson.toJson(cookies))
+        check(prefs.edit().putString("${site.id}:encrypted_cookies", encrypted).remove("${site.id}:cookies").commit()) { "无法保存会话，请检查存储空间" }
+    }
+
+    fun searches(): List<String> = list(k("native_search_history"), String::class.java)
+    fun addSearch(query: String) = write(k("native_search_history"), (listOf(query) + searches().filter { it != query }).take(30))
+    fun clearSearches() = prefs.edit().remove(k("native_search_history")).apply()
+
+    fun blockedTags() = list(k("blocked_tags"), String::class.java)
+    fun toggleBlocked(slug: String) { val tags = blockedTags(); write(k("blocked_tags"), if (slug in tags) tags - slug else tags + slug) }
     fun allowed(video: Video) = blockedTags().none { slug ->
         val needle = slug.replace('-', ' ')
         video.title.contains(needle, ignoreCase = true) || video.url.contains(slug, ignoreCase = true)
     }
+
+    // Global preferences: shared by every site on purpose.
     fun string(name: String, default: String = "") = prefs.getString("settings_v1_$name", default) ?: default
     fun bool(name: String, default: Boolean = false) = prefs.getBoolean("settings_v1_$name", default)
     fun set(name: String, value: String) = prefs.edit().putString("settings_v1_$name", value).apply()
     fun set(name: String, value: Boolean) = prefs.edit().putBoolean("settings_v1_$name", value).apply()
-    fun localVideos() = list("video_cache_v1", LocalVideo::class.java).filter { item ->
+
+    fun localVideos() = list(k("video_cache_v1"), LocalVideo::class.java).filter { item ->
         runCatching { File(item.path).canonicalFile.let { it.path.startsWith(dataDir.path + File.separator) && it.isFile } }.getOrDefault(false)
     }
     fun removeLocal(id: String) {
         localVideos().firstOrNull { it.id == id }?.let { File(it.path).delete() }
-        write("video_cache_v1", localVideos().filter { it.id != id })
+        write(k("video_cache_v1"), localVideos().filter { it.id != id })
     }
+
     var username: String
-        get() = prefs.getString("native_username", null) ?: runCatching {
-            JsonParser.parseString(prefs.getString("auth_session_v1", "{}")).asJsonObject["u"]?.asString.orEmpty()
+        get() = prefs.getString("$siteId:native_username", null) ?: runCatching {
+            JsonParser.parseString(prefs.getString("$siteId:auth_session_v1", "{}")).asJsonObject["u"]?.asString.orEmpty()
         }.getOrDefault("")
-        set(value) { prefs.edit().putString("native_username", value).apply() }
+        set(value) { prefs.edit().putString("$siteId:native_username", value).apply() }
+
     fun legacyCookies(): Map<String, String> = runCatching {
-        JsonParser.parseString(prefs.getString("auth_session_v1", "{}")).asJsonObject["c"].asJsonObject.entrySet().associate { it.key to it.value.asString }
+        JsonParser.parseString(prefs.getString("$siteId:auth_session_v1", "{}")).asJsonObject["c"].asJsonObject
+            .entrySet().associate { it.key to it.value.asString }
     }.getOrDefault(emptyMap())
-    fun logout() { prefs.edit().remove("native_cookies").remove("auth_session_v1").putString("native_username", "").apply() }
+
+    /** Signs out one site without touching any other site's session. */
+    fun logout(id: String = siteId) {
+        prefs.edit().remove("$id:native_cookies").remove("$id:auth_session_v1")
+            .putString("$id:native_username", "").apply()
+    }
 }

@@ -1,0 +1,7 @@
+[
+  {"name": "360", "src": {"view": "//himeko.iwara.tv/sample-360.mp4?token=view", "download": "//himeko.iwara.tv/sample-360.mp4?token=download"}},
+  {"name": "preview", "src": {"view": "//himeko.iwara.tv/preview.mp4"}},
+  {"name": "Source", "src": {"view": "//himeko.iwara.tv/sample-original.mp4", "download": "//himeko.iwara.tv/sample-original.mp4?download=1"}},
+  {"name": "720", "src": {"view": "https://himeko.iwara.tv/sample-720.mp4", "download": "https://himeko.iwara.tv/sample-720.mp4?download=1"}},
+  {"name": "540", "src": {"view": "http://himeko.iwara.tv/insecure.mp4"}}
+]

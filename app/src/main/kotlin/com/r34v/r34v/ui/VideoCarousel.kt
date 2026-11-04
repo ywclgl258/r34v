@@ -7,6 +7,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.animation.AlphaAnimation
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ViewFlipper
 import androidx.activity.ComponentActivity
@@ -32,6 +33,11 @@ class VideoCarousel(
     private val flipper = ViewFlipper(context)
     private val dots = mutableListOf<View>()
     private var autoJob: Job? = null
+    private var pausedByUser = false
+    private val accessibility = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
+    private val accessibilityListener = android.view.accessibility.AccessibilityManager.TouchExplorationStateChangeListener { enabled ->
+        if (enabled) stopAuto() else restartAuto()
+    }
 
     init {
         require(entries.isNotEmpty())
@@ -43,7 +49,7 @@ class VideoCarousel(
             flipper.outAnimation = AlphaAnimation(1f, 0f).apply { duration = 120 }
         }
         if (entries.size > 1) {
-            addView(context.row().apply {
+            val indicators = context.row().apply {
                 gravity = Gravity.CENTER
                 entries.forEachIndexed { index, entry ->
                     val indicator = View(context).apply {
@@ -53,21 +59,46 @@ class VideoCarousel(
                     dots.add(indicator)
                     addView(FrameLayout(context).apply {
                         isFocusable = true
+                        buttonSemantics()
                         contentDescription = "切换到第 ${index + 1} 部：${entry.video.title}"
                         addView(indicator)
                         setOnClickListener { showSlide(index) }
-                    }, LayoutParams(context.dp(44), context.dp(44)))
+                        background = context.controlBackground(android.graphics.Color.TRANSPARENT, radius = 24)
+                    }, LayoutParams(context.dp(48), context.dp(48)))
                 }
-            }, LayoutParams(-1, context.dp(44)))
+            }
+            addView(context.row().apply {
+                setPadding(context.dp(8), 0, context.dp(8), 0)
+                addView(HorizontalScrollView(context).apply {
+                    isHorizontalScrollBarEnabled = false; isFillViewport = true
+                    addView(indicators)
+                }, LayoutParams(0, -2, 1f))
+                addView(context.iconAction(R.drawable.ic_pause, "暂停轮播") { }.apply {
+                    fun update() {
+                        setImageResource(if (pausedByUser) R.drawable.ic_play else R.drawable.ic_pause)
+                        contentDescription = if (pausedByUser) "继续轮播" else "暂停轮播"
+                    }
+                    setOnClickListener {
+                        pausedByUser = !pausedByUser
+                        update()
+                        if (pausedByUser) stopAuto() else restartAuto()
+                    }
+                    update()
+                })
+            }, LayoutParams(-1, -2))
         }
         updateDots()
     }
 
     private fun slide(entry: CarouselEntry): View {
         val video = entry.video
-        return context.column().apply {
+        val wide = resources.configuration.screenWidthDp >= 600
+        return LinearLayout(context).apply {
+            orientation = if (wide) HORIZONTAL else VERTICAL
+            gravity = Gravity.TOP
             addView(FrameLayout(context).apply {
                 isFocusable = true
+                buttonSemantics()
                 val cover = RatioImage(context).apply { Images.load(activity, this, video.thumb) }
                 addView(cover, FrameLayout.LayoutParams(-1, -2))
                 addView(View(context).apply {
@@ -95,12 +126,12 @@ class VideoCarousel(
                     if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) restartAuto()
                     handled
                 }
-            }, LayoutParams(-1, -2))
+            }, if (wide) LayoutParams(0, -2, 1.2f) else LayoutParams(-1, -2))
             addView(context.column().apply {
                 setPadding(context.dp(20), 0, context.dp(20), context.dp(4))
                 space(6)
-                addView(context.label(entry.kicker, 11f, Palette.red, true).apply { letterSpacing = 0.1f })
-                addView(context.label(video.title, 28f, bold = true).apply {
+                addView(context.label(entry.kicker, 12f, Palette.accentText, true).apply { letterSpacing = 0.05f })
+                addView(context.label(video.title, 24f, bold = true).apply {
                     minLines = 2
                     maxLines = 2
                     ellipsize = android.text.TextUtils.TruncateAt.END
@@ -120,7 +151,7 @@ class VideoCarousel(
                         }
                     }, LayoutParams(0, -2, 1f))
                 })
-            }, LayoutParams(-1, -2))
+            }, if (wide) LayoutParams(0, -2, 1f) else LayoutParams(-1, -2))
         }
     }
 
@@ -143,11 +174,12 @@ class VideoCarousel(
     private fun restartAuto() {
         autoJob?.cancel()
         autoJob = null
-        if (!isAttachedToWindow || windowVisibility != View.VISIBLE || entries.size < 2 || !context.animationsEnabled()) return
+        if (!isAttachedToWindow || !hasWindowFocus() || pausedByUser || accessibility.isTouchExplorationEnabled ||
+            windowVisibility != View.VISIBLE || entries.size < 2 || !context.animationsEnabled()) return
         autoJob = scope.launch {
             while (isActive) {
                 delay(6500)
-                if (!isShown || windowVisibility != View.VISIBLE) continue
+                if (!isShown || windowVisibility != View.VISIBLE || !getGlobalVisibleRect(android.graphics.Rect())) continue
                 flipper.showNext()
                 updateDots()
             }
@@ -161,16 +193,32 @@ class VideoCarousel(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        accessibility.addTouchExplorationStateChangeListener(accessibilityListener)
         restartAuto()
     }
 
     override fun onDetachedFromWindow() {
         stopAuto()
+        accessibility.removeTouchExplorationStateChangeListener(accessibilityListener)
         super.onDetachedFromWindow()
     }
 
     override fun onWindowVisibilityChanged(visibility: Int) {
         super.onWindowVisibilityChanged(visibility)
         if (visibility == View.VISIBLE) restartAuto() else stopAuto()
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        if (hasWindowFocus) restartAuto() else stopAuto()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val current = flipper.displayedChild
+        flipper.removeAllViews()
+        entries.forEach { flipper.addView(slide(it)) }
+        flipper.displayedChild = current
+        updateDots()
     }
 }

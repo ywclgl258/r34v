@@ -15,6 +15,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import com.r34v.r34v.data.*
+import com.r34v.r34v.ui.animationsEnabled
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -64,7 +65,8 @@ class BrowseUiTest {
     private fun shot(name: String) {
         Thread.sleep(350); ins.waitForIdleSync()
         val suffix = if (ins.targetContext.resources.configuration.fontScale >= 1.9f) "-200" else ""
-        val dir = File(ins.targetContext.getExternalFilesDir(null), "ui-shots").apply { mkdirs() }
+        val output = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
+        val dir = (if (output != null) File(output, "ui-shots") else File(ins.targetContext.getExternalFilesDir(null), "ui-shots")).apply { mkdirs() }
         val bitmap = ins.uiAutomation.takeScreenshot() ?: error("Screenshot unavailable")
         File(dir, "$name$suffix.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
     }
@@ -87,7 +89,9 @@ class BrowseUiTest {
     }
     @Test fun browseSearchLibraryAndPlayback() {
         val store=app.library
-        val keys=listOf("watch_history_v1","favorites_v1","native_search_history","settings_v1_blocked_tags","settings_v1_native_speed","settings_v1_quality")
+        val oldSite=store.siteId
+        store.switchSite(SiteRegistry.R34V.id)
+        val keys=listOf("r34v:watch_history_v1","r34v:favorites_v1","r34v:native_search_history","r34v:blocked_tags","settings_v1_native_speed","settings_v1_quality")
         val original=keys.associateWith { store.prefs.getString(it,null) }
         val originalFlags=listOf("auto_fullscreen","auto_download").associateWith { if(store.prefs.contains("settings_v1_$it")) store.bool(it) else null }
         val originalCache=app.network.feedCacheDirectory.listFiles().orEmpty().filter { it.isFile }.associate { it.name to it.readBytes() }
@@ -112,8 +116,8 @@ class BrowseUiTest {
             Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("UI fixture").body(body.toResponseBody(type.toMediaType())).build()
         }.build()
         field.set(app.network,client)
-        store.prefs.edit().putString("watch_history_v1",store.gson.toJson(listOf(Watch("900002",titles[1],"https://ui-fixture.invalid/cover-1.png","/video/900002/sample/",180,768),Watch("900003",titles[2],"https://ui-fixture.invalid/cover-2.png","/video/900003/sample/",240,768))))
-            .putString("favorites_v1","[]").putString("native_search_history",store.gson.toJson(listOf("城市","风景","旅行"))).putString("settings_v1_blocked_tags","[]").commit()
+        store.prefs.edit().putString("r34v:watch_history_v1",store.gson.toJson(listOf(Watch("900002",titles[1],"https://ui-fixture.invalid/cover-1.png","/video/900002/sample/",180,768),Watch("900003",titles[2],"https://ui-fixture.invalid/cover-2.png","/video/900003/sample/",240,768))))
+            .putString("r34v:favorites_v1","[]").putString("r34v:native_search_history",store.gson.toJson(listOf("城市","风景","旅行"))).putString("r34v:blocked_tags","[]").commit()
         try {
             val homeStarted=System.currentTimeMillis()
             val main=ins.startActivitySync(Intent(ins.targetContext,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
@@ -125,7 +129,24 @@ class BrowseUiTest {
                 assertFalse(hasText(main,"继续观看"))
                 assertEquals(6,nodes(main.window.decorView).filterIsInstance<ViewFlipper>().single().childCount)
             }
+            // Rotation and screenshot capture must not race the 6.5-second auto advance.
+            click("暂停轮播")
+            click("切换到第 1 部：${titles.first()}")
             shot("home")
+            ins.runOnMainSync { main.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }
+            waitUi("Carousel did not adapt to landscape") {
+                val slide = nodes(main.window.decorView).filterIsInstance<ViewFlipper>().single().currentView as LinearLayout
+                main.resources.configuration.screenWidthDp >= 600 && slide.orientation == LinearLayout.HORIZONTAL
+            }
+            shot("home-landscape")
+            ins.runOnMainSync { main.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
+            waitUi("Carousel did not restore portrait layout") {
+                val slide = nodes(main.window.decorView).filterIsInstance<ViewFlipper>().single().currentView as LinearLayout
+                main.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT &&
+                    main.window.decorView.width < main.window.decorView.height &&
+                    slide.orientation == (if (main.resources.configuration.screenWidthDp >= 600) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL)
+            }
+            shot("home-restored")
             fun swipeHomeCarousel() {
                 var startX=0f; var endX=0f; var y=0f
                 ins.runOnMainSync {
@@ -141,18 +162,33 @@ class BrowseUiTest {
                 }
             }
             swipeHomeCarousel()
+            shot("home-after-swipe")
             waitUi("Carousel swipe did not open the next slide") { hasText(main,"热门榜 · 第 2 位") }
             click("切换到第 4 部：${titles.first()}")
             waitUi("Rated carousel slide did not open") { hasText(main,"高分榜 · 第 1 位") }
             shot("home-rated")
             click("切换到第 1 部：${titles.first()}")
-            waitUi("Carousel did not advance automatically") { nodes(main.window.decorView).filterIsInstance<ViewFlipper>().single().displayedChild==1 }
+            Thread.sleep(6800)
+            ins.runOnMainSync { assertEquals("Manual navigation must preserve pause", 0, nodes(main.window.decorView).filterIsInstance<ViewFlipper>().single().displayedChild) }
+            click("继续轮播")
+            if (main.animationsEnabled()) waitUi("Carousel did not advance automatically") { nodes(main.window.decorView).filterIsInstance<ViewFlipper>().single().displayedChild==1 }
             click("切换到第 1 部：${titles.first()}")
             ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().first().let { it.scrollBy(0,it.height*2) } }; shot("home-grid")
             ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<androidx.recyclerview.widget.RecyclerView>().first().let { it.scrollBy(0,-it.height*2) } }
             click("收藏"); assertTrue(store.isFavorite("video","900001"))
             Thread.sleep(2200); click("发现"); shot("discover")
             click("搜索")
+            click("提交搜索")
+            ins.runOnMainSync { assertEquals("请输入关键词", nodes(main.window.decorView).filterIsInstance<EditText>().single().error.toString()) }
+            ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<EditText>().single().setText("clear me") }
+            click("清除关键词")
+            ins.runOnMainSync {
+                assertEquals("", nodes(main.window.decorView).filterIsInstance<EditText>().single().text.toString())
+                assertNull(nodes(main.window.decorView).filterIsInstance<EditText>().single().error)
+                val controls = nodes(main.window.decorView).filterIsInstance<ImageButton>().filter { it.isShown && it.isEnabled }
+                assertTrue(controls.isNotEmpty())
+                controls.forEach { assertTrue("Small touch target: ${it.contentDescription}", it.width >= main.resources.displayMetrics.density * 48 - 1 && it.height >= main.resources.displayMetrics.density * 48 - 1) }
+            }
             ins.runOnMainSync { nodes(main.window.decorView).filterIsInstance<EditText>().single().setText("night city") }
             click("作者"); shot("search")
             click("提交搜索")
@@ -166,6 +202,9 @@ class BrowseUiTest {
             click("${titles.first()} 的更多操作"); shot("favorite-menu")
             waitUi("Favorite menu did not open") { ins.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("取消收藏")?.isNotEmpty() == true }
             click("取消收藏"); assertFalse(store.isFavorite("video","900001"))
+            waitUi("Empty library needs a next action") { hasText(main,"还没有收藏内容") }
+            click("去发现"); waitUi("Empty action did not open discovery") { hasText(main,"找到下一部想看的") }
+            click("片库")
             click("下载"); shot("downloads")
             click("设置"); shot("settings")
             click("首页")
@@ -196,6 +235,7 @@ class BrowseUiTest {
             }.commit()
             app.network.feedCacheDirectory.listFiles().orEmpty().filter { it.isFile }.forEach { it.delete() }
             originalCache.forEach { (name,bytes) -> File(app.network.feedCacheDirectory,name).writeBytes(bytes) }
+            store.switchSite(oldSite)
         }
     }
 }

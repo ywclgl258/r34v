@@ -7,12 +7,12 @@
 - `MainActivity`：首页、发现、分页列表、索引、搜索、片库、登录和设置。原生 View + RecyclerView，黑底、暖白和珊瑚红，精选封面与横向片架。
 - `PlayerActivity`：详情与播放、清晰度、倍速、手势、横竖屏全屏、进度保存和过期地址刷新。
 - `data/HtmlParser`：Jsoup 离线解析站点 HTML，不运行页面脚本。列表、详情、分类和两类排行榜分别解析。
-- `data/Network` 和 `data/RoutedDns`：OkHttp、站点范围内的 Cookie、Cloudflare/Google DoH、已验证 IP 池、VPN 检测、HTTP/SOCKS5 代理。手填 IP 和旧 IP 池在 DoH 故障时仍保留，只有通过 TLS 校验且完成正文读取的连接才能更新持久池。已有手填/验证 IP 时不等 DNS；冷请求采用首个成功的 DoH，慢解析后台补充，系统 DNS 仅作最后回退。页面请求可取消且有限时；正文超时会降级失败 IP 并在新连接上重试一次安全读取，代理/VPN 路径不回退为直连。视频连接独立设置，不用整文件请求时限打断长视频。
+- `data/Network` 和 `data/SystemProxySelector`：OkHttp、分站 Cookie、系统代理与系统 DNS。遵循系统按 URL 作出的代理/PAC 排除决定，未配置代理才直连；不尝试代理列表中的后续直连回退。移除 DoH、固定/手填 IP、IP 池、VPN 分支和应用内独立代理，旧配置在迁移时清除。系统代理变更广播使旧空闲连接失效，新请求采用新设置。页面请求可取消且有限时，视频连接不设整文件请求时限。
 - `data/LibraryStore`：原生私有 SharedPreferences，沿用旧 JSON 字段。对旧 Flutter 配置只做一次复制迁移，保留原件供回退。
 - `playback/PlaybackStore`：应用级 Media3 DownloadManager、前台下载服务、持久下载索引。完整下载和播放临时缓存使用不同的 SimpleCache。
 - `UpdateController`：GitHub Release 检查、更新包下载及通过 FileProvider 调用系统安装器。
 
-播放器与下载共用网络配置。站点 Cookie 只发送给站点域名，不发送给 CDN 或 GitHub。TLS 域名和证书验证保持启用；自定义 IP 通过 DNS 层接入。VPN 或代理启用时遵循其域名路由。
+播放器与下载共用系统网络路径。站点 Cookie 只发送给站点域名，不发送给 CDN 或 GitHub。TLS 域名和证书验证保持启用；没有自定义 DNS 或 IP 替换。系统 VPN 由 Android 网络栈处理。
 
 ## 缓存与生命周期
 

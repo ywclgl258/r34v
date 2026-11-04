@@ -1,59 +1,101 @@
 package com.r34v.r34v.data
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.dnsoverhttps.DnsOverHttps
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
 import java.io.File
-import java.net.InetAddress
-import java.net.InetSocketAddress
 import java.net.Proxy
-import java.net.URI
 import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.TimeUnit
-import java.net.ProxySelector
 
+/**
+ * Cookies are bucketed per host so that switching sites never leaks or drops a session.
+ * Only hosts belonging to a registered site are ever written or read; CDNs and the update
+ * server stay cookie-free.
+ */
 class SessionCookies(private val store: LibraryStore) : CookieJar {
-    private val cookies = mutableListOf<Cookie>()
-    init {
-        store.prefs.getStringSet("native_cookies", null)?.forEach { raw -> Cookie.parse(Site.BASE.toHttpUrl(), raw)?.let(cookies::add) }
-        if (cookies.isEmpty()) for ((name, value) in store.legacyCookies()) {
-            runCatching { Cookie.Builder().name(name).value(value).hostOnlyDomain(Site.HOST).secure().httpOnly().build() }.getOrNull()?.let(cookies::add)
+    private val buckets = mutableMapOf<String, MutableList<Cookie>>()
+
+    private fun registered(host: String) = SiteRegistry.isRegistered(host)
+
+    private fun load(site: SiteContext): MutableList<Cookie> = buckets.getOrPut(site.host) {
+        val restored = mutableListOf<Cookie>()
+        ((if (site.mediaKind == MediaKind.GALLERY) store.galleryCookies(site) else null)
+            ?: store.prefs.getStringSet("${site.id}:cookies", null))?.forEach { raw ->
+            Cookie.parse(site.base.toHttpUrl(), raw)?.let(restored::add)
         }
-        // The legacy public-page jar carries long-lived anti-bot cookies separately from login.
-        runCatching {
-            val jar = com.google.gson.JsonParser.parseString(store.prefs.getString("site_cookies_v1", "{}")).asJsonObject
-            for ((host, entries) in jar.entrySet()) if (Site.isSite(host)) for (entry in entries.asJsonArray) {
-                val raw = entry.asJsonObject; val name = raw["n"]?.asString.orEmpty()
-                if (!name.startsWith("__ddg") || cookies.any { it.name == name }) continue
-                val expiry = raw["e"]?.asLong ?: Long.MAX_VALUE
-                if (expiry <= System.currentTimeMillis()) continue
-                val cookie = Cookie.Builder().name(name).value(raw["v"].asString).hostOnlyDomain(host)
-                    .path(raw["p"]?.asString ?: "/").expiresAt(expiry).secure().build()
-                cookies.add(cookie)
+        // Legacy: the pre-multi-site jar carried a single unnamed bucket plus anti-bot cookies.
+        if (restored.isEmpty() && site.id == SiteRegistry.R34V.id) {
+            for ((name, value) in store.legacyCookies()) {
+                runCatching { Cookie.Builder().name(name).value(value).hostOnlyDomain(site.host).secure().httpOnly().build() }
+                    .getOrNull()?.let(restored::add)
+            }
+            runCatching {
+                val jar = com.google.gson.JsonParser.parseString(store.prefs.getString("site_cookies_v1", "{}")).asJsonObject
+                for ((host, entries) in jar.entrySet()) if (site.isSite(host)) for (entry in entries.asJsonArray) {
+                    val raw = entry.asJsonObject; val name = raw["n"]?.asString.orEmpty()
+                    if (!name.startsWith("__ddg") || restored.any { it.name == name }) continue
+                    val expiry = raw["e"]?.asLong ?: Long.MAX_VALUE
+                    if (expiry <= System.currentTimeMillis()) continue
+                    restored.add(
+                        Cookie.Builder().name(name).value(raw["v"].asString).hostOnlyDomain(host)
+                            .path(raw["p"]?.asString ?: "/").expiresAt(expiry).secure().build()
+                    )
+                }
             }
         }
+        restored
     }
+
     @Synchronized override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        if (!Site.isSite(url.host)) return
+        val site = SiteRegistry.forHost(url.host) ?: return
+        if (!registered(url.host)) return
+        val bucket = load(site)
         for (cookie in cookies) {
-            if (!Site.isSite(cookie.domain)) continue
-            this.cookies.removeAll { it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path }
-            if (cookie.expiresAt > System.currentTimeMillis()) this.cookies.add(cookie)
+            if (!site.isSite(cookie.domain)) continue
+            bucket.removeAll { it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path }
+            if (cookie.expiresAt > System.currentTimeMillis()) bucket.add(cookie)
         }
-        store.prefs.edit().putStringSet("native_cookies", this.cookies.map { it.toString() }.toSet()).apply()
+        persist(site, bucket)
     }
-    @Synchronized override fun loadForRequest(url: HttpUrl): List<Cookie> = if (Site.isSite(url.host)) cookies.filter { it.matches(url) && it.expiresAt > System.currentTimeMillis() } else emptyList()
-    @Synchronized fun clear() { cookies.clear(); store.logout() }
+
+    @Synchronized override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        val site = SiteRegistry.forHost(url.host) ?: return emptyList()
+        if (!registered(url.host)) return emptyList()
+        val now = System.currentTimeMillis()
+        val cookies = load(site).filter { it.matches(url) && it.expiresAt > now }
+        return if (site.id == SiteRegistry.EHENTAI.id || site.id == SiteRegistry.EXHENTAI.id) cookies.filter { it.name != "nw" } +
+            Cookie.Builder().name("nw").value("1").hostOnlyDomain(url.host).secure().build() else cookies
+    }
+
+    private fun persist(site: SiteContext, cookies: List<Cookie>) {
+        val values = cookies.map { it.toString() }.toSet()
+        if (site.mediaKind == MediaKind.GALLERY) store.saveGalleryCookies(site, values)
+        else store.prefs.edit().putStringSet("${site.id}:cookies", values).apply()
+    }
+    @Synchronized fun replace(site: SiteContext, cookies: List<Cookie>) {
+        require(cookies.all { site.isSite(it.domain) })
+        persist(site, cookies)
+        buckets[site.host] = cookies.toMutableList()
+    }
+    @Synchronized fun hasGallerySession(site: SiteContext) = load(site).let { cookies ->
+        listOf("ipb_member_id", "ipb_pass_hash").all { name -> cookies.any { it.name == name && it.expiresAt > System.currentTimeMillis() } }
+    }
+
+    /** Clears one site only. Signing out of A must never sign the user out of B. */
+    @Synchronized fun clear(site: SiteContext) {
+        buckets.remove(site.host)
+        store.prefs.edit().remove("${site.id}:cookies").remove("${site.id}:encrypted_cookies").apply()
+        store.logout(site.id)
+    }
 }
 
 class Network(private val context: Context, private val store: LibraryStore) {
@@ -63,145 +105,147 @@ class Network(private val context: Context, private val store: LibraryStore) {
     val feedCacheDirectory get() = File(context.cacheDir, "feeds")
     @Volatile var lastPeer: String = "尚未连接"
         private set
-    private val resolver by lazy {
-        val bootstrap = OkHttpClient.Builder().proxy(Proxy.NO_PROXY).connectTimeout(2, TimeUnit.SECONDS)
-            .readTimeout(3, TimeUnit.SECONDS).callTimeout(4, TimeUnit.SECONDS).build()
-        fun provider(url: String, vararg ips: String): Dns = DnsOverHttps.Builder().client(bootstrap).url(url.toHttpUrl())
-            .bootstrapDnsHosts(*ips.mapNotNull(RoutedDns::ipv4).toTypedArray()).includeIPv6(false).build()
-        RoutedDns(
-            policy = { RoutedDns.Policy(store.bool("direct_ip", true), store.bool("doh", true), vpn() || store.string("player_proxy").isNotBlank() || systemProxy(), store.string("custom_site_ips")) },
-            providers = listOf(
-                "Cloudflare" to provider("https://cloudflare-dns.com/dns-query", "104.16.248.249", "104.16.249.249", "1.1.1.1"),
-                "Google" to provider("https://dns.google/dns-query", "8.8.8.8", "8.8.4.4")),
-            loadSitePool = { runCatching { com.google.gson.JsonParser.parseString(store.prefs.getString("site_ip_pool_v1", "[]")).asJsonArray.map { it.asString } }.getOrDefault(emptyList()) },
-            saveSitePool = { ips -> store.prefs.edit().putString("site_ip_pool_v1", store.gson.toJson(ips)).putLong("site_ip_pool_v1_at", System.currentTimeMillis()).apply() })
-    }
+    private val systemRoutes = SystemProxySelector()
     val client: OkHttpClient get() = current ?: synchronized(this) { current ?: build().also { current = it } }
-    val mediaClient: OkHttpClient get() = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).cache(null)
-        .dns(object : Dns { override fun lookup(hostname: String): List<InetAddress> =
-            if (!Site.isSite(hostname) && !store.bool("cdn_direct", true)) Dns.SYSTEM.lookup(hostname) else resolver.lookup(hostname) }).build()
-    fun invalidate() { current?.connectionPool?.evictAll(); current = null; resolver.clear() }
-    private fun systemProxy() = runCatching { ProxySelector.getDefault()?.select(URI(Site.BASE))?.any { it.type() != Proxy.Type.DIRECT } == true }.getOrDefault(false)
-    private fun vpn(): Boolean = runCatching {
-        val manager = context.getSystemService(ConnectivityManager::class.java)
-        manager.getNetworkCapabilities(manager.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-    }.getOrDefault(false)
+    val mediaClient: OkHttpClient get() = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).cache(null).build()
+    @Synchronized fun invalidate() { current?.connectionPool?.evictAll(); current = null }
+    fun routeDescription(url: String = SiteRegistry.current.base) = systemRoutes.describe(url.toHttpUrl().toUri())
     private fun build(): OkHttpClient {
-        val proxyText = store.string("player_proxy").trim()
-        val pool = ConnectionPool()
         return OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
             .callTimeout(25, TimeUnit.SECONDS).cookieJar(session)
-            .cache(diskCache).connectionPool(pool)
-            .dns(resolver)
+            .cache(diskCache).dns(Dns.SYSTEM).proxySelector(systemRoutes)
             .eventListenerFactory { object : EventListener() {
-                private var directPeer: Pair<String, String>? = null
                 override fun connectionAcquired(call: Call, connection: Connection) {
-                    val route = connection.route(); val host = route.address.url.host; val peer = route.socketAddress.address?.hostAddress.orEmpty()
-                    lastPeer = "$peer · ${if (route.proxy.type() == Proxy.Type.DIRECT) "直连" else "代理"}"
-                    if (route.proxy.type() == Proxy.Type.DIRECT && connection.handshake() != null) directPeer = host to peer
-                }
-                override fun responseBodyEnd(call: Call, byteCount: Long) {
-                    // A completed TLS handshake alone doesn't prove that this route serves data.
-                    if (byteCount > 0) directPeer?.let { (host, peer) -> resolver.succeeded(host, peer) }
-                }
-                override fun callFailed(call: Call, ioe: IOException) {
-                    if (!call.isCanceled() || ioe is java.io.InterruptedIOException) directPeer?.let { (host, peer) ->
-                        resolver.failed(host, peer)
-                        if (Site.isSite(host)) {
-                            synchronized(this@Network) { if (current?.connectionPool === pool) current = null }
-                            pool.evictAll()
-                        }
-                    }
-                }
-                override fun connectFailed(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy, protocol: Protocol?, ioe: IOException) {
-                    if (proxy.type() == Proxy.Type.DIRECT) resolver.failed(call.request().url.host, inetSocketAddress.address?.hostAddress.orEmpty())
+                    val route = connection.route(); val peer = route.socketAddress.address?.hostAddress.orEmpty()
+                    lastPeer = "$peer · ${if (route.proxy.type() == Proxy.Type.DIRECT) "系统 DNS 直连" else "系统代理"}"
                 }
             } }
-            .apply {
-                if (proxyText.isNotEmpty()) {
-                    val uri = URI(proxyText)
-                    require(uri.scheme in listOf("http", "socks5") && !uri.host.isNullOrBlank() && uri.port in 1..65535 && uri.userInfo == null) { "代理格式：http://主机:端口 或 socks5://主机:端口" }
-                    proxy(Proxy(if (uri.scheme == "socks5") Proxy.Type.SOCKS else Proxy.Type.HTTP, InetSocketAddress(uri.host, uri.port)))
-                }
-            }
             .addInterceptor { chain ->
-                chain.proceed(chain.request().newBuilder().header("User-Agent", Site.UA).header("Referer", Site.BASE + "/").build())
+                val host = chain.request().url.host
+                val site = chain.request().tag(SiteContext::class.java) ?: SiteRegistry.forMediaHost(host)
+                // A blank User-Agent is rejected outright by Cloudflare, so every request carries one.
+                val agent = site?.userAgent?.takeIf { it.isNotBlank() } ?: SiteContext.DEFAULT_UA
+                val referer = chain.request().header("Referer") ?: site?.referer ?: "${chain.request().url.scheme}://$host/"
+                val request = chain.request().newBuilder().header("User-Agent", agent).header("Referer", referer)
+                if (site?.id == SiteRegistry.IWARA.id) request.header("Origin", site.base).header("x-site", "www.iwara.tv")
+                chain.proceed(request.build())
             }.build()
     }
     suspend fun diagnose(): String = withContext(Dispatchers.IO) {
         val start = System.currentTimeMillis()
+        val site = SiteRegistry.current
         try {
-            val text = getText(Request.Builder().url("${Site.BASE}/latest-updates/").cacheControl(CacheControl.FORCE_NETWORK).build())
-            HtmlParser.feed(text, FeedRequest())
-            "实时请求成功 · HTTP 200 · ${System.currentTimeMillis() - start} ms\n$lastPeer\n${resolver.lastResolution}"
+            val result = AdapterRegistry.adapter(site, this@Network).feed(AdapterRegistry.adapter(site, this@Network).homeRequest())
+            "实时请求成功 · ${System.currentTimeMillis() - start} ms\n${site.name} · ${result.videos.size} 个条目\n${routeDescription(site.base)}\n$lastPeer"
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            "实时请求失败：${error.message}\n$lastPeer\n${resolver.lastResolution}"
+            "实时请求失败：${error.message}\n${site.name}\n${runCatching { routeDescription(site.base) }.getOrDefault("系统代理设置不可用")}\n$lastPeer"
         }
     }
     private suspend fun getText(request: Request): String {
-        suspend fun read(http: OkHttpClient) = http.readResponse(request) { response ->
+        return client.readResponse(request) { response ->
             if (!response.isSuccessful) error("请求失败：HTTP ${response.code}")
             response.body?.string().orEmpty()
         }
-        try { return read(client) }
-        catch (error: IOException) {
-            // Retry a safe page read on another route, including failures while consuming its body.
-            // A separate pool prevents reusing the same unhealthy HTTP/2 connection.
-            if (!Site.isSite(request.url.host) || !store.bool("direct_ip", true) || vpn() || systemProxy() || store.string("player_proxy").isNotBlank()) throw error
-            val pool = ConnectionPool()
-            try { return read(client.newBuilder().connectionPool(pool).build()) }
-            catch (retry: IOException) { retry.addSuppressed(error); throw retry }
-            finally { pool.evictAll() }
-        }
     }
-    suspend fun html(url: String): String = withContext(Dispatchers.IO) {
-        val body = getText(Request.Builder().url(url).build())
+    suspend fun html(url: String, site: SiteContext? = null): String = withContext(Dispatchers.IO) {
+        val body = getText(Request.Builder().url(url).tag(SiteContext::class.java, site).apply {
+            if (site?.mediaKind == MediaKind.GALLERY) header("Cache-Control", "no-store")
+        }.build())
         if (body.contains("Checking your browser", true) || body.contains("DDoS-Guard", true) && !body.contains("class=\"thumbs")) error("站点要求浏览器验证，请稍后重试或调整网络")
         if (body.contains("id=\"login_username\"")) error("此页面需要登录，请在设置中登录")
         body
     }
+    suspend fun body(url: String): String = html(url)
+    suspend fun text(url: String, headers: Map<String, String> = emptyMap()): String = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url(url).apply { headers.forEach { (name, value) -> header(name, value) } }.build()
+        getText(request)
+    }
+    suspend fun json(url: String, headers: Map<String, String> = emptyMap()): com.google.gson.JsonElement {
+        val body = text(url, headers)
+        return try {
+            com.google.gson.JsonParser.parseString(body).also {
+                check(it.isJsonObject || it.isJsonArray) { "站点返回了非 JSON 数据，请稍后重试或调整网络" }
+            }
+        }
+        catch (_: com.google.gson.JsonParseException) { error("站点返回了非 JSON 数据，请稍后重试或调整网络") }
+    }
+    suspend fun post(url: String, form: okhttp3.RequestBody): String = withContext(Dispatchers.IO) {
+        client.newCall(Request.Builder().url(url).post(form).build()).execute().use { response ->
+            check(response.isSuccessful) { "请求失败：HTTP ${response.code}" }
+            response.body?.string().orEmpty()
+        }
+    }
+    suspend fun statusOrNull(url: String): Int? = withContext(Dispatchers.IO) {
+        runCatching { client.newCall(Request.Builder().url(url).build()).execute().use { it.code } }.getOrNull()
+    }
     suspend fun login(username: String, password: String) = withContext(Dispatchers.IO) {
         require(username.isNotBlank() && password.isNotEmpty()) { "请填写用户名和密码" }
-        val url = "${Site.BASE}/login/"
-        val loginPage = client.newCall(Request.Builder().url(url).build()).execute().use { response ->
-            check(response.isSuccessful) { "登录页 HTTP ${response.code}" }; response.body?.string().orEmpty()
-        }
-        val token = Jsoup.parse(loginPage).selectFirst("input[name=remember_me_csrf_token]")?.attr("value") ?: error("无法读取登录令牌，站点可能要求浏览器验证")
-        val form = FormBody.Builder().add("username", username.trim()).add("pass", password).add("action", "login").add("remember_me", "1").add("remember_me_csrf_token", token).build()
-        client.newCall(Request.Builder().url(url).post(form).build()).execute().use { response ->
-            check(response.isSuccessful) { "登录失败：HTTP ${response.code}" }
-            val body = response.body?.string().orEmpty(); val doc = Jsoup.parse(body)
-            val error = doc.selectFirst(".generic-error, .alert-error")?.text().orEmpty()
-            check(error.isBlank()) { error }
-            check(!body.contains("id=\"login_username\"") || body.contains("action=logout") || body.contains("/logout/")) { "登录未成功，请检查用户名、密码和邮箱验证" }
-            check(session.loadForRequest(Site.BASE.toHttpUrl()).any { it.name == "PHPSESSID" }) { "服务器没有返回会话" }
-            store.username = username.trim()
-        }
+        val site = SiteRegistry.current
+        AdapterRegistry.adapter(site).login(this@Network, username, password)
     }
 }
 
+/** Maps a site onto its adapter. Adapters are cheap and stateless apart from the network. */
+object AdapterRegistry {
+    private val cache = mutableMapOf<String, com.r34v.r34v.data.adapter.SiteAdapter>()
+
+    @Synchronized
+    fun adapter(site: SiteContext, network: Network? = null): com.r34v.r34v.data.adapter.SiteAdapter {
+        cache[site.id]?.let { return it }
+        val net = network ?: error("adapter not initialised for ${site.id}")
+        val created = when (site.id) {
+            SiteRegistry.HANIME1.id -> com.r34v.r34v.data.adapter.HanimeAdapter(site, net)
+            SiteRegistry.IWARA.id -> com.r34v.r34v.data.adapter.IwaraAdapter(site, net)
+            SiteRegistry.EHENTAI.id, SiteRegistry.EXHENTAI.id -> com.r34v.r34v.data.adapter.EhAdapter(site, net)
+            SiteRegistry.NHENTAI.id -> com.r34v.r34v.data.adapter.NhentaiAdapter(net)
+            SiteRegistry.HITOMI.id -> com.r34v.r34v.data.adapter.HitomiAdapter(net)
+            else -> com.r34v.r34v.data.adapter.KvsAdapter(site, net)
+        }
+        cache[site.id] = created
+        return created
+    }
+
+    @Synchronized
+    fun warm(network: Network) { SiteRegistry.all.forEach { adapter(it, network) } }
+}
+
 class Repository(private val network: Network) {
-    suspend fun feed(request: FeedRequest): FeedPage = withContext(Dispatchers.IO) {
-        val folder = network.feedCacheDirectory.apply { mkdirs() }
-        val name = java.security.MessageDigest.getInstance("SHA-256").digest(request.url.toByteArray()).joinToString("") { "%02x".format(it) }
-        val file = File(folder, name)
-        try {
-            val page = HtmlParser.feed(network.html(request.url), request)
-            if (request.kind != FeedKind.FOR_YOU) runCatching {
-                val temp = File(folder, "$name.part"); temp.writeText(com.google.gson.Gson().toJson(page)); temp.renameTo(file)
-                folder.listFiles()?.sortedByDescending { it.lastModified() }?.drop(40)?.forEach { it.delete() }
+    private fun adapter() = AdapterRegistry.adapter(SiteRegistry.current, network)
+
+    suspend fun feed(request: FeedRequest): FeedPage {
+        val adapter = adapter()
+        return withContext(Dispatchers.IO) {
+            val site = adapter.site
+            val url = adapter.resolve(request)
+            val folder = network.feedCacheDirectory.apply { mkdirs() }
+            // The cache key carries the site so two sites can never overwrite each other's snapshots.
+            val name = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(("${site.id}|$url" + if (request.language == GalleryLanguage.ALL) "" else "|${request.language.name}|${request.cursor}").toByteArray()).joinToString("") { "%02x".format(it) }
+            val file = File(folder, name)
+            try {
+                val page = adapter.feed(request)
+                if (request.kind != FeedKind.FOR_YOU) runCatching {
+                    val temp = File(folder, "$name.part"); temp.writeText(com.google.gson.Gson().toJson(page)); temp.renameTo(file)
+                    folder.listFiles()?.sortedByDescending { it.lastModified() }?.drop(40)?.forEach { it.delete() }
+                }
+                page
+            } catch (error: IOException) {
+                val stale = if (request.kind != FeedKind.FOR_YOU) runCatching {
+                    com.google.gson.Gson().fromJson(file.readText(), FeedPage::class.java)
+                }.getOrNull() else null
+                stale?.copy(cached = true) ?: throw error
             }
-            page
-        } catch (error: IOException) {
-            val stale = if (request.kind != FeedKind.FOR_YOU) runCatching { com.google.gson.Gson().fromJson(file.readText(), FeedPage::class.java) }.getOrNull() else null
-            stale?.copy(cached = true) ?: throw error
         }
     }
-    suspend fun detail(url: String) = withContext(Dispatchers.IO) { HtmlParser.detail(network.html(Site.absolute(url)), Site.absolute(url)) }
-    suspend fun index(segment: String) = HtmlParser.index(network.html("${Site.BASE}/$segment/"), segment)
-    suspend fun works() = HtmlParser.works(network.html("${Site.BASE}/top-characters/"))
-    suspend fun ranking(url: String) = HtmlParser.ranking(network.html(Site.absolute(url)))
+    suspend fun detail(url: String): Detail {
+        val site = SiteRegistry.forHost(url.toHttpUrlOrNull()?.host.orEmpty()) ?: SiteRegistry.current
+        val adapter = AdapterRegistry.adapter(site, network)
+        return withContext(Dispatchers.IO) { adapter.detail(url) }
+    }
+    suspend fun index(segment: String) = withContext(Dispatchers.IO) { adapter().index(segment) }
+    suspend fun works() = withContext(Dispatchers.IO) { adapter().index("works") }
+    suspend fun ranking(url: String) = withContext(Dispatchers.IO) { adapter().index("artists") }
 }
 
 /** Cancellation remains connected to the call until the full body has been consumed. */

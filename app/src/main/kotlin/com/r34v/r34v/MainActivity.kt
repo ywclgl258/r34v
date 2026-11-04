@@ -23,7 +23,11 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.exoplayer.offline.Download
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import com.r34v.r34v.data.*
+import com.r34v.r34v.data.adapter.Capability
+import com.r34v.r34v.data.adapter.GalleryLoginRequiredException
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.r34v.r34v.ui.*
 import kotlinx.coroutines.*
 
@@ -33,6 +37,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var root: LinearLayout
     private lateinit var toolbar: LinearLayout
     private lateinit var body: FrameLayout
+    private lateinit var languageBar: FrameLayout
     private lateinit var navigation: LinearLayout
     private var screen = "home"
     private var request = FeedRequest()
@@ -45,22 +50,54 @@ class MainActivity : ComponentActivity() {
     private var screenScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val backStack = ArrayDeque<Pair<String, FeedRequest>>()
     private var feedList: RecyclerView? = null
+    private lateinit var switcher: SiteSwitcher
+    private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == RESULT_OK) navigate("home", false)
+    }
+    private fun launchOfficialLogin() = officialLogin.launch(Intent(this, SiteAuthActivity::class.java).putExtra("site", SiteRegistry.current.id))
+
+    /** Swaps the active site: storage namespace, network and every cached list move together. */
+    private fun switchSite(site: SiteContext) {
+        if (site.id == SiteRegistry.current.id) return
+        store.switchSite(site.id)
+        // Routing is per URL; a site switch no longer rewrites or invalidates network settings.
+        scrollPositions.clear()
+        backStack.clear()
+        request = FeedRequest()
+        libraryTab = "记录"
+        favoriteTab = if (site.mediaKind == MediaKind.GALLERY) "画廊" else "视频"
+        searchQuery = ""
+        searchScope = 0
+        navigate("home", false)
+        toast("已切换到 ${site.name}")
+    }
+
+    private fun openSiteSwitcher() {
+        if (::switcher.isInitialized) switcher.open()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val link = intent.getStringExtra("link")
+        val linkedSite = link?.toHttpUrlOrNull()?.host?.let(SiteRegistry::forHost)
+        val linkedRequest = if (link != null && linkedSite != null) AdapterRegistry.adapter(linkedSite, app.network).linkRequest(link) else null
+        if (savedInstanceState == null && linkedRequest != null && linkedSite != null) store.switchSite(linkedSite.id)
         root = column().apply { setBackgroundColor(Palette.canvas) }
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
         }
-        toolbar = row().apply { minimumHeight = dp(56); setPadding(dp(20), dp(4), dp(12), dp(4)) }
+        toolbar = row().apply { minimumHeight = dp(64); setPadding(dp(16), dp(4), dp(8), dp(4)) }
         body = FrameLayout(this)
+        languageBar = FrameLayout(this)
         navigation = row().apply { minimumHeight = dp(64); setBackgroundColor(Palette.canvas) }
         root.addView(toolbar, LinearLayout.LayoutParams(-1, -2))
+        root.addView(languageBar, LinearLayout.LayoutParams(-1, -2))
         root.addView(body, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(line())
         root.addView(navigation, LinearLayout.LayoutParams(-1, -2))
-        setContentView(root)
+        switcher = SiteSwitcher(this, root, { SiteRegistry.all }, { SiteRegistry.current }) { site -> switchSite(site) }
+        setContentView(switcher)
         savedInstanceState?.getString("request")?.let { runCatching { app.library.gson.fromJson(it, FeedRequest::class.java) }.getOrNull()?.let { value -> request = value } }
         libraryTab = savedInstanceState?.getString("libraryTab") ?: "记录"
         favoriteTab = savedInstanceState?.getString("favoriteTab") ?: "视频"
@@ -69,14 +106,13 @@ class MainActivity : ComponentActivity() {
         navigationTab = savedInstanceState?.getString("navigationTab") ?: "home"
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (::switcher.isInitialized && switcher.isShowing) { switcher.close(); return }
                 if (backStack.isNotEmpty()) { val old = backStack.removeLast(); request = old.second; navigate(old.first, false) }
                 else if (screen != "home") navigate("home", false) else finish()
             }
         })
-        val link = intent.getStringExtra("link")
-        val match = link?.let { Regex("/(tags|models|categories)/([^/?#]+)/?").find(it) }
-        if (savedInstanceState == null && match != null) {
-            request = FeedRequest(when (match.groupValues[1]) { "models" -> FeedKind.MODEL; "categories" -> FeedKind.CATEGORY; else -> FeedKind.TAG }, match.groupValues[2])
+        if (savedInstanceState == null && linkedRequest != null) {
+            request = linkedRequest
             navigate("feed", false)
         } else navigate(savedInstanceState?.getString("screen") ?: "home", false)
         if (!BuildConfig.DEBUG && store.bool("auto_update", true) && System.currentTimeMillis() - store.prefs.getLong("update_checked_at", 0) > 12 * 60 * 60 * 1000) {
@@ -91,12 +127,22 @@ class MainActivity : ComponentActivity() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         (feedList?.layoutManager as? GridLayoutManager)?.spanCount = columns()
+        (feedList?.layoutManager as? StaggeredGridLayoutManager)?.spanCount = columns()
     }
     override fun onDestroy() { screenScope.cancel(); super.onDestroy() }
     override fun onResume() {
         super.onResume()
         if (::body.isInitialized && screen == "library") navigate("library", false)
+        else if (::body.isInitialized && screen != "settings" && needsExLogin()) navigate("home", false)
     }
+    private fun needsExLogin() = SiteRegistry.current.id == SiteRegistry.EXHENTAI.id && !app.network.session.hasGallerySession(SiteRegistry.EXHENTAI)
+    private fun exLoginGate() = show(scroll(column(24).apply {
+        addView(label("ExHentai 必须登录", 23f, bold = true)); space()
+        addView(label("未登录时原站可能只显示白屏。请通过官方论坛登录，并确认账号具备 ExHentai 访问权限。", 15f, Palette.muted))
+        space(20); addView(action("官方网页登录", true) { launchOfficialLogin() })
+        space(8); addView(outlineAction("站点设置") { navigate("settings", false) })
+        space(); addView(label("也可在站点设置中导入已有 Cookie；登录成功后会验证本站访问权限。", 13f, Palette.muted))
+    }))
     private fun columns() = if (resources.configuration.screenWidthDp >= 600) 3 else 2
     private fun navigate(target: String, push: Boolean = true) {
         (body.getChildAt(0) as? ScrollView)?.let { scrollPositions[screen] = it.scrollY }
@@ -104,24 +150,59 @@ class MainActivity : ComponentActivity() {
         screenScope.cancel(); screenScope = CoroutineScope(SupervisorJob(lifecycleScope.coroutineContext[Job]) + Dispatchers.Main.immediate)
         if (target in listOf("home", "explore", "search", "library")) navigationTab = target
         screen = target; feedList = null; toolbar.removeAllViews(); body.removeAllViews(); navigation.removeAllViews()
-        val title = when (target) { "home" -> "R34V"; "explore" -> "发现"; "search" -> "搜索"; "library" -> "片库"; "settings" -> "设置"; else -> request.kind.title }
+        val isHome = target == "home"
+        val title = when (target) { "home" -> SiteRegistry.current.name; "explore" -> "发现"; "search" -> "搜索"; "library" -> "片库"; "settings" -> "设置"; "feed" -> AdapterRegistry.adapter(SiteRegistry.current, app.network).feedTitle(request); else -> request.kind.title }
         if (target in listOf("feed", "index", "settings")) toolbar.addView(iconAction(R.drawable.ic_back, "返回") { onBackPressedDispatcher.onBackPressed() })
-        toolbar.addView(label(title, if (target == "home") 26f else 22f, if (target == "home") Palette.red else Palette.text, true).apply {
-            if (target == "home") letterSpacing = 0.08f
+        if (!isHome) toolbar.addView(label(title, 21f, Palette.text, true).apply {
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        toolbar.addView(iconAction(R.drawable.ic_download, "下载") { libraryTab = "缓存"; navigate("library") })
+        toolbar.addView(row().apply {
+            isFocusable = true
+            minimumHeight = dp(48)
+            minimumWidth = dp(48); buttonSemantics()
+            contentDescription = "切换站点，当前 ${SiteRegistry.current.name}"
+            setPadding(dp(2), dp(4), dp(10), dp(4))
+            background = android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x22ffffff),
+                rounded(android.graphics.Color.TRANSPARENT, dp(4).toFloat()), null)
+            addView(label(SiteRegistry.current.name, 14f, Palette.secondary, true).apply {
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                maxWidth = dp(120)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, LinearLayout.LayoutParams(-2, -2))
+            addView(ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.ic_chevron_down)
+                imageTintList = android.content.res.ColorStateList.valueOf(Palette.secondary)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, LinearLayout.LayoutParams(dp(14), dp(14)).apply { marginStart = dp(4) })
+            setOnClickListener { openSiteSwitcher() }
+        }, LinearLayout.LayoutParams(-2, -2))
+        if (isHome) toolbar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        toolbar.addView(iconAction(R.drawable.ic_download, if (SiteRegistry.current.mediaKind == MediaKind.GALLERY) "图页缓存" else "下载") { libraryTab = "缓存"; navigate("library") })
         toolbar.addView(iconAction(R.drawable.ic_settings, "设置") { navigate("settings") })
         for ((key, name, icon) in listOf(Triple("home", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore), Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark))) {
             val active = navigationTab == key
             navigation.addView(column().apply {
                 gravity = Gravity.CENTER; minimumHeight = dp(64); isSelected = active; isFocusable = true
+                buttonSemantics()
                 setPadding(0, dp(9), 0, dp(9))
-                background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22ffffff), null, null)
-                addView(ImageView(this@MainActivity).apply { setImageResource(icon); imageTintList = android.content.res.ColorStateList.valueOf(if (active) Palette.text else Palette.muted) }, LinearLayout.LayoutParams(dp(23), dp(23)))
+                background = controlBackground(android.graphics.Color.TRANSPARENT)
+                addView(FrameLayout(this@MainActivity).apply {
+                    if (active) background = rounded(Palette.raised, dp(16).toFloat())
+                    addView(ImageView(this@MainActivity).apply {
+                        setImageResource(icon); imageTintList = android.content.res.ColorStateList.valueOf(if (active) Palette.text else Palette.muted)
+                    }, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+                }, LinearLayout.LayoutParams(dp(56), dp(32)))
                 addView(label(name, 11f, if (active) Palette.text else Palette.muted, active).apply { gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0) })
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+                for (i in 0 until childCount) getChildAt(i).importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
                 setOnClickListener { backStack.clear(); navigate(key, false) }; contentDescription = name
             }, LinearLayout.LayoutParams(0, -2, 1f))
         }
+        languageBar.removeAllViews()
+        languageBar.visibility = if (SiteRegistry.current.mediaKind == MediaKind.GALLERY && target in listOf("home", "explore", "search", "feed") && !needsExLogin()) View.VISIBLE else View.GONE
+        if (languageBar.visibility == View.VISIBLE) languageBar.addView(languageFilters().apply { setPadding(dp(16), 0, dp(16), dp(4)) })
+        if (target != "settings" && needsExLogin()) { exLoginGate(); return }
         when (target) { "home" -> home(); "explore" -> explore(); "search" -> search(); "library" -> library(); "settings" -> settings(); "feed" -> feed(); "index" -> index(request.target) }
     }
     private fun show(view: View) {
@@ -131,57 +212,105 @@ class MainActivity : ComponentActivity() {
     private fun loading() = show(CinemaLoadingView(this).apply { showStage("正在装载内容", "整理最新片架", "加载中") })
     private fun failure(error: Throwable, retry: () -> Unit) {
         if (error is CancellationException) throw error
-        show(column(24).apply { gravity = Gravity.CENTER; addView(label(error.message ?: "加载失败", 15f, Palette.muted)); addView(action("重试", true, retry)) })
+        if (error is GalleryLoginRequiredException && SiteRegistry.current.id == SiteRegistry.EXHENTAI.id) {
+            app.network.session.clear(SiteRegistry.EXHENTAI); exLoginGate(); return
+        }
+        show(scroll(emptyState(R.drawable.ic_explore, "内容加载失败", error.message ?: "请检查网络连接后重试", "重试", retry).apply {
+            if (error.message.orEmpty().let { it.contains("会话") || it.contains("权限") }) addView(quietAction("站点设置") { navigate("settings") })
+        }))
     }
     private fun openFeed(value: FeedRequest) {
         backStack.addLast(screen to request); request = value; navigate("feed", false)
     }
-    private fun play(video: Video, offlineId: String? = null, localPath: String? = null) {
+    private fun play(video: Video, offlineId: String? = null, localPath: String? = null, read: Boolean = false) {
+        if (isGallery(video)) {
+            startActivity(Intent(this, GalleryActivity::class.java).putExtra("gallery", store.gson.toJson(video.copy(mediaKind = MediaKind.GALLERY))).putExtra("read", read))
+            return
+        }
         startActivity(Intent(this, PlayerActivity::class.java).putExtra("video", store.gson.toJson(video)).putExtra("download", offlineId).putExtra("local", localPath))
     }
     private data class Tile(val full: Boolean = true, val create: () -> View)
-    private inner class Tiles(val items: MutableList<Tile>) : RecyclerView.Adapter<Tiles.Holder>() {
+    private inner class Tiles(val items: MutableList<Tile>, val masonry: Boolean = false) : RecyclerView.Adapter<Tiles.Holder>() {
         inner class Holder(val frame: FrameLayout) : RecyclerView.ViewHolder(frame)
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Holder(FrameLayout(this@MainActivity).apply { layoutParams = RecyclerView.LayoutParams(-1, -2) })
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = Holder(FrameLayout(this@MainActivity).apply {
+            layoutParams = if (masonry) StaggeredGridLayoutManager.LayoutParams(-1, -2) else RecyclerView.LayoutParams(-1, -2)
+        })
         override fun getItemCount() = items.size
-        override fun onBindViewHolder(holder: Holder, position: Int) { holder.frame.removeAllViews(); holder.frame.addView(items[position].create()) }
+        override fun onBindViewHolder(holder: Holder, position: Int) {
+            (holder.frame.layoutParams as? StaggeredGridLayoutManager.LayoutParams)?.isFullSpan = items[position].full
+            holder.frame.removeAllViews(); holder.frame.addView(items[position].create())
+        }
     }
     private fun grid(items: MutableList<Tile>): Pair<RecyclerView, Tiles> {
-        val adapter = Tiles(items)
-        val layout = GridLayoutManager(this, columns()).apply {
+        val masonry = SiteRegistry.current.mediaKind == MediaKind.GALLERY
+        val adapter = Tiles(items, masonry)
+        val layout = if (masonry) StaggeredGridLayoutManager(columns(), StaggeredGridLayoutManager.VERTICAL) else GridLayoutManager(this, columns()).apply {
             spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() { override fun getSpanSize(position: Int) = if (items[position].full) spanCount else 1 }
         }
         val list = RecyclerView(this).apply { layoutManager = layout; this.adapter = adapter; setPadding(dp(11), 0, dp(11), dp(16)); clipToPadding = false; itemAnimator = null }
         feedList = list
         return list to adapter
     }
-    private fun heading(text: String) = Tile { label(text, 17f, bold = true).apply { setPadding(dp(5), dp(28), dp(5), dp(12)) } }
-    private fun video(video: Video) = Tile(false) { videoTile(video, listOf((if (store.isFavorite("video", video.id)) "取消收藏" else "收藏") to { favoriteVideo(video) })) { play(video) }.apply { setOnLongClickListener { favoriteVideo(video); true } } }
+    private fun lastVisible(list: RecyclerView) = when (val layout = list.layoutManager) {
+        is StaggeredGridLayoutManager -> layout.findLastVisibleItemPositions(null).maxOrNull() ?: 0
+        is GridLayoutManager -> layout.findLastVisibleItemPosition()
+        else -> 0
+    }
+    private fun heading(text: String) = Tile { label(text, 20f, bold = true).apply { setPadding(dp(5), dp(24), dp(5), dp(12)); ViewCompat.setAccessibilityHeading(this, true) } }
+    private fun isGallery(video: Video) = video.mediaKind == MediaKind.GALLERY || SiteRegistry.byId(video.site)?.mediaKind == MediaKind.GALLERY
+    private fun video(video: Video) = Tile(false) { videoTile(video, listOf((if (store.isFavorite(if (isGallery(video)) "gallery" else "video", video.id)) "取消收藏" else "收藏") to { favoriteVideo(video) })) { play(video) }.apply { setOnLongClickListener { favoriteVideo(video); true } } }
     private fun favoriteVideo(video: Video) {
-        val added = store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration))
+        val added = store.toggleFavorite(Favorite(if (isGallery(video)) "gallery" else "video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site)
         toast(if (added) "已收藏" else "已取消收藏"); feedList?.adapter?.notifyDataSetChanged()
     }
+    /** The site's own default entry, so the home screen is not KVS-shaped on every site. */
+    private fun homeRequest(page: Int = 1): FeedRequest {
+        return filteredRequest(AdapterRegistry.adapter(SiteRegistry.current, app.network).homeRequest(page))
+    }
+
+    private fun filteredRequest(value: FeedRequest) = if (SiteRegistry.current.mediaKind == MediaKind.GALLERY)
+        value.copy(language = store.galleryLanguage()) else value
+
+    private fun languageFilters(): View = column().apply {
+        addView(label("语言分类", 14f, Palette.muted).apply { ViewCompat.setAccessibilityHeading(this, true) })
+        addView(FlowLayout(this@MainActivity).apply {
+            GalleryLanguage.entries.forEach { language ->
+                addView(chip(language.title, store.galleryLanguage() == language) {
+                    if (store.galleryLanguage() != language) {
+                        store.setGalleryLanguage(language)
+                        request = request.copy(language = language, page = 1, cursor = "")
+                        scrollPositions.remove(screen)
+                        navigate(screen, false)
+                    }
+                })
+            }
+        })
+    }
+
     private fun home() {
         loading()
         val items = mutableListOf<Tile>()
         var page = 1
+        var cursor = ""
         var total = 1
         var loadingMore = false
         var adapter: Tiles? = null
+        val kvs = SiteRegistry.current.id == SiteRegistry.R34V.id
         fun load() {
             if (loadingMore) return
             loadingMore = true
             screenScope.launch {
-                val popular = if (page == 1) async {
+                // Ranking rows only exist on KVS sites; hanime1 exposes sorts instead.
+                val popular = if (page == 1 && kvs) async {
                     try { withTimeoutOrNull(10000) { app.repository.feed(FeedRequest(FeedKind.POPULAR)) } }
                     catch (error: Exception) { if (error is CancellationException) throw error; null }
                 } else null
-                val rated = if (page == 1) async {
+                val rated = if (page == 1 && kvs) async {
                     try { withTimeoutOrNull(10000) { app.repository.feed(FeedRequest(FeedKind.RATED)) } }
                     catch (error: Exception) { if (error is CancellationException) throw error; null }
                 } else null
                 try {
-                    val result = app.repository.feed(FeedRequest(page = page))
+                    val result = app.repository.feed(homeRequest(page).copy(cursor = cursor))
                     val videos = result.videos.filter(store::allowed)
                     if (items.isEmpty()) {
                         val popularVideos = withTimeoutOrNull(600) { popular?.await() }?.videos.orEmpty().filter(store::allowed)
@@ -190,7 +319,7 @@ class MainActivity : ComponentActivity() {
                         val ranked = popularVideos.take(3).mapIndexed { index, video -> CarouselEntry(video, "热门榜 · 第 ${index + 1} 位") } +
                             ratedVideos.take(3).mapIndexed { index, video -> CarouselEntry(video, "高分榜 · 第 ${index + 1} 位") }
                         val entries = ranked.ifEmpty { videos.take(1).map { CarouselEntry(it, "最新精选") } }
-                        if (entries.isNotEmpty()) {
+                        if (entries.isNotEmpty() && SiteRegistry.current.mediaKind != MediaKind.GALLERY) {
                             val carousel = VideoCarousel(this@MainActivity, entries, screenScope,
                                 { id -> store.isFavorite("video", id) },
                                 { value -> store.toggleFavorite(Favorite("video", value.id, value.title, value.url, value.thumb, value.duration)) },
@@ -198,18 +327,18 @@ class MainActivity : ComponentActivity() {
                             items.add(Tile { carousel })
                         }
                         if (result.cached) items.add(Tile { label("当前显示离线列表缓存", 12f, Palette.muted).apply { setPadding(dp(16), dp(8), dp(16), dp(12)) } })
-                        items.add(heading("最新视频"))
+                        items.add(heading(if (SiteRegistry.current.mediaKind == MediaKind.GALLERY) "最新画廊" else if (kvs) "最新视频" else "最新上传"))
                     }
                     videos.forEach { items.add(video(it)) }
                     total = result.total
                     page = result.current + 1
-                    if (result.current == 1 && result.videos.isEmpty()) items.add(Tile { label("暂时没有可显示的视频", 14f, Palette.muted).apply { setPadding(dp(16), dp(12), dp(16), dp(24)) } })
+                    cursor = result.nextCursor.orEmpty()
+                    if (result.current == 1 && result.videos.isEmpty()) items.add(Tile { label(if (SiteRegistry.current.mediaKind == MediaKind.GALLERY) "当前语言下暂无画廊，可切换语言查看" else "暂时没有可显示的视频", 14f, Palette.muted).apply { setPadding(dp(16), dp(12), dp(16), dp(24)) } })
                     if (adapter == null) {
                         val (list, a) = grid(items); adapter = a; show(list)
                         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
                             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                                val layout = recyclerView.layoutManager as GridLayoutManager
-                                if (dy > 0 && layout.findLastVisibleItemPosition() >= items.size - 7 && page <= total) load()
+                                if (dy > 0 && lastVisible(recyclerView) >= items.size - 7 && page <= total) load()
                             }
                         })
                     } else adapter?.notifyDataSetChanged()
@@ -234,32 +363,34 @@ class MainActivity : ComponentActivity() {
         loading()
         val items = mutableListOf<Tile>()
         var page = request.page; var total = page; var loadingMore = false
+        var cursor = request.cursor
         var adapter: Tiles? = null
         fun load(reset: Boolean = false) {
             if (loadingMore) return
             loadingMore = true
             screenScope.launch {
                 try {
-                    val result = app.repository.feed(request.copy(page = if (reset) 1 else page))
+                    val result = app.repository.feed(filteredRequest(request.copy(page = if (reset) 1 else page, cursor = if (reset) "" else cursor)))
                     if (reset) items.clear()
                     if (items.isEmpty()) {
                         if (result.cached) items.add(Tile { label("当前显示离线列表缓存", 13f, Palette.muted) })
                         items.add(Tile { row().apply {
-                            addView(label(request.target.ifBlank { request.kind.title }, 16f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
-                            addView(action(request.sort.title) { chooseSort() }); addView(action("刷新") { page = 1; load(true) })
+                            val siteAdapter = AdapterRegistry.adapter(SiteRegistry.current, app.network)
+                            addView(label(siteAdapter.feedTitle(request), 16f, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
+                            addView(action(siteAdapter.sortTitle(request.sort)) { chooseSort() }); addView(action("刷新") { page = 1; load(true) })
                         } })
                     }
                     val known = items.size
                     result.videos.filter(store::allowed).forEach { items.add(video(it)) }
                     total = if (request.kind == FeedKind.FOR_YOU) result.current else result.total
                     page = result.current + 1
-                    if (known == items.size && result.videos.isEmpty()) items.add(Tile { label("没有找到视频", 14f, Palette.muted) })
+                    cursor = result.nextCursor.orEmpty()
+                    if (known == items.size && result.videos.isEmpty()) items.add(Tile { label(if (SiteRegistry.current.mediaKind == MediaKind.GALLERY) "当前语言下没有找到画廊，可切换语言或修改搜索条件" else "没有找到视频", 14f, Palette.muted) })
                     if (adapter == null) {
                         val (list, a) = grid(items); adapter = a; show(list)
                         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
                             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                                val layout = recyclerView.layoutManager as GridLayoutManager
-                                if (dy > 0 && layout.findLastVisibleItemPosition() >= items.size - 7 && page <= total) load()
+                                if (dy > 0 && lastVisible(recyclerView) >= items.size - 7 && page <= total) load()
                             }
                         })
                     } else adapter?.notifyDataSetChanged()
@@ -274,12 +405,15 @@ class MainActivity : ComponentActivity() {
         load()
     }
     private fun chooseSort() {
-        val options = Sort.entries.filter { request.kind == FeedKind.SEARCH || it != Sort.RELEVANCE }
-        AlertDialog.Builder(this).setTitle("排序方式").setItems(options.map { it.title }.toTypedArray()) { _, which ->
-            request = request.copy(sort = options[which], page = 1); navigate("feed", false)
+        val adapter = AdapterRegistry.adapter(SiteRegistry.current, app.network)
+        val options = adapter.sorts.filter { request.kind == FeedKind.SEARCH || it != Sort.RELEVANCE }
+        AlertDialog.Builder(this).setTitle("排序方式").setItems(options.map(adapter::sortTitle).toTypedArray()) { _, which ->
+            request = request.copy(sort = options[which], page = 1, cursor = ""); navigate("feed", false)
         }.show()
     }
     private fun explore() {
+        val site = SiteRegistry.current
+        val adapter = AdapterRegistry.adapter(site, app.network)
         fun browse(segment: String) { backStack.addLast(screen to request); request = FeedRequest(target = segment); navigate("index", false) }
         fun entry(title: String, subtitle: String, click: () -> Unit) = row().apply {
             minimumHeight = dp(if (subtitle.isBlank()) 56 else 72); setPadding(dp(16), dp(8), dp(12), dp(8))
@@ -287,31 +421,51 @@ class MainActivity : ComponentActivity() {
             addView(ImageView(this@MainActivity).apply { setImageResource(R.drawable.ic_chevron_down); rotation = -90f }, LinearLayout.LayoutParams(dp(20), dp(20))); setOnClickListener { click() }; isFocusable = true; contentDescription = title
             background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22ffffff), rounded(Palette.surface, dp(3).toFloat()), null)
         }
+        // Entries come from the site itself, so a new site needs no UI change here.
+        val genres = adapter.sections.filter { it.feed?.kind == FeedKind.CATEGORY }
+        val ranked = adapter.sections.filter { it.feed != null && it !in genres }
+        val catalogEntries = adapter.sections.filter { it.feed == null && adapter.sectionUrl(it.key) != null }
         show(scroll(column(16).apply {
-            addView(label("找到下一部想看的", 22f, bold = true)); addView(label("从榜单、分类和创作者开始", 14f, Palette.muted)); space(18)
-            addView(label("精选榜单", 18f, bold = true)); space(8)
-            addView(entry("热门榜", "看看大家最近在看什么") { openFeed(FeedRequest(FeedKind.POPULAR)) }); space(8)
-            addView(FlowLayout(this@MainActivity).apply { listOf("最新更新" to FeedKind.LATEST, "高分榜" to FeedKind.RATED, "为你推荐" to FeedKind.FOR_YOU).forEach { (name, kind) -> addView(chip(name) { openFeed(FeedRequest(kind)) }) } })
-            space(24); addView(label("浏览内容", 18f, bold = true)); space(8)
-            addView(surface(column().apply {
-                addView(entry("分类", "") { browse("categories") }); addView(line())
-                addView(entry("角色与作品", "") { browse("works") }); addView(line())
-                addView(entry("作者排行", "") { browse("artists") })
-            }))
-            space(16)
-            addView(FlowLayout(this@MainActivity).apply { addView(outlineAction("作者索引") { browse("models") }); addView(outlineAction("标签索引") { browse("tags") }) })
+            addView(label("找到下一部想看的", 22f, bold = true))
+            addView(label("从榜单、分类和创作者开始", 14f, Palette.muted)); space(18)
+            if (ranked.isNotEmpty()) {
+                addView(label("精选榜单", 18f, bold = true)); space(8)
+                addView(entry(ranked.first().title, ranked.first().subtitle) { openFeed(ranked.first().feed!!) }); space(8)
+                addView(FlowLayout(this@MainActivity).apply {
+                    ranked.drop(1).forEach { section -> addView(chip(section.title) { openFeed(section.feed!!) }) }
+                })
+            }
+            if (genres.isNotEmpty()) {
+                space(24); addView(label(adapter.catalogueTitle, 18f, bold = true)); space(8)
+                addView(FlowLayout(this@MainActivity).apply {
+                    genres.forEach { section -> addView(chip(section.title) { openFeed(section.feed!!) }) }
+                })
+            }
+            if (catalogEntries.isNotEmpty()) {
+                space(24); addView(label("浏览内容", 18f, bold = true)); space(8)
+                addView(surface(column().apply {
+                    catalogEntries.forEachIndexed { index, section ->
+                        if (index > 0) addView(line())
+                        addView(entry(section.title, section.subtitle) { browse(section.key) })
+                    }
+                }))
+            }
         }))
     }
+
     private fun index(segment: String) {
+        val adapter = AdapterRegistry.adapter(SiteRegistry.current, app.network)
+        if (adapter.sectionUrl(segment) == null) {
+            show(column(24).apply {
+                addView(label("当前站点不支持此索引", 16f, Palette.muted))
+                addView(action("浏览本站内容") { navigate("explore", false) })
+            })
+            return
+        }
         loading()
         screenScope.launch {
             try {
-                val links = when {
-                    segment == "works" -> app.repository.works()
-                    segment == "artists" -> app.repository.ranking("/top-model/?sort=az")
-                    segment.startsWith("work:") -> app.repository.ranking("/top-characters/${segment.removePrefix("work:")}/")
-                    else -> app.repository.index(segment)
-                }
+                val links = app.repository.index(segment)
                 val items = mutableListOf(heading(when (segment) { "works" -> "选择作品"; "artists" -> "作者排行"; else -> "浏览索引" }))
                 if (links.isEmpty()) items.add(Tile { label("没有找到条目", 14f, Palette.muted) })
                 links.forEachIndexed { i, link -> items.add(Tile {
@@ -335,28 +489,42 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun search() {
+        val gallery = SiteRegistry.current.mediaKind == MediaKind.GALLERY
         val content = column(16)
-        val input = inputField("搜索视频、标签或作者").apply {
+        content.addView(label(if (gallery) "寻找想读的画廊" else "找到想看的内容", 24f, bold = true).apply { ViewCompat.setAccessibilityHeading(this, true) })
+        content.addView(label("在 ${SiteRegistry.current.name} 中搜索", 14f, Palette.muted)); content.space(20)
+        val creatorTitle = AdapterRegistry.adapter(SiteRegistry.current, app.network).creatorTitle
+        val input = inputField(if (gallery) "搜索画廊、标签或$creatorTitle" else "搜索视频、标签或作者").apply {
             imeOptions = EditorInfo.IME_ACTION_SEARCH; inputType = InputType.TYPE_CLASS_TEXT
             setText(searchQuery); setSelection(text.length); contentDescription = "搜索关键词"
-            doAfterTextChanged { searchQuery = it.toString() }
+        }
+        val clear = iconAction(R.drawable.ic_close, "清除关键词") { input.text.clear(); input.requestFocus() }.apply {
+            visibility = if (searchQuery.isBlank()) View.GONE else View.VISIBLE
+        }
+        input.doAfterTextChanged {
+            searchQuery = it.toString(); input.error = null
+            clear.visibility = if (it.isNullOrEmpty()) View.GONE else View.VISIBLE
         }
         fun submit() {
-            val query = input.text.toString().trim(); if (query.isBlank()) { input.requestFocus(); return }
+            val query = input.text.toString().trim(); if (query.isBlank()) { input.error = "请输入关键词"; input.requestFocus(); return }
             searchQuery = query; store.addSearch(query)
             (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken, 0)
             val kind = when (searchScope) { 1 -> FeedKind.TAG; 2 -> FeedKind.MODEL; else -> FeedKind.SEARCH }
-            openFeed(FeedRequest(kind, if (kind == FeedKind.SEARCH) query else query.lowercase().replace(' ', '-'), if (kind == FeedKind.SEARCH) Sort.RELEVANCE else Sort.NEWEST))
+            openFeed(AdapterRegistry.adapter(SiteRegistry.current, app.network).searchRequest(query, kind))
         }
         input.setOnEditorActionListener { _, action, _ -> if (action == EditorInfo.IME_ACTION_SEARCH) { submit(); true } else false }
         content.addView(row().apply {
-            addView(input, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(FrameLayout(this@MainActivity).apply {
+                addView(input, FrameLayout.LayoutParams(-1, -2))
+                input.setPadding(dp(14), dp(12), dp(52), dp(12))
+                addView(clear, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.END or Gravity.CENTER_VERTICAL))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
             addView(iconAction(R.drawable.ic_search, "提交搜索") { submit() })
         }); content.space(12)
         val scopes = FlowLayout(this)
         fun renderScopes() {
             scopes.removeAllViews()
-            listOf("视频", "标签", "作者").forEachIndexed { index, name -> scopes.addView(chip(name, searchScope == index) { searchScope = index; renderScopes() }) }
+            (if (gallery) listOf("画廊", "标签", creatorTitle) else listOf("视频", "标签", "作者")).forEachIndexed { index, name -> scopes.addView(chip(name, searchScope == index) { searchScope = index; renderScopes() }) }
         }
         renderScopes(); content.addView(scopes); content.space(24)
         content.addView(row().apply { addView(label("最近搜索", 18f, bold = true), LinearLayout.LayoutParams(0, -2, 1f)); if (store.searches().isNotEmpty()) addView(quietAction("清空") { store.clearSearches(); navigate("search", false) }) })
@@ -366,28 +534,41 @@ class MainActivity : ComponentActivity() {
         show(scroll(content))
     }
     private fun library() {
+        val gallerySite = SiteRegistry.current.mediaKind == MediaKind.GALLERY
+        val creatorTitle = AdapterRegistry.adapter(SiteRegistry.current, app.network).creatorTitle
         val container = column()
-        val task = when (libraryTab) { "记录" -> "观看"; "缓存" -> "下载"; else -> "收藏" }
+        val task = when (libraryTab) { "记录" -> if (gallerySite) "阅读" else "观看"; "缓存" -> if (gallerySite) "图页缓存" else "下载"; else -> "收藏" }
         container.addView(FlowLayout(this).apply {
             setPadding(dp(16), dp(6), dp(16), dp(12))
-            listOf("观看", "收藏", "下载").forEach { name -> addView(chip(name, task == name) {
-                libraryTab = when (name) { "观看" -> "记录"; "下载" -> "缓存"; else -> favoriteTab }; navigate("library", false)
+            (if (gallerySite) listOf("阅读", "收藏", "图页缓存") else listOf("观看", "收藏", "下载")).forEach { name -> addView(chip(name, task == name) {
+                libraryTab = when (name) { "观看", "阅读" -> "记录"; "下载", "图页缓存" -> "缓存"; else -> if (gallerySite && favoriteTab == "视频") "画廊" else favoriteTab }; navigate("library", false)
             }) }
         })
         if (task == "收藏") container.addView(FlowLayout(this).apply {
             setPadding(dp(16), 0, dp(16), dp(12))
-            listOf("视频", "角色", "作者", "标签").forEach { name -> addView(chip(name, libraryTab == name) { favoriteTab = name; libraryTab = name; navigate("library", false) }) }
+            (if (gallerySite) listOf("画廊", creatorTitle, "标签") else listOf("视频", "角色", "作者", "标签")).forEach { name -> addView(chip(name, libraryTab == name) { favoriteTab = name; libraryTab = name; navigate("library", false) }) }
         })
         val listFrame = FrameLayout(this); container.addView(listFrame, LinearLayout.LayoutParams(-1, 0, 1f)); show(container)
         fun display(items: MutableList<Tile>) {
             val position = (listFrame.getChildAt(0) as? RecyclerView)?.layoutManager?.onSaveInstanceState()
             listFrame.removeAllViews()
-            if (items.isEmpty()) items.add(Tile { column().apply { setPadding(dp(5), dp(24), dp(5), dp(24)); gravity = Gravity.CENTER; addView(label("这里还没有内容", 18f, bold = true)); addView(label(when (libraryTab) { "记录" -> "播放视频后，进度会自动保存在这里"; "缓存" -> "在播放详情中下载，即可离线观看"; else -> "收藏的视频与条目会保存在这里" }, 14f, Palette.muted)) } })
+            if (items.isEmpty()) items.add(Tile {
+                emptyState(if (task == "下载") R.drawable.ic_download else R.drawable.ic_bookmark,
+                    when (libraryTab) { "记录" -> if (gallerySite) "还没有阅读记录" else "还没有观看记录"; "缓存" -> "还没有下载内容"; else -> "还没有收藏内容" },
+                    when (libraryTab) { "记录" -> if (gallerySite) "阅读后，页码会自动保存在这里" else "播放后，进度会自动保存在这里"; "缓存" -> "在播放详情中下载，即可离线观看"; else -> "遇到喜欢的内容，点一下收藏就能留在这里" },
+                    "去发现") { navigate("explore", false) }
+            })
             val list = grid(items).first; listFrame.addView(list); position?.let { list.layoutManager?.onRestoreInstanceState(it) }
         }
         when (libraryTab) {
             "记录" -> {
                 val items = mutableListOf<Tile>()
+                if (gallerySite) {
+                    if (store.readings().isNotEmpty()) items.add(Tile { quietAction("清空阅读记录") { confirm("清空阅读记录？") { store.clearReadings(); navigate("library", false) } } })
+                    store.readings().forEach { progress -> items.add(Tile(false) {
+                        videoTile(progress.entry.copy(duration = "第 ${progress.page} / ${progress.pages} 页"), listOf("移除阅读记录" to { store.removeReading(progress.entry.id); navigate("library", false) })) { play(progress.entry, read = true) }
+                    }) }
+                } else {
                 if (store.history().isNotEmpty()) items.add(Tile { quietAction("清空观看记录") { confirm("清空观看记录？") { store.clearHistory(); navigate("library", false) } } })
                 store.history().forEach { watch -> items.add(Tile(false) {
                     videoTile(watch.video().copy(duration = if (watch.finished) "已看完" else "${timeText(watch.position * 1000)} / ${timeText(watch.duration * 1000)}"), listOf("移除观看记录" to { confirm("删除这条记录？") { store.removeWatch(watch.id); navigate("library", false) } })) { play(watch.video()) }.apply {
@@ -395,11 +576,25 @@ class MainActivity : ComponentActivity() {
                         setOnLongClickListener { confirm("删除这条记录？") { store.removeWatch(watch.id); navigate("library", false) }; true }
                     }
                 }) }
+                }
                 display(items)
             }
             "缓存" -> screenScope.launch {
+                if (gallerySite) {
+                    val site = SiteRegistry.current
+                    val info = withContext(Dispatchers.IO) { app.galleries.cacheInfo(site) }
+                    display(mutableListOf(Tile { column(16).apply {
+                        addView(label("已缓存 ${info.first} 页 · ${info.second / (1024 * 1024)} MB", 18f, bold = true))
+                        addView(label("已读图页保存在本机，可从阅读记录离线重看；尚未缓存的页面需要联网。", 14f, Palette.muted))
+                        space(); addView(quietAction("清理图页缓存") { confirm("清理本站已缓存图页？阅读记录和收藏会保留。") {
+                            screenScope.launch { withContext(Dispatchers.IO) { app.galleries.clear(site) }; navigate("library", false) }
+                        } })
+                    } }))
+                    return@launch
+                }
                 while (isActive) {
-                    val downloads = withContext(Dispatchers.IO) { app.playback.downloads() }
+                    // Only this site's downloads: another site's cache is not browsable from here.
+                    val downloads = withContext(Dispatchers.IO) { app.playback.downloadsFor() }
                     val items = mutableListOf<Tile>()
                     for (download in downloads) {
                         val meta = app.playback.metadata(download) ?: continue
@@ -424,9 +619,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
             else -> {
-                val kind = when (libraryTab) { "视频" -> "video"; "角色" -> "character"; "作者" -> "model"; else -> "tag" }
+                val kind = when (libraryTab) { "视频" -> "video"; "画廊" -> "gallery"; "角色" -> "character"; "作者", "上传者", "画师" -> "model"; else -> "tag" }
                 val items = store.favorites().filter { it.kind == kind }.map { favorite ->
-                    if (kind == "video") Tile(false) { videoTile(Video(favorite.target, favorite.title, Site.absolute(favorite.path), favorite.thumb, favorite.subtitle), listOf("取消收藏" to { store.toggleFavorite(favorite); navigate("library", false) })) { play(Video(favorite.target, favorite.title, Site.absolute(favorite.path), favorite.thumb)) }.apply { setOnLongClickListener { store.toggleFavorite(favorite); navigate("library", false); true } } }
+                    val site = SiteRegistry.byIdOrDefault(favorite.site)
+                    val url = if (favorite.path.startsWith("http")) favorite.path else site.absolute(favorite.path)
+                    if (kind == "video" || kind == "gallery") Tile(false) { videoTile(Video(favorite.target, favorite.title, url, favorite.thumb, favorite.subtitle, site = site.id, mediaKind = site.mediaKind), listOf("取消收藏" to { store.toggleFavorite(favorite); navigate("library", false) })) { play(Video(favorite.target, favorite.title, url, favorite.thumb, site = site.id, mediaKind = site.mediaKind)) }.apply { setOnLongClickListener { store.toggleFavorite(favorite); navigate("library", false); true } } }
                     else Tile { action(favorite.title) { openFeed(FeedRequest(if (kind == "model") FeedKind.MODEL else FeedKind.TAG, favorite.target)) }.apply { setOnLongClickListener { store.toggleFavorite(favorite); navigate("library", false); true } } }
                 }.toMutableList()
                 display(items)
@@ -445,11 +642,21 @@ class MainActivity : ComponentActivity() {
             group.addView(row().apply {
                 minimumHeight = dp(58); isFocusable = true; setPadding(dp(2), dp(8), dp(2), dp(8))
                 addView(label(text, 14.5f), LinearLayout.LayoutParams(0, -2, 1f))
-                if (value.isNotBlank()) addView(label(value, 12f, Palette.muted).apply { setPadding(dp(8), 0, dp(8), 0) })
-                addView(label("›", 22f, Palette.muted)); setOnClickListener { click() }; contentDescription = "$text $value"
+                if (value.isNotBlank()) addView(label(value, 12f, Palette.muted).apply {
+                    setPadding(dp(8), 0, dp(8), 0)
+                    maxWidth = dp((resources.configuration.screenWidthDp * .4f).toInt())
+                    maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                addView(ImageView(this@MainActivity).apply {
+                    setImageResource(R.drawable.ic_chevron_down); rotation = -90f
+                    imageTintList = android.content.res.ColorStateList.valueOf(Palette.muted)
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                }, LinearLayout.LayoutParams(dp(20), dp(20)))
+                background = controlBackground(android.graphics.Color.TRANSPARENT)
+                setOnClickListener { click() }; contentDescription = "$text $value"
             })
         }
-        fun toggle(text: String, key: String, default: Boolean = false, network: Boolean = false) {
+        fun toggle(text: String, key: String, default: Boolean = false) {
             if (group.childCount > 0) group.addView(line())
             group.addView(Switch(this).apply { this.text = text; textSize = 14.5f; setTextColor(Palette.text); setPadding(dp(2), dp(10), dp(2), dp(10)); minHeight = dp(58); isChecked = store.bool(key, default)
                 val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
@@ -457,7 +664,7 @@ class MainActivity : ComponentActivity() {
                 trackTintList = android.content.res.ColorStateList(states, intArrayOf(Palette.red, Palette.raised))
                 trackDrawable = android.graphics.drawable.GradientDrawable().apply { setSize(dp(44), dp(28)); cornerRadius = dp(14).toFloat(); setColor(android.content.res.ColorStateList(states, intArrayOf(Palette.red, Palette.raised))) }
                 thumbDrawable = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setSize(dp(24), dp(24)); setColor(android.content.res.ColorStateList(states, intArrayOf(Palette.text, Palette.muted))) }
-                setOnCheckedChangeListener { _, checked -> store.set(key, checked); if (network) app.network.invalidate() }
+                setOnCheckedChangeListener { _, checked -> store.set(key, checked) }
             })
         }
         title("显示")
@@ -465,9 +672,16 @@ class MainActivity : ComponentActivity() {
         title("内容过滤")
         item("屏蔽词", "${store.blockedTags().size} 个") { blockedTags() }
         title("账户")
-        item(if (store.username.isBlank()) "登录站点账户" else "退出登录", store.username) {
-            if (store.username.isBlank()) login() else confirm("退出当前账户？") { app.network.session.clear(); navigate("settings", false) }
-        }
+        if (Capability.SESSION_IMPORT in AdapterRegistry.adapter(SiteRegistry.current, app.network).capabilities) {
+            val site = SiteRegistry.current
+            val signedIn = app.network.session.hasGallerySession(site)
+            item("官方网页登录", "${site.name} 官方论坛") { launchOfficialLogin() }
+            item("导入站点会话", if (signedIn) "已导入" else "未导入") { importGallerySession() }
+            if (signedIn) item("退出本站会话") { confirm("清除 ${site.name} 的账号会话？") { app.network.session.clear(site); navigate("settings", false) } }
+        } else if (Capability.LOGIN in AdapterRegistry.adapter(SiteRegistry.current, app.network).capabilities) item(if (store.username.isBlank()) "登录站点账户" else "退出登录", store.username) {
+            // Signing out clears this site only; another site's session stays intact.
+            if (store.username.isBlank()) login() else confirm("退出当前账户？") { app.network.session.clear(SiteRegistry.current); navigate("settings", false) }
+        } else group.addView(label("${SiteRegistry.current.name} 当前支持公开浏览，无需登录。", 14f, Palette.muted))
         title("播放")
         item("默认清晰度", store.string("quality", "720p")) { choose("默认清晰度", listOf("360p", "480p", "720p", "1080p", "2160p")) { store.set("quality", it); navigate("settings", false) } }
         item("默认倍速", "${store.string("native_speed", "1.0")}×") { choose("默认倍速", listOf("0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "3.0")) { store.set("native_speed", it); navigate("settings", false) } }
@@ -475,15 +689,8 @@ class MainActivity : ComponentActivity() {
         toggle("播放时自动加入完整缓存", "auto_download")
         group.addView(label("播放时自动缓存已读数据；完整缓存支持后台下载和离线播放。", 12f, Palette.muted))
         title("网络")
-        toggle("使用 DoH 解析 DNS", "doh", true, true)
-        toggle("站点 IP 直连", "direct_ip", true, true)
-        toggle("视频 CDN 使用直连解析", "cdn_direct", true, true)
-        group.addView(label("直连复用已验证 IP。使用 VPN 或代理时保留其域名路由。", 12f, Palette.muted))
-        item("HTTP / SOCKS5 代理") { edit("代理地址（留空使用系统网络）", store.string("player_proxy")) { value ->
-            val valid = value.isBlank() || runCatching { val uri = java.net.URI(value); uri.scheme in listOf("http", "socks5") && !uri.host.isNullOrBlank() && uri.port in 1..65535 && uri.userInfo == null }.getOrDefault(false)
-            if (valid) { store.set("player_proxy", value); app.network.invalidate(); toast("已保存") } else toast("格式：http://主机:端口 或 socks5://主机:端口")
-        } }
-        item("自定义站点 IP") { edit("IPv4 地址，用逗号分隔", store.string("custom_site_ips")) { store.set("custom_site_ips", it); app.network.invalidate() } }
+        group.addView(label("自动跟随系统代理；未设置代理时使用系统 DNS 直连。代理连接失败时会显示错误。", 14f, Palette.muted))
+        group.addView(label(runCatching { app.network.routeDescription() }.getOrDefault("系统代理设置暂不可用"), 12f, Palette.muted))
         item("网络诊断") {
             val dialog = AlertDialog.Builder(this).setTitle("网络诊断").setMessage("正在发起实时请求…").setPositiveButton("关闭", null).show()
             screenScope.launch { val report = app.network.diagnose(); if (dialog.isShowing) dialog.setMessage(report) }
@@ -507,6 +714,32 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 try { app.network.login(username.text.toString(), password.text.toString()); password.text.clear(); dialog.dismiss(); if (screen == "settings") navigate("settings", false); toast("登录成功") }
                 catch (error: Exception) { if (error is CancellationException) throw error; showError(error) }
+                finally { button.isEnabled = true }
+            }
+        } }; dialog.show()
+    }
+    private fun importGallerySession() {
+        val site = SiteRegistry.current
+        val input = inputField("ipb_member_id=…; ipb_pass_hash=…; igneous=…").apply {
+            isSingleLine = false; minLines = 3; maxLines = 6; isSaveEnabled = false
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            if (Build.VERSION.SDK_INT >= 26) importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+            contentDescription = "本站 Cookie"
+        }
+        val form = column(20).apply {
+            addView(label("从已登录 ${site.name} 的浏览器复制 Cookie。仅导入本站会话；ExHentai 仍需账号具备访问权限。", 14f, Palette.muted))
+            space(); addView(input)
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("导入 ${site.name} 会话").setView(form).setPositiveButton("验证并导入", null).setNegativeButton("取消", null).create()
+        dialog.setOnDismissListener { input.text.clear() }
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val button = dialog.getButton(AlertDialog.BUTTON_POSITIVE); button.isEnabled = false
+            val raw = input.text.toString()
+            lifecycleScope.launch {
+                try {
+                    withContext(Dispatchers.IO) { AdapterRegistry.adapter(site, app.network).importSession(raw) }
+                    dialog.dismiss(); navigate("home", false); toast("本站会话已导入")
+                } catch (error: Exception) { if (error is CancellationException) throw error; showError(error) }
                 finally { button.isEnabled = true }
             }
         } }; dialog.show()
