@@ -5,6 +5,8 @@ import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import java.io.File
 import java.security.MessageDigest
 
@@ -57,6 +59,8 @@ data class LibraryRecord(
  * the screen.
  */
 class LibraryIndex(private val context: android.content.Context, private val storage: StorageRoot, private val gson: Gson = Gson()) {
+    val revision = MutableStateFlow(0L)
+    fun invalidate() { revision.update { it + 1 } }
     private data class KnownPages(val links: Map<Int, String> = emptyMap())
     private fun safe(value: String): String {
         val cleaned = value.map { if (it.isLetterOrDigit() || it in "._-") it else '_' }.joinToString("").take(64)
@@ -95,12 +99,14 @@ class LibraryIndex(private val context: android.content.Context, private val sto
     private fun <T> read(file: File, type: Class<T>): T? = runCatching { gson.fromJson(file.readText(), type) }.getOrNull()
 
     private fun write(file: File, text: String) {
+        if (runCatching { file.readText() == text }.getOrDefault(false)) return
         check(file.parentFile?.let { it.isDirectory || it.mkdirs() } == true) { "无法创建索引目录" }
         val temporary = File(file.parentFile, "${file.name}.${System.nanoTime()}.part")
         try {
             temporary.writeText(text)
             if (file.exists()) file.delete()
             check(temporary.renameTo(file)) { "无法写入下载索引" }
+            invalidate()
         } finally { temporary.delete() }
     }
 
@@ -118,6 +124,7 @@ class LibraryIndex(private val context: android.content.Context, private val sto
 
     @Synchronized fun removeVideo(site: String, id: String, quality: String) {
         videoSidecars(LibraryRecord(site = site, id = id, quality = quality)).forEach { it.delete() }
+        invalidate()
     }
 
     /**
@@ -249,6 +256,7 @@ class LibraryIndex(private val context: android.content.Context, private val sto
     /** Deletes the sidecar for a comic the user removed, so a rescan does not resurrect it. */
     @Synchronized fun forgetComic(site: String, id: String) {
         comicSidecars(site, id).forEach { it.delete() }
+        invalidate()
     }
 
     /** Drops unreadable sidecars and aborted temporary files in every location, never just one. */
@@ -264,6 +272,7 @@ class LibraryIndex(private val context: android.content.Context, private val sto
                 }
             }
         }
+        if (removed > 0) invalidate()
         removed
     }.getOrDefault(0)
 }

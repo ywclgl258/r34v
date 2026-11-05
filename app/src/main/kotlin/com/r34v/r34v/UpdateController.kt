@@ -18,6 +18,7 @@ import com.r34v.r34v.ui.ComposeDialogs
 import kotlinx.coroutines.*
 import okhttp3.Request
 import com.r34v.r34v.data.UpgradePackages
+import com.r34v.r34v.data.downloadUpgrade
 import java.io.File
 
 class UpdateController(private val activity: ComponentActivity, private val app: R34Application, private val dialogs: ComposeDialogs) {
@@ -52,25 +53,15 @@ class UpdateController(private val activity: ComponentActivity, private val app:
         }, confirmButton = {}) }
         val file = File(activity.cacheDir, "updates/r34v-update.apk")
         try {
-            withContext(Dispatchers.IO) {
-                file.parentFile?.mkdirs()
-                val temp = File(file.path + ".part")
-                app.network.client.newCall(Request.Builder().url(url).build()).execute().use { response ->
-                    check(response.isSuccessful) { "下载失败：HTTP ${response.code}" }
-                    val body = response.body ?: error("下载内容为空"); var received = 0L
-                    body.byteStream().use { input -> temp.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            ensureActive(); val count = input.read(buffer); if (count < 0) break
-                            output.write(buffer, 0, count); received += count
-                            if (expectedSize > 0) withContext(Dispatchers.Main) { progress = (received.toFloat() / expectedSize).coerceIn(0f, 1f) }
-                        }
-                    } }
-                    check(expectedSize <= 0 || received == expectedSize) { "安装包不完整，请重新下载" }
-                    check(temp.renameTo(file)) { "无法保存安装包" }
+            var lastUpdate = 0L
+            downloadUpgrade(app.network.client, url, file, expectedSize) { received ->
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (expectedSize > 0 && (now - lastUpdate >= 100 || received == expectedSize)) {
+                    lastUpdate = now
+                    progress = (received.toFloat() / expectedSize).coerceIn(0f, 1f)
                 }
-                UpgradePackages.validate(activity, file)
             }
+            withContext(Dispatchers.IO) { UpgradePackages.validate(activity, file) }
             dialogs.dismiss()
             dialogs.confirm("更新已下载", "安装") { install(file) }
         } catch (error: Exception) { dialogs.dismiss(); if (error is CancellationException) throw error; activity.showError(error) }

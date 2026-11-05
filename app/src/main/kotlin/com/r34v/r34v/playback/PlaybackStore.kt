@@ -36,6 +36,18 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     private val streamCache by lazy { SimpleCache(File(context.cacheDir, "streams"), LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024), database) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val refreshed = mutableSetOf<String>()
+    private val removals = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+    private val submitted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private fun cleanRemoved(id: String, removed: CompletableDeferred<Unit>) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                runCatching { downloadCaches.remove(id) }
+                val parts = id.split(':')
+                if (parts.size >= 3) index.removeVideo(parts.first(), parts.subList(1, parts.size - 1).joinToString(":"), parts.last())
+                index.invalidate()
+            } finally { removals.remove(id, removed); removed.complete(Unit) }
+        }
+    }
 
     /**
      * Builds a data source for one URL.
@@ -84,7 +96,13 @@ class PlaybackStore(private val context: Context, private val network: Network, 
             maxParallelDownloads = 2
             minRetryCount = 3
             addListener(object : DownloadManager.Listener {
+                override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
+                    submitted.remove(download.request.id)
+                    val removed = removals.getOrPut(download.request.id) { CompletableDeferred() }
+                    cleanRemoved(download.request.id, removed)
+                }
                 override fun onDownloadChanged(downloadManager: DownloadManager, download: Download, finalException: Exception?) {
+                    submitted.remove(download.request.id)
                     if (download.state == Download.STATE_FAILED && refreshed.add(download.request.id)) {
                         scope.launch {
                             runCatching {
@@ -154,11 +172,18 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         storage.checkDownloadsAllowed()
         val site = SiteRegistry.byIdOrDefault(video.site)
         val normalized = video.copy(site = site.id)
+        removals[key(normalized, stream.label)]?.let { removing ->
+            scope.launch { removing.await(); runCatching { add(normalized, stream) } }
+            return
+        }
         val request = DownloadRequest.Builder(key(normalized, stream.label), Uri.parse(stream.url))
             .setCustomCacheKey(key(normalized, stream.label))
             .setData(library.gson.toJson(DownloadMeta(normalized, stream.label, site.id)).toByteArray()).build()
-        DownloadService.sendResumeDownloads(context, VideoDownloadService::class.java, false)
-        DownloadService.sendAddDownload(context, VideoDownloadService::class.java, request, false)
+        submitted.add(request.id)
+        try {
+            DownloadService.sendResumeDownloads(context, VideoDownloadService::class.java, false)
+            DownloadService.sendAddDownload(context, VideoDownloadService::class.java, request, false)
+        } catch (error: Exception) { submitted.remove(request.id); throw error }
     }
     fun pause(id: String, pause: Boolean) {
         if (!pause) storage.checkDownloadsAllowed()
@@ -166,11 +191,16 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         DownloadService.sendSetStopReason(context, VideoDownloadService::class.java, id, if (pause) 1 else 0, false)
     }
     fun remove(id: String) {
-        DownloadService.sendRemoveDownload(context, VideoDownloadService::class.java, id, false)
-        scope.launch(Dispatchers.IO) { runCatching { downloadCaches.remove(id) } }
-        // The id is `site:id:quality`; drop the sidecar so a rescan cannot resurrect the entry.
-        val parts = id.split(':')
-        if (parts.size >= 3) runCatching { index.removeVideo(parts[0], parts.subList(1, parts.size - 1).joinToString(":"), parts.last()) }
+        val removed = CompletableDeferred<Unit>()
+        if (removals.putIfAbsent(id, removed) != null) return
+        try {
+            // Missing records have no Media3 removal callback. A queued add still needs its
+            // ordered remove command; otherwise the absent-record cleanup can finish directly.
+            if (id !in submitted && manager.downloadIndex.getDownload(id) == null) cleanRemoved(id, removed)
+            else DownloadService.sendRemoveDownload(context, VideoDownloadService::class.java, id, false)
+        }
+        catch (error: Exception) { removals.remove(id)?.complete(Unit); throw error }
+        // Cleanup runs after the manager stops its writer, so completion cannot recreate a sidecar.
     }
     suspend fun removeRestored(record: LibraryRecord) = withContext(Dispatchers.IO) {
         downloadCaches.remove(record.cacheKey)

@@ -49,14 +49,8 @@ class HanimeAdapter(
         ))
     }
 
-    private val sortKey = mapOf(
-        "recent" to "最新上市", "upload" to "最新上傳", "today" to "本日排行",
-        "week" to "本週排行", "month" to "本月排行", "popular" to "觀看次數",
-        "liked" to "讚好比例", "longest" to "時長最長", "watching" to "他們在看",
-    )
-    private val genreKeys = setOf(
-        "裏番", "泡麵番", "Motion Anime", "3DCG", "2.5D", "2D動畫", "AI生成", "MMD", "Cosplay", "新番預告",
-    )
+    override fun sortsFor(request: FeedRequest) = availableSorts(request)
+    override fun resolve(request: FeedRequest) = resolve(site, request)
 
     override fun homeUrl() = "${site.base}/"
 
@@ -69,31 +63,6 @@ class HanimeAdapter(
         parsed.queryParameter("genre")?.let { return FeedRequest(FeedKind.CATEGORY, it) }
         parsed.queryParameter("query")?.let { return FeedRequest(FeedKind.SEARCH, it, Sort.RELEVANCE) }
         return null
-    }
-
-    /** hanime1 routes everything through `/search?...`, so the KVS path builder must not be used. */
-    override fun resolve(request: FeedRequest): String {
-        val params = linkedMapOf<String, String>()
-        when (request.kind) {
-            FeedKind.SEARCH -> if (request.target.isNotBlank()) params["query"] = request.target
-            FeedKind.TAG -> if (request.target.isNotBlank()) params["tags[]"] = request.target
-            FeedKind.CATEGORY -> if (request.target.isNotBlank()) params["genre"] = request.target
-            FeedKind.MODEL -> if (request.target.isNotBlank()) params["query"] = request.target
-            else -> {
-                val key = request.target.ifBlank { "recent" }
-                if (key in genreKeys) params["genre"] = key
-                else sortKey[key]?.let { params["sort"] = it }
-            }
-        }
-        // A sort only makes sense together with a plain listing; the site ignores it otherwise.
-        if (params["genre"] == null && params["query"] == null && params["tags[]"] == null) {
-            if (params["sort"] == null) params["sort"] = request.sort.hanime.ifBlank { "最新上市" }
-        }
-        if (request.page > 1) params["page"] = request.page.toString()
-        val query = params.entries.joinToString("&") { (k, v) ->
-            "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
-        }
-        return "${site.base}/search?$query"
     }
 
     override suspend fun feed(request: FeedRequest): FeedPage {
@@ -137,6 +106,51 @@ class HanimeAdapter(
     }
 
     companion object {
+        private val sortKey = mapOf(
+            "recent" to "最新上市", "upload" to "最新上傳", "today" to "本日排行",
+            "week" to "本週排行", "month" to "本月排行", "popular" to "觀看次數",
+            "liked" to "讚好比例", "longest" to "時長最長", "watching" to "他們在看",
+        )
+        private val genreKeys = setOf(
+            "裏番", "泡麵番", "Motion Anime", "3DCG", "2.5D", "2D動畫", "AI生成", "MMD", "Cosplay", "新番預告",
+        )
+
+        fun availableSorts(request: FeedRequest): List<Sort> = when {
+            request.kind == FeedKind.POPULAR -> listOf(Sort.RANDOM)
+            request.kind == FeedKind.RATED -> listOf(Sort.RATING)
+            request.kind in listOf(FeedKind.SEARCH, FeedKind.MODEL) -> listOf(Sort.RELEVANCE)
+            request.kind != FeedKind.LATEST || request.target !in listOf("", "recent") -> listOf(Sort.NEWEST)
+            else -> listOf(Sort.NEWEST, Sort.VIEWS, Sort.RATING, Sort.DURATION)
+        }
+
+        /** hanime1 routes everything through `/search?...`, so the KVS path builder must not be used. */
+        fun resolve(site: SiteContext, request: FeedRequest): String {
+            val params = linkedMapOf<String, String>()
+            when (request.kind) {
+                FeedKind.SEARCH -> if (request.target.isNotBlank()) params["query"] = request.target
+                FeedKind.TAG -> if (request.target.isNotBlank()) params["tags[]"] = request.target
+                FeedKind.CATEGORY -> if (request.target.isNotBlank()) params["genre"] = request.target
+                FeedKind.MODEL -> if (request.target.isNotBlank()) params["query"] = request.target
+                FeedKind.POPULAR -> params["sort"] = "本日排行"
+                FeedKind.RATED -> params["sort"] = "讚好比例"
+                else -> {
+                    val key = request.target.ifBlank { "recent" }
+                    if (key in genreKeys) params["genre"] = key
+                    else sortKey[key]?.let { params["sort"] = it }
+                }
+            }
+            // A sort only makes sense together with a plain listing; the site ignores it otherwise.
+            if (params["genre"] == null && params["query"] == null && params["tags[]"] == null) {
+                if (request.kind == FeedKind.LATEST && request.target in listOf("", "recent") && request.sort in listOf(Sort.VIEWS, Sort.RATING, Sort.DURATION)) params["sort"] = request.sort.hanime
+                if (params["sort"] == null) params["sort"] = request.sort.hanime.ifBlank { "最新上市" }
+            }
+            if (request.page > 1) params["page"] = request.page.toString()
+            val query = params.entries.joinToString("&") { (k, v) ->
+                "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
+            }
+            return "${site.base}/search?$query"
+        }
+
         private val videoHref = Regex("[?&]v=(\\d+)")
 
         fun videoId(url: String): String? = videoHref.find(url)?.groupValues?.get(1)

@@ -1,6 +1,8 @@
 package com.r34v.r34v
 
 import com.r34v.r34v.data.*
+import com.r34v.r34v.data.adapter.HanimeAdapter
+import com.r34v.r34v.playback.PlaybackStore
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -11,8 +13,8 @@ import org.junit.Test
 class SiteIsolationTest {
 
     @Test fun cacheKeyCarriesTheSiteSoIdenticalIdsCannotCollide() {
-        val r34 = PlaybackKeys.key("r34v", "408990", "720p")
-        val han = PlaybackKeys.key("hanime1", "408990", "720p")
+        val r34 = PlaybackStore.key("r34v", "408990", "720p")
+        val han = PlaybackStore.key("hanime1", "408990", "720p")
         assertEquals("r34v:408990:720p", r34)
         assertEquals("hanime1:408990:720p", han)
         assertNotEquals(r34, han)
@@ -46,15 +48,15 @@ class SiteIsolationTest {
 
     @Test fun hanimeRoutesUseQueryParametersNotKvsPaths() {
         val site = SiteRegistry.HANIME1
-        val search = FakeResolve.route(site, FeedRequest(FeedKind.SEARCH, "ネル"))
+        val search = HanimeAdapter.resolve(site, FeedRequest(FeedKind.SEARCH, "ネル"))
         assertTrue(search, search.startsWith("https://hanime1.me/search?"))
         assertTrue(search, search.contains("query="))
         assertFalse(search, search.contains("/search/ネル/"))
 
-        val category = FakeResolve.route(site, FeedRequest(FeedKind.CATEGORY, "裏番"))
+        val category = HanimeAdapter.resolve(site, FeedRequest(FeedKind.CATEGORY, "裏番"))
         assertTrue(category, category.contains("genre="))
 
-        val paged = FakeResolve.route(site, FeedRequest(FeedKind.SEARCH, "a", page = 3))
+        val paged = HanimeAdapter.resolve(site, FeedRequest(FeedKind.SEARCH, "a", page = 3))
         assertTrue(paged, paged.contains("page=3"))
     }
 
@@ -71,27 +73,4 @@ class SiteIsolationTest {
         )
         assertEquals(SiteRegistry.R34V.id, parsed.site)
     }
-}
-
-/** Mirrors the adapter route builder so routing can be asserted without a Network instance. */
-private object FakeResolve {
-    fun route(site: SiteContext, request: FeedRequest): String {
-        val params = linkedMapOf<String, String>()
-        when (request.kind) {
-            FeedKind.SEARCH -> params["query"] = request.target
-            FeedKind.TAG -> params["tags[]"] = request.target
-            FeedKind.CATEGORY -> params["genre"] = request.target
-            else -> params["sort"] = "最新上市"
-        }
-        if (request.page > 1) params["page"] = request.page.toString()
-        val q = params.entries.joinToString("&") { (k, v) ->
-            "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
-        }
-        return "${site.base}/search?$q"
-    }
-}
-
-/** PlaybackStore needs Android classes; the key rule itself is pure and lives here for tests. */
-internal object PlaybackKeys {
-    fun key(siteId: String, videoId: String, quality: String) = "$siteId:$videoId:$quality"
 }

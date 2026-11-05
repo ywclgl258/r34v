@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -114,8 +115,9 @@ class PlayerActivity : ComponentActivity() {
                     result.streams.firstOrNull { it.label == preferred } ?: result.streams.firstOrNull { it.height <= (Regex("\\d+").find(preferred)?.value?.toIntOrNull() ?: 720) } ?: result.streams.last()
                 }
             }
-            open(stream!!, position)
-            if (!offline && store.bool("auto_download")) app.playback.add(video, stream!!)
+            open(stream!!, position, resumePlay)
+            if (!offline && store.bool("auto_download")) runCatching { app.playback.add(video, stream!!) }
+                .onFailure { toast("自动下载未开始：${it.message}") }
         } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } finally { opening = false } }
     }
     private fun open(value: Stream, start: Long, autoplay: Boolean = true) {
@@ -143,7 +145,8 @@ class PlayerActivity : ComponentActivity() {
                         savePosition()
                         if (!offline && !refreshed) { refreshed = true; phase = "正在刷新播放地址"; lifecycleScope.launch { try {
                             val fresh = app.repository.detail(video.url); detail = fresh
-                            open(fresh.streams.firstOrNull { it.label == stream?.label } ?: fresh.streams.last(), position)
+                            open(fresh.streams.firstOrNull { it.label == stream?.label } ?: fresh.streams.last(), position,
+                                player?.playWhenReady ?: resumePlay)
                         } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } } } else playbackError(error)
                     }
                 })
@@ -204,21 +207,37 @@ class PlayerActivity : ComponentActivity() {
             }
         }
     }
+    @Composable private fun PlaybackStatusPill() {
+        val playing = status.contains("正在播放") || status.contains("离线播放")
+        Row(Modifier.clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = .07f))
+            .padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(Modifier.size(5.dp).background(if (playing) MatchColor else BrandColor, CircleShape))
+            Text(status, color = if (playing) MatchColor else MutedColor, fontSize = 11.sp, lineHeight = 15.sp)
+        }
+    }
     @Composable private fun Details() {
         @Suppress("UNUSED_VARIABLE") val changed = revision
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Title(video.title, large = true); Copy(listOf(video.duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")); Copy(status)
+        Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(SurfaceColor.copy(alpha = .42f), CanvasColor)))
+            .verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text(video.title, color = Color.White, fontSize = 20.sp, lineHeight = 27.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+            val metadata = listOf(video.duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
+            if (metadata.isNotBlank()) Copy(metadata)
+            PlaybackStatusPill()
             if (failureVisible) Action("重试", true, click = ::restart)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Selector(stream?.label ?: "清晰度", enabled = detail?.streams?.isNotEmpty() == true, modifier = Modifier.semantics { contentDescription = "清晰度，当前 ${stream?.label ?: "尚未加载"}" }, click = ::quality)
                 Selector("${userRate}×", modifier = Modifier.semantics { contentDescription = "播放速度，当前 ${userRate} 倍" }, click = ::speed)
+                Spacer(Modifier.weight(1f))
                 IconAction(R.drawable.ic_more, "更多播放操作") { dialogs.choose("播放操作", listOf("重新播放")) { restart() } }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextAction({ store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site); revision++ }) {
-                    Glyph(R.drawable.ic_bookmark, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text(if (store.isFavorite("video", video.id, video.site)) "已收藏" else "收藏")
+                val favorite = store.isFavorite("video", video.id, video.site)
+                Action(if (favorite) "已收藏" else "收藏", icon = R.drawable.ic_bookmark, selected = favorite) {
+                    store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site); revision++
                 }
-                if (!offline) TextAction(::download) { Glyph(R.drawable.ic_download, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("下载") }
+                if (!offline) Action("下载", icon = R.drawable.ic_download, click = ::download)
             }
             detail?.let { data ->
                 if (data.description.isNotBlank()) Expandable("简介", true) { Copy(data.description) }
@@ -227,9 +246,11 @@ class PlayerActivity : ComponentActivity() {
                     Box(Modifier.combinedClickable(onClick = { startActivity(Intent(this@PlayerActivity, MainActivity::class.java).putExtra("link", link.url)) }, onLongClick = {
                         val kind = when (name) { "角色" -> "character"; "作者" -> "model"; else -> "tag" }
                         dialogs.choose(link.label, if (name == "标签") listOf("收藏 / 取消收藏", "屏蔽 / 取消屏蔽") else listOf("收藏 / 取消收藏")) { i -> if (i == 1) store.toggleBlocked(link.slug) else store.toggleFavorite(Favorite(kind, link.slug, link.label, link.url, link.thumb, site = video.site), video.site); revision++ }
-                    }).heightIn(min = 48.dp).padding(12.dp)) { Text(translated ?: link.label) }
+                    }).heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = .05f)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text(translated ?: link.label, fontSize = 12.sp)
+                    }
                 } } } }
-                if (data.comments.isNotEmpty()) Expandable("评论 · ${data.comments.size}") { data.comments.forEach { Copy("${it.author}  ${it.date}"); Text(it.text) } }
+                if (data.comments.isNotEmpty()) Expandable("评论 · ${data.comments.size}") { data.comments.forEach { Copy("${it.author}  ${it.date}"); Text(it.text, fontSize = 12.sp, lineHeight = 18.sp) } }
                 if (data.related.isNotEmpty()) { Title("相关推荐"); data.related.filter(store::allowed).take(24).chunked(2).forEach { pair -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     pair.forEach { related -> MediaCard(related, Modifier.weight(1f)) { startActivity(Intent(this@PlayerActivity, PlayerActivity::class.java).putExtra("video", store.gson.toJson(related))) } }; if (pair.size == 1) Spacer(Modifier.weight(1f))
                 } } }

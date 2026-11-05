@@ -1,11 +1,15 @@
 ---
 project_id: r34v-android
-updated: 2026-11-04
-status: review-fixes-verified
-scope: 新功能审查的 12 项缺陷与相关失败回归修复
+updated: 2026-11-05
+status: see-next
+scope: 当前优化验收与交付见 NEXT.md
 ---
 
-# 审查修复（最新，2026-11-04）
+# 当前交接
+
+最新进度以 [NEXT.md](NEXT.md) 为唯一续接入口；当前 2.2.6 / 40 的界面与交付证据见 [无描边调整记录](borderless-ui-2026-11-05.md)，此前功能优化见 [优化记录](optimization-2026-11-05.md)。以下内容为历史。
+
+# 此前：审查修复（2026-11-04）
 
 用户明确要求全部修复。此前 4 项 P1、8 项 P2 已修复，并补全缓存冷数据库重开/真实中性视频播放、双向目录切换、失败回滚、完整图集保护、跨目录删除、权限返回、订阅与 GalleryEpic 目录路由回归。最终 127 项 JVM 通过；Android 16 共 103 项，89 通过 / 14 跳过 / 0 失败（按 XML 去重）；Debug 构建及 Lint 0 errors / 63 warnings。系统授权开关已在测试进程外实际切换，返回窗口正常，原权限已恢复。详细契约、范围、验证和未测边界见 [审查修复记录](review-fixes-2026-11-04.md)。正式版本/包名/签名未变；开发 APK 在 `app/build/outputs/apk/debug/app-debug.apk`。未提交、推送或发布。
 

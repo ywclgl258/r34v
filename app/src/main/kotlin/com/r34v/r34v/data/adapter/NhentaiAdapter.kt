@@ -48,6 +48,7 @@ class NhentaiAdapter(private val network: Network) : SiteAdapter {
         else json("${site.base}/api/v2/galleries/$id").asJsonObject.also { details[id] = it }
 
     override fun resolve(request: FeedRequest) = NhentaiProtocol.resolve(request)
+    override fun sortsFor(request: FeedRequest) = NhentaiProtocol.availableSorts(request)
     override fun homeUrl() = resolve(homeRequest())
     override fun searchRequest(query: String, kind: FeedKind) = FeedRequest(kind, query)
     override fun linkRequest(url: String) = NhentaiProtocol.linkRequest(url)
@@ -112,6 +113,8 @@ class NhentaiAdapter(private val network: Network) : SiteAdapter {
 }
 
 object NhentaiProtocol {
+    fun availableSorts(request: FeedRequest) = if (request.kind == FeedKind.POPULAR) listOf(Sort.POPULARITY)
+        else listOf(Sort.NEWEST, Sort.POPULARITY)
     private val site = SiteRegistry.NHENTAI
     data class Cdn(val images: List<String>, val thumbs: List<String>)
     private fun JsonObject.text(key: String) = get(key)?.takeUnless { it.isJsonNull }?.asString.orEmpty()

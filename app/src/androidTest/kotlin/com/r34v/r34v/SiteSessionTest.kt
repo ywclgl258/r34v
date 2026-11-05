@@ -13,6 +13,29 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class SiteSessionTest {
+    @Test fun legacySessionUsesTheRequestedSiteBeforeAndAfterReload() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val name = "legacy-session-${System.nanoTime()}"
+        val originalSite = SiteRegistry.current
+        try {
+            val store = LibraryStore(context, name, "$name-legacy")
+            store.prefs.edit().putString("r34v:auth_session_v1", "{\"c\":{\"PHPSESSID\":\"r34-legacy\"}}")
+                .putString("hanime1:auth_session_v1", "{\"c\":{\"PHPSESSID\":\"other-site\"}}").commit()
+            store.switchSite(SiteRegistry.HANIME1.id)
+            val jar = SessionCookies(store)
+            val url = SiteRegistry.R34V.base.toHttpUrl()
+            assertEquals("r34-legacy", jar.loadForRequest(url).single { it.name == "PHPSESSID" }.value)
+            jar.saveFromResponse(url, listOf(Cookie.Builder().name("extra").value("1").hostOnlyDomain(url.host).build()))
+            val restored = SessionCookies(LibraryStore(context, name, "$name-legacy"))
+            assertEquals("r34-legacy", restored.loadForRequest(url).single { it.name == "PHPSESSID" }.value)
+            restored.clear(SiteRegistry.R34V)
+            assertTrue(SessionCookies(LibraryStore(context, name, "$name-legacy")).loadForRequest(url).isEmpty())
+            assertEquals(SiteRegistry.HANIME1.id, store.siteId)
+        } finally {
+            SiteRegistry.current = originalSite
+            context.deleteSharedPreferences(name); context.deleteSharedPreferences("$name-legacy")
+        }
+    }
     @Test fun sessionsSurviveReloadAndLogoutOnlyClearsTheSelectedSite() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val name = "site-session-test-${System.nanoTime()}"

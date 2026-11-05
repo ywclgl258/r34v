@@ -26,49 +26,62 @@ import com.r34v.r34v.data.adapter.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 
-@Composable fun FeedScreen(app: R34Application, site: SiteContext, request: FeedRequest, home: Boolean,
+@Composable fun FeedScreen(app: R34Application, site: SiteContext, request: FeedRequest, home: Boolean, state: FeedState,
     dialogs: ComposeDialogs, play: (Video) -> Unit, favorite: (Video) -> Unit, scroll: (Float, Boolean) -> Unit,
     permissionDenied: () -> Unit = {}, saved: Set<String> = emptySet(), continuing: List<Watch> = emptyList(),
     browse: (FeedRequest) -> Unit = {},
     subscribe: ((Subscription) -> Unit)? = null, subscribed: Boolean = false, sort: (FeedRequest) -> Unit) {
     val scope = rememberCoroutineScope(); val adapter = remember(site) { AdapterRegistry.adapter(site, app.network) }
-    var videos by remember { mutableStateOf<List<Video>>(emptyList()) }
-    var ranked by remember { mutableStateOf<List<Pair<Video, String>>>(emptyList()) }
-    var popularVideos by remember { mutableStateOf<List<Video>>(emptyList()) }
-    var ratedVideos by remember { mutableStateOf<List<Video>>(emptyList()) }
-    var busy by remember { mutableStateOf(false) }; var error by remember { mutableStateOf<String?>(null) }
-    var next by remember { mutableIntStateOf(request.page) }; var total by remember { mutableIntStateOf(request.page) }
-    var cursor by remember { mutableStateOf(request.cursor) }; var cached by remember { mutableStateOf(false) }
-    var loaded by remember { mutableStateOf(false) }
-    fun load() {
-        if (busy || loaded && next > total) return
+    var busy by remember { mutableStateOf(false) }; var error by state::error
+    var loading by remember { mutableStateOf<Job?>(null) }
+    var videos by state::videos; var ranked by state::ranked
+    var popularVideos by state::popular; var ratedVideos by state::rated
+    var next by state::next; var total by state::total; var cursor by state::cursor
+    var cached by state::cached; var loaded by state::loaded
+    fun load(automatic: Boolean = false) {
+        if (busy || loaded && next > total || automatic && state.emptyPages >= 3) return
+        if (!automatic) state.emptyPages = 0
         busy = true; error = null
-        scope.launch {
+        val generation = ++state.generation
+        val requested = request.copy(page = next, cursor = cursor)
+        loading = scope.launch {
             val first = !loaded
-            val popular: Deferred<List<Video>>? = if (home && first && site.mediaKind == MediaKind.VIDEO) async { try { withTimeoutOrNull(10000) { app.repository.feed(FeedRequest(FeedKind.POPULAR)) }?.videos.orEmpty() } catch (e: Exception) { if (e is CancellationException) throw e; emptyList() } } else null
-            val rated: Deferred<List<Video>>? = if (popular != null) async { try { withTimeoutOrNull(10000) { app.repository.feed(FeedRequest(FeedKind.RATED)) }?.videos.orEmpty() } catch (e: Exception) { if (e is CancellationException) throw e; emptyList() } } else null
+            val popular: Deferred<List<Video>>? = if (home && first && site.mediaKind == MediaKind.VIDEO) async { try { withTimeoutOrNull(10000) { app.repository.feed(FeedRequest(FeedKind.POPULAR), site) }?.videos.orEmpty() } catch (e: Exception) { if (e is CancellationException) throw e; emptyList() } } else null
+            val rated: Deferred<List<Video>>? = if (popular != null) async { try { withTimeoutOrNull(10000) { app.repository.feed(FeedRequest(FeedKind.RATED), site) }?.videos.orEmpty() } catch (e: Exception) { if (e is CancellationException) throw e; emptyList() } } else null
             try {
-                val result = app.repository.feed(request.copy(page = next, cursor = cursor))
-                val allowed = result.videos.filter(app.library::allowed)
+                val result = app.repository.feed(requested, site)
+                ensureActive()
+                if (generation != state.generation) return@launch
+                val allowed = result.videos.filter { app.library.allowed(it, site.id) }
                 if (first) {
+                    state.loadedAt = System.currentTimeMillis()
                     cached = result.cached
-                    val p = withTimeoutOrNull(600) { popular?.await() }.orEmpty().filter(app.library::allowed)
-                    val r = withTimeoutOrNull(600) { rated?.await() }.orEmpty().filter(app.library::allowed)
+                    val p = withTimeoutOrNull(600) { popular?.await() }.orEmpty().filter { app.library.allowed(it, site.id) }
+                    val r = withTimeoutOrNull(600) { rated?.await() }.orEmpty().filter { app.library.allowed(it, site.id) }
                     popularVideos = p.take(10); ratedVideos = r.take(10)
                     ranked = (p.take(3).mapIndexed { i, v -> v to "热门榜 · 第 ${i + 1} 位" } + r.take(3).mapIndexed { i, v -> v to "高分榜 · 第 ${i + 1} 位" }).distinctBy { "${it.first.site}:${it.first.id}" }
                     if (ranked.isEmpty()) ranked = allowed.take(1).map { it to "最新精选" }
                 }
                 videos = (videos + allowed).distinctBy { "${it.site}:${it.id}" }; loaded = true
-                next = result.current + 1; total = if (request.kind == FeedKind.FOR_YOU || result.videos.isEmpty()) result.current else result.total
+                next = result.current + 1; total = if (request.kind == FeedKind.FOR_YOU) result.current else result.total
+                if (!result.nextCursor.isNullOrBlank() && (result.nextCursor == requested.cursor || !state.cursors.add(result.nextCursor))) {
+                    total = result.current; error = "原站返回了重复的翻页地址，请刷新列表"
+                    state.restartRequired = true
+                }
+                state.emptyPages = if (allowed.isEmpty() && next <= total) state.emptyPages + 1 else 0
                 cursor = result.nextCursor.orEmpty()
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 if (e is GalleryLoginRequiredException) { app.network.session.clear(site); permissionDenied() }
                 error = e.message ?: "加载失败，请检查网络后重试"
-            } finally { popular?.cancel(); rated?.cancel(); busy = false }
+            } finally { popular?.cancel(); rated?.cancel(); if (generation == state.generation) busy = false }
         }
     }
-    LaunchedEffect(Unit) { load() }
+    fun refresh() {
+        loading?.cancel(); state.reset(); busy = false
+        state.grid.requestScrollToItem(0); state.list.requestScrollToItem(0); load()
+    }
+    LaunchedEffect(Unit) { if (!loaded) load() }
     // Create the lazy layout with its complete first page. Inserting a hero before an
     // already visible heading makes LazyGrid preserve that heading and skip the hero.
     if (!loaded) {
@@ -80,10 +93,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     }
     if (home && site.mediaKind == MediaKind.VIDEO) {
         CinemaHome(videos, ranked, popularVideos, ratedVideos, continuing, saved, cached, busy, error,
-            next <= total, ::load, play, favorite, browse, scroll)
+            next <= total, { if (state.restartRequired) refresh() else load() }, play, favorite, browse, scroll, state.list, state.emptyPages < 3, { load(true) })
         return
     }
-    val grid = rememberLazyStaggeredGridState()
+    val grid = state.grid
     LaunchedEffect(grid) {
         var previous = 0
         snapshotFlow { grid.firstVisibleItemIndex * 100000 + grid.firstVisibleItemScrollOffset }.distinctUntilChanged().collect { value ->
@@ -91,7 +104,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         }
     }
     val nearEnd by remember { derivedStateOf { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= grid.layoutInfo.totalItemsCount - 7 } == true } }
-    LaunchedEffect(nearEnd, next, busy) { if (nearEnd && loaded && next <= total && !busy && error == null) load() }
+    LaunchedEffect(nearEnd, next, busy) { if (nearEnd && loaded && next <= total && !busy && error == null) load(true) }
     LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(if (LocalConfiguration.current.screenWidthDp >= 600) 3 else 2), Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = grid, contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalItemSpacing = 10.dp) {
         item(span = StaggeredGridItemSpan.FullLine, key = "heading") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -104,7 +117,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                             sort(request.copy(sort = options[it], page = 1, cursor = ""))
                         }
                     }
-                    Action("刷新") { loaded = false; videos = emptyList(); next = 1; cursor = ""; load() }
+                    Action("刷新") { refresh() }
                     // Following is offered right where the tag is being read, not behind a menu.
                     if (subscribe != null && request.kind == FeedKind.TAG && request.target.isNotBlank())
                         SubscribeAction(if (subscribed) "已订阅" else "订阅标签", subscribed) {
@@ -117,7 +130,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
             MediaCard(video, menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) }
         }
         if (busy) item(span = StaggeredGridItemSpan.FullLine, key = "loading") { Loading(if (loaded) "正在加载下一页" else "正在加载内容") }
-        error?.let { message -> item(span = StaggeredGridItemSpan.FullLine, key = "error") { EmptyState(if (loaded) "下一页加载失败" else "内容加载失败", message) { load() } } }
+        error?.let { message -> item(span = StaggeredGridItemSpan.FullLine, key = "error") { EmptyState(if (loaded) "下一页加载失败" else "内容加载失败", message) { if (state.restartRequired) refresh() else load() } } }
+        if (!busy && next <= total && state.emptyPages >= 3) item(span = StaggeredGridItemSpan.FullLine, key = "continue-empty") {
+            Action("继续加载") { load() }
+        }
         if (loaded && videos.isEmpty() && !busy) item(span = StaggeredGridItemSpan.FullLine) { Copy(if (site.mediaKind == MediaKind.GALLERY) "当前条件下暂无${adapter.itemNoun}，可调整筛选或修改搜索条件" else "暂时没有可显示的视频") }
     }
 }
@@ -134,7 +150,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                     pair.forEach { section ->
                         val popular = section.feed?.kind == FeedKind.POPULAR
                         Column(Modifier.weight(1f).cinemaGlass(16).clickable { feed(section.feed!!) }
-                            .then(if (popular) Modifier.border(.8.dp, BrandColor.copy(alpha = .32f), RoundedCornerShape(16.dp)) else Modifier)
+                            .then(if (popular) Modifier.background(BrandColor.copy(alpha = .12f)) else Modifier)
                             .padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 Text(section.title, Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)

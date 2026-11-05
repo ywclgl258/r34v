@@ -267,7 +267,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         }.getOrDefault("")
         set(value) { prefs.edit().putString("$siteId:native_username", value).apply() }
 
-    fun legacyCookies(): Map<String, String> = runCatching {
+    fun legacyCookies(siteId: String = this.siteId): Map<String, String> = runCatching {
         JsonParser.parseString(prefs.getString("$siteId:auth_session_v1", "{}")).asJsonObject["c"].asJsonObject
             .entrySet().associate { it.key to it.value.asString }
     }.getOrDefault(emptyMap())

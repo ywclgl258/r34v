@@ -23,6 +23,7 @@ class SubscriptionUiTest : ComposeUiCase() {
     }
 
     private fun openSubscriptions() {
+        clickText("片库")
         ui.onNode(hasContentDescription("订阅")).performClick()
     }
 

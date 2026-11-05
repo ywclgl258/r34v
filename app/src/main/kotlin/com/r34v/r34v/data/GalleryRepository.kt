@@ -40,6 +40,11 @@ class GalleryRepository(private val context: Context, private val network: Netwo
             ?: folder(storage.layout())
     }
     private fun completeBook(folder: File) = isCompleteDownload(folder, gson)
+    /** Resolve/validate the book once when opening; page reads then use this explicit location. */
+    fun readingRoot(entry: Video): String {
+        val folder = bookDirectory(entry)
+        return storage.readableLayouts().first { it.comics == folder.parentFile?.parentFile }.root.absolutePath
+    }
     private fun key(url: String) = MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
     private fun <T> read(file: File, type: Class<T>): T? = runCatching { gson.fromJson(file.readText(), type) }.getOrNull()
     private fun write(file: File, bytes: ByteArray) {

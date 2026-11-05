@@ -10,7 +10,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class BrowseUiTest : ComposeUiCase() {
     @Test fun browseSearchLibraryAndSettings() = ComposeFixture().use { f ->
-        f.launch(); ui.waitUntil(10000) { ui.onAllNodesWithContentDescription("暂停轮播").fetchSemanticsNodes().isNotEmpty() }; waitCovers()
+        val activity = f.launch(); ui.waitUntil(10000) { ui.onAllNodesWithContentDescription("暂停轮播").fetchSemanticsNodes().isNotEmpty() }; waitCovers()
         assertTrue("The hero must be visible on the initial viewport", ui.onNodeWithTag("home-carousel").fetchSemanticsNode().boundsInRoot.height > f.ins.targetContext.resources.displayMetrics.density * 200)
         f.shot("01-home")
         ui.onNodeWithContentDescription("暂停轮播").performClick(); ui.onNodeWithContentDescription("继续轮播").assertExists()
@@ -19,7 +19,13 @@ class BrowseUiTest : ComposeUiCase() {
         clickText("搜索"); ui.onNodeWithContentDescription("提交搜索").performClick(); waitText("请输入关键词")
         ui.onNode(hasSetTextAction()).performTextInput("sample query"); clickText("标签"); ui.onNodeWithContentDescription("提交搜索").performClick()
         ui.waitUntil(15000) { f.requests.any { it.second.kind == FeedKind.TAG && it.second.target == "sample-query" } }
-        back(f); waitText("最近搜索"); ui.onNode(hasSetTextAction()).assertTextContains("sample query")
+        ui.waitUntil(5000) {
+            ui.runOnIdle { androidx.core.view.ViewCompat.getRootWindowInsets(activity.window.decorView)
+                ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) == false }
+        }
+        ui.waitUntil(10000) { ui.onAllNodesWithContentDescription("内容列表").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithContentDescription("返回").performClick()
+        waitText("最近搜索"); ui.onNode(hasSetTextAction()).assertTextContains("sample query")
         ui.onNodeWithContentDescription("清除关键词").performClick(); ui.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
         f.shot("02-search")
         val video = f.video(); f.app.library.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb))
@@ -33,8 +39,13 @@ class BrowseUiTest : ComposeUiCase() {
         val field = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
         fun engine() = field.get(activity) as? androidx.media3.exoplayer.ExoPlayer
         fun ready() { ui.waitUntil(20000) { var ready = false; f.ins.runOnMainSync { ready = engine()?.playbackState == androidx.media3.common.Player.STATE_READY }; ready } }
-        ready(); ui.onNodeWithContentDescription("清晰度，当前 720p").performClick(); clickText("480p"); ready()
-        ui.onNodeWithContentDescription("播放速度，当前 1.0 倍").performClick(); clickText("2.0×")
+        ready(); ui.onNodeWithContentDescription("清晰度，当前 720p").performScrollTo().performClick()
+        ui.onNode(hasText("720p") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role, androidx.compose.ui.semantics.Role.RadioButton))
+            .assertIsSelected(); f.shot("05-player-quality"); ui.onNodeWithText("480p").performScrollTo().performClick(); ready()
+        ui.onNodeWithContentDescription("播放速度，当前 1.0 倍").performScrollTo().performClick()
+        ui.onNodeWithText("2.0×").performScrollTo().assertIsDisplayed(); f.shot("05-player-speed")
+        ui.onNodeWithText("取消").assertIsDisplayed()
+        ui.onNodeWithText("2.0×").performClick()
         ui.runOnIdle { assertEquals(2f, engine()!!.playbackParameters.speed, .001f); engine()!!.seekTo(2000) }
         f.shot("05-player")
         if (ui.onAllNodesWithContentDescription("全屏").fetchSemanticsNodes().isEmpty()) ui.onNodeWithTag("player-surface").performTouchInput { click() }

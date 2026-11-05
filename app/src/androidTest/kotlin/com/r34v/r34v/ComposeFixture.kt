@@ -49,6 +49,8 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
     /** A tag slug that must fail, so a partially broken subscription can be exercised. */
     @Volatile var failTag = ""
     @Volatile var imageDelayMillis = 0L
+    @Volatile var detailDelayMillis = 0L
+    @Volatile var feedOverride: (suspend (String, FeedRequest) -> FeedPage?)? = null
     val nonce = System.nanoTime()
     private val png = Bitmap.createBitmap(600, 900, Bitmap.Config.ARGB_8888).let { image ->
         Canvas(image).apply { drawColor(Color.rgb(30, 60, 85)); drawRect(60f, 100f, 540f, 350f, Paint().apply { color = Color.rgb(110, 170, 180) }); drawCircle(300f, 600f, 130f, Paint().apply { color = Color.rgb(220, 190, 130) }) }
@@ -100,6 +102,7 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
         override fun homeUrl() = "${site.base}/compose-$nonce/"
         override suspend fun feed(request: FeedRequest): FeedPage {
             requests.add(site.id to request); if (offline) throw IOException("Fixture offline")
+            feedOverride?.invoke(site.id, request)?.let { return it }
             // Every tag gets its own ids so a merged subscription list can be told apart from a
             // plain feed and per-tag failures stay visible.
             val tag = request.target.takeIf { request.kind == FeedKind.TAG }.orEmpty()
@@ -110,6 +113,7 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
         }
         override suspend fun detail(url: String): Detail {
             if (offline) throw IOException("Fixture offline")
+            kotlinx.coroutines.delay(detailDelayMillis)
             return Detail(video(site.id), listOf(Stream("720p", server.url("/clip.mp4?quality=720").toString()), Stream("480p", server.url("/clip.mp4?quality=480").toString())), mapOf("标签" to listOf(Link("sample", "示例标签", "${site.base}/tags/sample/"))), "用于验证原生播放的中性测试片段。", listOf(video(site.id, 1, 1)), listOf(Comment("测试作者", "中性测试评论", "2026")), emptyList())
         }
         override suspend fun index(section: String) = listOf(Link("sample", "示例索引", "${site.base}/tags/sample/"))
@@ -131,6 +135,9 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
     fun launchGallery(read: Boolean = false, site: String = "ehentai", offline: Boolean = false): GalleryActivity = ins.startActivitySync(Intent(ins.targetContext, GalleryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK).putExtra("gallery", app.library.gson.toJson(video(site))).putExtra("read", read).putExtra("offline", offline)) as GalleryActivity
     fun launchDownloads(): MainActivity = ins.startActivitySync(Intent(ins.targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK).putExtra("downloads", true)) as MainActivity
     fun launchPlayer(): PlayerActivity = ins.startActivitySync(Intent(ins.targetContext, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK).putExtra("video", app.library.gson.toJson(video()))) as PlayerActivity
+    fun launchFeed(): MainActivity = ins.startActivitySync(Intent(ins.targetContext, MainActivity::class.java)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        .putExtra("link", "${SiteRegistry.EHENTAI.base}/tags/sample/")) as MainActivity
     fun shot(name: String) {
         val dir = File(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir") ?: ins.targetContext.getExternalFilesDir(null)!!.absolutePath, "compose-shots").apply { mkdirs() }
         ins.waitForIdleSync(); ins.uiAutomation.waitForIdle(250, 3000)

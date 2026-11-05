@@ -37,7 +37,7 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
         }
         // Legacy: the pre-multi-site jar carried a single unnamed bucket plus anti-bot cookies.
         if (restored.isEmpty() && site.id == SiteRegistry.R34V.id) {
-            for ((name, value) in store.legacyCookies()) {
+            for ((name, value) in store.legacyCookies(site.id)) {
                 runCatching { Cookie.Builder().name(name).value(value).hostOnlyDomain(site.host).secure().httpOnly().build() }
                     .getOrNull()?.let(restored::add)
             }

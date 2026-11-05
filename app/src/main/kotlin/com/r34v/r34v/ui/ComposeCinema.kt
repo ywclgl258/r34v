@@ -41,10 +41,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(14.dp, RoundedCornerShape(radius.dp), clip = false)
+fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(6.dp, RoundedCornerShape(radius.dp), clip = false)
     .clip(RoundedCornerShape(radius.dp))
     .background(Brush.verticalGradient(listOf(GlassTopColor, GlassBottomColor)))
-    .border(0.8.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = .22f), Color.White.copy(alpha = .035f))), RoundedCornerShape(radius.dp))
 
 @Composable fun BrandWordmark() {
     Text("R34V", color = BrandColor, fontSize = 20.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp)
@@ -88,8 +87,10 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(14.dp, RoundedCorn
     continuing: List<Watch>, saved: Set<String>, cached: Boolean, busy: Boolean, error: String?,
     hasNext: Boolean, load: () -> Unit, play: (Video) -> Unit, favorite: (Video) -> Unit,
     browse: (FeedRequest) -> Unit, scroll: (Float, Boolean) -> Unit,
+    list: LazyListState,
+    automatic: Boolean,
+    loadAutomatically: () -> Unit,
 ) {
-    val list = rememberLazyListState()
     LaunchedEffect(list) {
         var previous = 0
         snapshotFlow { list.firstVisibleItemIndex * 100000 + list.firstVisibleItemScrollOffset }.distinctUntilChanged().collect { value ->
@@ -99,9 +100,9 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(14.dp, RoundedCorn
     val nearEnd by remember { derivedStateOf {
         list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= list.layoutInfo.totalItemsCount - 2 } == true
     } }
-    LaunchedEffect(nearEnd, videos.size, busy, error, hasNext) { if (nearEnd && hasNext && !busy && error == null) load() }
-    LazyColumn(Modifier.fillMaxSize().padding(bottom = 72.dp).semantics { contentDescription = "内容列表" }, state = list,
-        contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+    LaunchedEffect(nearEnd, videos.size, busy, error, hasNext, automatic) { if (nearEnd && hasNext && automatic && !busy && error == null) loadAutomatically() }
+    LazyColumn(Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = list,
+        contentPadding = PaddingValues(bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
         if (features.isNotEmpty()) item("hero") { CinemaHero(features, saved, play, favorite) }
         if (cached) item("cached") { Copy("当前显示离线列表缓存", Modifier.padding(horizontal = 16.dp)) }
         if (continuing.isNotEmpty()) item("continue") {
@@ -124,6 +125,7 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(14.dp, RoundedCorn
             }
         }
         if (busy) item("loading") { Loading("正在加载下一页") }
+        if (hasNext && !automatic && !busy && error == null) item("continue-empty") { Action("继续加载") { load() } }
         if (error != null) item("error") { EmptyState("下一页加载失败", error, click = load) }
         if (videos.isEmpty() && !busy && error == null) item("empty") {
             EmptyState("暂时没有可显示的视频", "试试其他分类或查看热门内容", "浏览热门榜") { browse(FeedRequest(FeedKind.POPULAR)) }
@@ -161,7 +163,7 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(14.dp, RoundedCorn
                 .combinedClickable(onClickLabel = "播放 ${video.title}", onLongClickLabel = "收藏或取消收藏 ${video.title}",
                     onClick = { play(video) }, onLongClick = { favorite(video) }), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).shadow(10.dp, RoundedCornerShape(14.dp), clip = false)
-                    .clip(RoundedCornerShape(14.dp)).border(.7.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(14.dp))) {
+                    .clip(RoundedCornerShape(14.dp))) {
                     SiteImage(video.thumb, site, Modifier.fillMaxSize())
                     if (ranked) GlassSurface(video.thumb, site, Modifier.align(Alignment.TopStart).padding(7.dp).size(30.dp), radius = 10) {
                         Text("${index + 1}", Modifier.align(Alignment.Center), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -180,7 +182,7 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(14.dp, RoundedCorn
 @Composable private fun ContinueCard(watch: Watch, play: () -> Unit) {
     val site = SiteRegistry.byIdOrDefault(watch.site)
     Column(Modifier.width(184.dp).shadow(12.dp, RoundedCornerShape(17.dp), clip = false).clip(RoundedCornerShape(17.dp))
-        .background(SurfaceColor).border(.8.dp, Color.White.copy(alpha = .1f), RoundedCornerShape(17.dp))
+        .background(SurfaceColor)
         .clickable(onClickLabel = "继续观看 ${watch.title}", onClick = play)) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
             SiteImage(watch.thumb, site, Modifier.fillMaxSize())
@@ -200,22 +202,15 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(14.dp, RoundedCorn
 
 @Composable private fun HeroAction(text: String, icon: Int, primary: Boolean, selected: Boolean, modifier: Modifier, click: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) .97f else 1f, spring(dampingRatio = .72f, stiffness = 380f), label = "heroScale")
-    val radius by animateDpAsState(if (pressed) 11.dp else 14.dp, tween(160), label = "heroRadius")
-    val elevation by animateDpAsState(if (pressed) 2.dp else 7.dp, label = "heroElevation")
-    val shape = RoundedCornerShape(radius)
-    Row(modifier.heightIn(min = 48.dp).graphicsLayer { scaleX = scale; scaleY = scale }
-        .shadow(elevation, shape, clip = false).clip(shape)
-        .background(if (primary) Color.White else if (selected) BrandColor.copy(alpha = .24f) else Color(0xc82a2e34))
-        .border(.8.dp, if (selected) BrandColor.copy(alpha = .62f) else Color.White.copy(alpha = .16f), shape)
-        .clickable(interactionSource = interaction, indication = LocalIndication.current, role = Role.Button, onClick = click),
-        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        CompositionLocalProvider(LocalContentColor provides if (primary) Color.Black else Color.White) {
-            Glyph(icon, null, Modifier.size(18.dp)); Spacer(Modifier.width(7.dp))
-            Text(text, color = if (primary) Color.Black else Color.White, fontSize = 12.sp, lineHeight = 17.sp,
-                fontWeight = FontWeight.SemiBold, maxLines = 1)
-        }
+    val focused by interaction.collectIsFocusedAsState()
+    val light = primary && !focused
+    Button(click, modifier.heightIn(min = 48.dp).semantics { this.selected = selected },
+        shape = RoundedCornerShape(16.dp), interactionSource = interaction, elevation = null,
+        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = if (focused) ControlFocusColor else if (light) SelectedControlColor else if (selected) ActiveControlColor else ControlColor,
+            contentColor = if (light && !focused) Color.Black else Color.White)) {
+        Glyph(icon, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp))
+        Text(text, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
     }
 }
 
@@ -265,8 +260,8 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(14.dp, RoundedCorn
                         textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     if (video.rating.isNotBlank()) Text(video.rating, color = MatchColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     val isSaved = "${video.site}:${video.id}" in saved
-                    GlassSurface(video.thumb, site, Modifier.padding(top = 4.dp).widthIn(max = 350.dp), radius = 22) {
-                        FlowRow(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.padding(top = 4.dp).widthIn(max = 350.dp)) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             HeroAction("播放", R.drawable.ic_play, true, false, Modifier.widthIn(min = 128.dp)) { play(video) }
                             HeroAction(if (isSaved) "已加入片单" else "我的片单", if (isSaved) R.drawable.ic_check else R.drawable.ic_add, false, isSaved,
                                 Modifier.widthIn(min = 136.dp).semantics { contentDescription = if (isSaved) "从我的片单移除 ${video.title}" else "加入我的片单 ${video.title}" }) { favorite(video) }

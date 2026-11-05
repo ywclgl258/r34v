@@ -27,9 +27,11 @@ class CinemaUiTest : ComposeUiCase() {
         f.shot("16-cinema-home")
         ui.onNodeWithContentDescription("加入我的片单 ${video.title}").performClick()
         ui.onNodeWithContentDescription("从我的片单移除 ${video.title}").assertExists()
-        assertTrue(f.app.library.isFavorite("video", video.id, video.site))
+        ui.runOnIdle { assertTrue(f.app.library.isFavorite("video", video.id, video.site)) }
+        f.shot("16-cinema-saved")
+        ui.waitUntil(10000) { ui.onAllNodesWithText("已收藏").fetchSemanticsNodes().isEmpty() }
         ui.onNodeWithContentDescription("从我的片单移除 ${video.title}").performClick()
-        assertFalse(f.app.library.isFavorite("video", video.id, video.site))
+        ui.runOnIdle { assertFalse(f.app.library.isFavorite("video", video.id, video.site)) }
         ui.onNodeWithContentDescription("内容列表").performScrollToIndex(2)
         ui.onAllNodesWithTag("poster-${video.site}-${video.id}").onFirst().assertExists()
         f.shot("17-cinema-shelves")

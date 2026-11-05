@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
@@ -13,6 +14,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -45,6 +47,7 @@ import kotlinx.coroutines.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 class MainActivity : ComponentActivity() {
+    private val feeds by viewModels<FeedStates>()
     private val app get() = application as R34Application
     private val store get() = app.library
     private var siteId by mutableStateOf("")
@@ -235,7 +238,7 @@ class MainActivity : ComponentActivity() {
                         if (screen == "home") { BrandWordmark(); Spacer(Modifier.width(6.dp)) }
                         else Text(when (screen) { "search" -> "搜索"; "explore" -> "发现"; "library" -> "片库"; "settings" -> "设置"; "subscriptions" -> "订阅"; "feed" -> adapter.feedTitle(request); else -> "浏览索引" }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                         Box {
-                            TextAction({ tutorial = false; scope.launch { drawer.open() } }, Modifier.heightIn(min = 48.dp).then(if (tutorial) Modifier.border(2.dp, Color.White, androidx.compose.foundation.shape.RoundedCornerShape(14.dp)) else Modifier).semantics { contentDescription = "切换站点，当前 ${site.name}" }) {
+                            TextAction({ tutorial = false; scope.launch { drawer.open() } }, Modifier.heightIn(min = 48.dp).then(if (tutorial) Modifier.background(Color.White.copy(alpha = .16f), RoundedCornerShape(14.dp)) else Modifier).semantics { contentDescription = "切换站点，当前 ${site.name}" }) {
                                 Text(site.name, Modifier.widthIn(max = if (screen == "home") 112.dp else 100.dp), color = MutedColor, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp); Glyph(R.drawable.ic_chevron_down, null, Modifier.padding(start = 4.dp).size(12.dp))
                             }
                             DropdownMenu(tutorial, { tutorial = false }, Modifier.widthIn(max = 320.dp)) {
@@ -273,12 +276,17 @@ class MainActivity : ComponentActivity() {
                     if (screen != "settings" && !(screen == "library" && libraryTab in listOf("下载", "缓存")) && exGate) LoginGate()
                     else key(site.id) { holder.SaveableStateProvider("${site.id}|$screen|${if (screen == "feed" || screen == "index") request.id else ""}") {
                         when (screen) {
-                            "home", "feed" -> key(screen, request, language) { FeedScreen(app, site, if (screen == "home") adapter.homeRequest().copy(language = language) else request.copy(language = language), screen == "home", dialogs, { play(it) }, ::favorite, ::scroll,
+                            "home", "feed" -> {
+                                val effective = (if (screen == "home") adapter.homeRequest() else request).copy(language = language)
+                                val blocked = store.blockedTags(site.id)
+                                val feedState = remember(site.id, screen, effective, blocked) { feeds.page(site.id, screen == "home", effective, blocked) }
+                                key(feedState) { FeedScreen(app, site, effective, screen == "home", feedState, dialogs, { play(it) }, ::favorite, ::scroll,
                                 permissionDenied = { revision++ }, saved = store.favorites(site.id).filter { it.kind == "video" }.map { "${it.site}:${it.target}" }.toSet(),
                                 continuing = store.history(site.id).filter { it.resumable && store.allowed(it.video()) }.take(12), browse = ::openFeed,
                                 subscribe = { toggleSubscription(it) },
                                 subscribed = request.kind == FeedKind.TAG && store.isSubscribed(request.target, site.id),
                                 sort = { request = it }) }
+                            }
                             "explore" -> ExploreScreen(adapter, ::openFeed, ::browse)
                             "index" -> IndexScreen(app, site, request.target, dialogs, ::openFeed, ::browse, ::toggleSubscription)
                             "search" -> SearchScreen(adapter)
@@ -309,9 +317,9 @@ class MainActivity : ComponentActivity() {
         fun submit() { val query = searchQuery.trim(); if (query.isBlank()) { error = true; focus.requestFocus(); return }; searchQuery = query; store.addSearch(query); focusManager.clearFocus(); keyboard?.hide(); openFeed(adapter.searchRequest(query, when (searchScope) { 1 -> FeedKind.TAG; 2 -> FeedKind.MODEL; else -> FeedKind.SEARCH })) }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Copy("在 ${adapter.site.name} 中搜索${if (gallery) "，寻找想看的$noun" else ""}")
-            OutlinedTextField(searchQuery, { searchQuery = it; error = false }, Modifier.fillMaxWidth().focusRequester(focus), label = { Text("搜索关键词") }, singleLine = true, isError = error,
+            TextField(searchQuery, { searchQuery = it; error = false }, Modifier.fillMaxWidth().focusRequester(focus), label = { Text("搜索关键词") }, singleLine = true, isError = error,
                 shape = RoundedCornerShape(16.dp), leadingIcon = { Glyph(R.drawable.ic_search, null) },
-                colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = SurfaceColor, focusedContainerColor = RaisedColor, unfocusedBorderColor = Color.White.copy(alpha = .16f), focusedBorderColor = Color.White.copy(alpha = .5f), cursorColor = Color.White),
+                colors = filledFieldColors(),
                 supportingText = if (error) ({ Text("请输入关键词") }) else null,
                 trailingIcon = { Row { if (searchQuery.isNotEmpty()) IconAction(R.drawable.ic_close, "清除关键词") { searchQuery = "" }; IconAction(R.drawable.ic_chevron_right, "提交搜索") { submit() } } },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { submit() }))
@@ -452,7 +460,6 @@ class MainActivity : ComponentActivity() {
     }
     @Composable private fun Setting(label: String, value: String = "", click: () -> Unit) {
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(SurfaceColor)
-            .border(.7.dp, Color.White.copy(alpha = .08f), RoundedCornerShape(14.dp))
             .clickable(onClick = click).heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(label, Modifier.weight(1f), fontSize = 13.sp); if (value.isNotBlank()) Copy(value, Modifier.widthIn(max = 140.dp).padding(start = 8.dp)); Glyph(R.drawable.ic_chevron_right, null, Modifier.padding(start = 8.dp).size(14.dp))
         }
@@ -460,9 +467,8 @@ class MainActivity : ComponentActivity() {
     @Composable private fun Toggle(label: String, key: String, default: Boolean = false) {
         @Suppress("UNUSED_VARIABLE") val observedRevision = revision
         Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).clip(RoundedCornerShape(14.dp)).background(SurfaceColor)
-            .border(.7.dp, Color.White.copy(alpha = .08f), RoundedCornerShape(14.dp))
-            .clickable { store.set(key, !store.bool(key, default)); revision++ }.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f), fontSize = 13.sp); Switch(store.bool(key, default), { store.set(key, it); revision++ }, colors = SwitchDefaults.colors(checkedTrackColor = BrandColor, checkedThumbColor = Color.White, uncheckedTrackColor = RaisedColor, uncheckedThumbColor = MutedColor))
+            .toggleable(store.bool(key, default), role = Role.Switch) { store.set(key, it); revision++ }.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f), fontSize = 13.sp); Switch(store.bool(key, default), null, colors = SwitchDefaults.colors(checkedTrackColor = BrandColor, checkedThumbColor = Color.White, uncheckedTrackColor = ControlColor, uncheckedThumbColor = MutedColor, checkedBorderColor = Color.Transparent, uncheckedBorderColor = Color.Transparent))
         }
     }
     private fun blockedTags() {
@@ -479,8 +485,8 @@ class MainActivity : ComponentActivity() {
             DisposableEffect(Unit) { onDispose { username = ""; secret = ""; window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) } }
             AlertDialog({ if (!busy) dialogs.dismiss() }, title = { Text(if (importing) "导入 ${site.name} 会话" else "登录") }, text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (importing) Copy("复制已登录本站浏览器的 Cookie。验证账号权限后才保存本站会话。") else OutlinedTextField(username, { username = it }, label = { Text("用户名") }, singleLine = true)
-                    OutlinedTextField(secret, { secret = it }, label = { Text(if (importing) "本站 Cookie" else "密码") }, visualTransformation = PasswordVisualTransformation(), singleLine = !importing, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+                    if (importing) Copy("复制已登录本站浏览器的 Cookie。验证账号权限后才保存本站会话。") else TextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("用户名") }, shape = RoundedCornerShape(16.dp), colors = filledFieldColors(), singleLine = true)
+                    TextField(secret, { secret = it }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = filledFieldColors(), label = { Text(if (importing) "本站 Cookie" else "密码") }, visualTransformation = PasswordVisualTransformation(), singleLine = !importing, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
                     if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error); if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
             }, confirmButton = { TextAction({ busy = true; error = ""; scope.launch {

@@ -45,6 +45,8 @@ class GalleryActivity : ComponentActivity() {
     private var pageJob: Job? = null
     private val images = mutableMapOf<Int, GalleryImage>()
     private val dialogs = ComposeDialogs()
+    private val progressSaver by lazy { ReadingProgressSaver(lifecycleScope, store::saveReading) }
+    private fun saveProgress() { saveReader?.invoke(); progressSaver.flush() }
     private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { if (it.resultCode == RESULT_OK) load(reading) }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,6 +69,7 @@ class GalleryActivity : ComponentActivity() {
         error = null; pageJob?.cancel()
         pageJob = lifecycleScope.launch { try {
             val gallery = app.galleries.detail(entry, offlineOnly, sourceRoot); detail = gallery; entry = gallery.entry; page = page.coerceIn(1, gallery.pageCount)
+            if (sourceRoot.isBlank()) sourceRoot = withContext(Dispatchers.IO) { app.galleries.readingRoot(entry) }
             if (resume) reader(page, stripOffset) else { reading = false; controlsVisible = true }
         } catch (e: Exception) { if (e is CancellationException) throw e; if (e is GalleryLoginRequiredException) { app.network.session.clear(site); gate = true } else error = e.message ?: "${site.category.itemNoun}加载失败" } }
     }
@@ -77,11 +80,11 @@ class GalleryActivity : ComponentActivity() {
         if (reading && !controlsVisible) bars.hide(WindowInsetsCompat.Type.systemBars()) else bars.show(WindowInsetsCompat.Type.systemBars())
     }
     @Composable private fun Content() {
-        BackHandler { when { reading && !controlsVisible -> controlsVisible = true; reading -> { saveReader?.invoke(); reading = false; controlsVisible = true }; else -> finish() } }
+        BackHandler { when { reading && !controlsVisible -> controlsVisible = true; reading -> { saveProgress(); reading = false; controlsVisible = true }; else -> finish() } }
         SideEffect { applyBars() }
         Column(Modifier.fillMaxSize().background(CanvasColor).then(if (reading && !controlsVisible) Modifier.displayCutoutPadding() else Modifier.safeDrawingPadding())) {
             if (!reading || controlsVisible || gate || error != null) Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconAction(R.drawable.ic_back, "返回") { if (reading) { saveReader?.invoke(); reading = false; controlsVisible = true } else finish() }
+                IconAction(R.drawable.ic_back, "返回") { if (reading) { saveProgress(); reading = false; controlsVisible = true } else finish() }
                 Text(if (reading) entry.title else site.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (reading) IconAction(R.drawable.ic_fullscreen, "全屏${site.category.verb}") { controlsVisible = false }
             }
@@ -93,7 +96,7 @@ class GalleryActivity : ComponentActivity() {
                     val gallery = detail!!
                     Box(Modifier.weight(1f)) { ComicReader(gallery.pageCount, jump, ::loadStripPage, { controlsVisible = !controlsVisible }, { current, image, offset ->
                         page = current; stripOffset = offset
-                        if (image != null) store.saveReading(ReadingProgress(entry, current, gallery.pageCount, image.pageUrl, offset = offset))
+                        if (image != null) progressSaver.record(ReadingProgress(entry, current, gallery.pageCount, image.pageUrl, offset = offset))
                     }, { saveReader = it }) }
                     if (controlsVisible) {
                         Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { Copy("单击画面隐藏菜单", Modifier.weight(1f)); TextAction(::jumpDialog) { Text("$page / ${gallery.pageCount}") } }
@@ -166,7 +169,7 @@ class GalleryActivity : ComponentActivity() {
         val count = detail?.pageCount ?: return
         dialogs.edit("跳到指定页", page.toString(), "1 – $count", keyboard = androidx.compose.ui.text.input.KeyboardType.Number, validate = { if (it.toIntOrNull() in 1..count) null else "请输入 1 – $count" }) { reader(it.toInt()) }
     }
-    override fun onSaveInstanceState(outState: Bundle) { saveReader?.invoke(); outState.putBoolean("offline", offlineOnly); outState.putInt("page", page); outState.putInt("stripOffset", stripOffset); outState.putBoolean("reading", reading); outState.putBoolean("controlsVisible", controlsVisible); super.onSaveInstanceState(outState) }
-    override fun onStop() { saveReader?.invoke(); super.onStop() }
+    override fun onSaveInstanceState(outState: Bundle) { saveProgress(); outState.putBoolean("offline", offlineOnly); outState.putInt("page", page); outState.putInt("stripOffset", stripOffset); outState.putBoolean("reading", reading); outState.putBoolean("controlsVisible", controlsVisible); super.onSaveInstanceState(outState) }
+    override fun onStop() { saveProgress(); super.onStop() }
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) applyBars() }
 }

@@ -24,6 +24,7 @@ import com.r34v.r34v.R
 import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 
 private data class DownloadSnapshot(
     val videos: List<Pair<Download, DownloadMeta>> = emptyList(),
@@ -46,28 +47,40 @@ private data class DownloadSnapshot(
     var kind by rememberSaveable { mutableIntStateOf(0) }
     var siteFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var scanNote by remember { mutableStateOf<String?>(null) }
-    val galleryRevision by app.galleryDownloads.changes.collectAsState()
-    LaunchedEffect(resumed, refresh, galleryRevision) {
-        if (resumed) while (isActive) {
+    LaunchedEffect(resumed, refresh) {
+        if (!resumed) return@LaunchedEffect
+        var scanned: List<Any>? = null
+        var disk = emptyList<LibraryRecord>()
+        val ticks = flow { while (currentCoroutineContext().isActive) { emit(Unit); delay(750) } }
+        merge(ticks, app.galleryDownloads.changes.map { Unit }, app.index.revision.map { Unit }).conflate().collect {
             try {
                 snapshot = withContext(Dispatchers.IO) {
                     val tasks = app.playback.downloads().mapNotNull { task -> app.playback.metadata(task)?.let { task to it } }
-                    val books = app.galleryDownloads.tasks().map { task ->
-                        if (task.state == GalleryDownloadState.COMPLETED && !app.galleries.isDownloaded(task.entry))
+                    val books = app.galleryDownloads.tasks()
+                    val root = app.storage.describe()
+                    fun signature() = listOf(app.index.revision.value, root, app.storage.granted(),
+                        tasks.map { it.first.request.id to it.first.state }, books.map { it.id to it.state })
+                    val before = signature()
+                    if (scanned != before) {
+                        val known = tasks.map { (task, meta) ->
+                            LibraryRecord(kind = LibraryRecord.KIND_VIDEO, site = meta.site, id = meta.video.id, quality = meta.quality,
+                                cacheKey = task.request.id, title = meta.video.title, url = meta.video.url, thumb = meta.video.thumb,
+                                duration = meta.video.duration, bytes = task.bytesDownloaded, at = task.startTimeMs,
+                                state = if (task.state == Download.STATE_COMPLETED) LibraryRecord.STATE_COMPLETED else LibraryRecord.STATE_PARTIAL)
+                        }
+                        disk = app.index.scan(app.playback::cached, known)
+                        // An invalidation during the scan must still be observed on the next event.
+                        scanned = before
+                    }
+                    val checked = books.map { task ->
+                        if (task.state == GalleryDownloadState.COMPLETED && disk.none { it.isComic && it.site == task.entry.site && it.id == task.entry.id && it.state == LibraryRecord.STATE_COMPLETED })
                             task.copy(state = GalleryDownloadState.FAILED, error = "下载图页不完整，请重新下载") else task
                     }
                     val legacy = SiteRegistry.all.flatMap { owner -> app.library.localVideos(owner.id).map { it.copy(site = owner.id) } }
-                    val known = tasks.map { (task, meta) ->
-                        LibraryRecord(kind = LibraryRecord.KIND_VIDEO, site = meta.site, id = meta.video.id, quality = meta.quality,
-                            cacheKey = task.request.id, title = meta.video.title, url = meta.video.url, thumb = meta.video.thumb,
-                            duration = meta.video.duration, bytes = task.bytesDownloaded, at = System.currentTimeMillis(),
-                            state = if (task.state == Download.STATE_COMPLETED) LibraryRecord.STATE_COMPLETED else LibraryRecord.STATE_PARTIAL)
-                    }
-                    DownloadSnapshot(tasks, books, legacy, app.index.scan(app.playback::cached, known), app.storage.describe())
+                    DownloadSnapshot(tasks, checked, legacy, disk, root)
                 }
                 ready = true; message = null
             } catch (e: Exception) { if (e is CancellationException) throw e; ready = true; message = e.message ?: "下载任务读取失败" }
-            delay(750)
         }
     }
     fun act(id: String, block: suspend () -> Unit) {

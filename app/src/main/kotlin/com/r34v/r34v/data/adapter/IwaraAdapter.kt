@@ -26,6 +26,7 @@ class IwaraAdapter(override val site: SiteContext, private val network: Network)
 
     override fun homeUrl() = resolve(homeRequest())
     override fun resolve(request: FeedRequest) = IwaraProtocol.resolve(site, request)
+    override fun sortsFor(request: FeedRequest) = IwaraProtocol.availableSorts(request)
     override fun sortTitle(sort: Sort) = if (sort == Sort.RATING) "点赞" else sort.title
     override fun feedTitle(request: FeedRequest) = request.target.ifBlank {
         when (request.kind) {
@@ -82,6 +83,12 @@ class IwaraAdapter(override val site: SiteContext, private val network: Network)
 
 /** Pure protocol functions shared by the adapter and its contract tests. */
 object IwaraProtocol {
+    fun availableSorts(request: FeedRequest): List<Sort> = when (request.kind) {
+        FeedKind.POPULAR -> listOf(Sort.POPULARITY)
+        FeedKind.RATED -> listOf(Sort.RATING)
+        else -> listOf(Sort.RELEVANCE, Sort.NEWEST, Sort.TRENDING, Sort.POPULARITY, Sort.RATING, Sort.VIEWS)
+            .filter { request.kind == FeedKind.SEARCH || it != Sort.RELEVANCE }
+    }
     fun isUserId(value: String) = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}").matches(value)
 
     fun resolve(site: SiteContext, request: FeedRequest): String {

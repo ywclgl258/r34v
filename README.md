@@ -1,16 +1,16 @@
 # R34V
 
-支持 Rule34Video、Hanime1、Iwara、E-Hentai、ExHentai、nhentai 和 Hitomi 的 Kotlin 原生 Android 客户端。界面使用 Jetpack Compose + Material 3，包括浏览、片库、设置、视频控件和条漫阅读器。Media3 播放画面与仅用于 EH/EX 官方认证的 WebView 通过 AndroidView 接入；不依赖 Flutter。迁移说明见 [Compose 重构](docs/dev/compose-migration.md)。
+支持视频、漫画与写真共 12 个站点的 Kotlin 原生 Android 客户端，包括 Rule34Video、Hanime1、Iwara、E-Hentai、ExHentai、nhentai、Hitomi、4KHD、Everia、4KUp、GalleryEpic 和 Cosplaytele。界面使用 Jetpack Compose + Material 3，包括浏览、片库、设置、视频控件和条漫阅读器。Media3 播放画面与仅用于 EH/EX 官方认证的 WebView 通过 AndroidView 接入；不依赖 Flutter。迁移说明见 [Compose 重构](docs/dev/compose-migration.md)。
 
 ## 功能
 
 - 首页精选封面、继续观看和最新更新横向片架；发现页包含分类、角色作品索引和作者排行。
-- 分页视频列表、多种排序、视频/标签/作者搜索及搜索历史。
+- 分页视频列表、多种有效排序、视频/标签/作者搜索及搜索历史。列表与滚动位置在页面往返和界面重建时一起保留，刷新会取消旧分页；语言过滤后的空页继续读取，连续空页提供手动加载。
 - Media3 播放器：清晰度、0.25×–3× 倍速、横竖屏全屏、双击快进/后退、滑动调节进度/亮度/音量、长按临时倍速和断点续播。
 - 视频、角色、作者、标签收藏；观看历史、内容屏蔽和标签中文词典。
 - 视频按清晰度下载，四个漫画站支持整本下载；统一下载中心汇总各站视频、漫画与旧版本离线文件，支持类型/站点筛选、暂停/继续、失败重试、删除、离线播放和离线阅读。漫画按页续传，已下载整本独立持久保存，不随阅读临时数据清理。
 - 站点账号登录与网络诊断。页面、封面、图页、播放、下载和更新统一跟随系统代理；未设置代理时使用系统 DNS 直连，代理失败不回退直连。已移除应用内 DoH、固定/手填 IP、IP 池和单独代理设置。
-- GitHub Release 更新检查及系统安装器。
+- GitHub Release 更新检查及系统安装器。慢速 APK 传输保留读取超时，不再因整文件超过 25 秒而失败；安装前验证长度、包名、版本与签名。
 - 顶栏抽屉切换站点；每站历史、收藏、搜索与下载隔离。Iwara 支持公开列表、趋势/热门/点赞/播放榜、视频/标签/作者查询、清晰度播放和离线缓存；账号登录、私密内容、图库与站外嵌入尚未接入。见 [Iwara 接入说明](docs/dev/iwara-adapter.md)。
 - 全新安装首次进入首页时，高亮站点切换入口，提供“打开站点列表”和“知道了”；提示仅显示一次，关闭、返回、重启或切站后均不重复。已有用户升级不弹出。见 [首次切站教程](docs/dev/site-switch-tutorial.md)。
 - E-Hentai / ExHentai 支持画廊列表、分类、热门、搜索、标签与上传者查询；原生漫画阅读采用上下连续滚动的条漫形式，保留跳页、双指/双击缩放、页内阅读位置、画廊收藏和已读图页离线保存。漫画详情可下载整本并在统一下载中心离线打开。ExHentai 在线访问仍需要账号权限，未登录时显示登录门禁，可打开官方论坛登录或导入 Cookie；验证权限后才保存加密会话。真实 ExHentai 账号联网尚未验收。见 [漫画站接入说明](docs/dev/eh-adapter.md) 与 [统一下载](docs/dev/unified-downloads.md)。
@@ -41,7 +41,8 @@
 构建发布 APK：
 
 ```powershell
-.\gradlew.bat assembleRelease
+$env:R34V_SIGNING_HOME = 'C:\Users\ywclg\.r34v\signing'
+.\gradlew.bat :app:validateReleaseSigning :app:assembleRelease
 ```
 
 所有工具共用仓库外的签名目录。默认位置为 `%USERPROFILE%\.r34v\signing`（Linux/macOS：`~/.r34v/signing`），也可用 `R34V_SIGNING_HOME` 指向同一份目录。Android Studio 和命令行都通过本仓库 Gradle 读取其 `signing.properties`，项目内不再保存密钥或密码。
@@ -59,9 +60,11 @@ LEGACY_KEY_PASSWORD=historical-key-password
 
 发布构建会核对 `release.properties` 中固定的证书指纹，缺少密钥或指纹不符就失败，禁止新建替代密钥或回退 debug 签名。`app/signing/upgrade.lineage` 是公开证书的签名继承证明，不含私钥。
 
-2.2.2 的标准 APK 在 Android 9 及以上支持从原签名 1.18.0 和迁移版 2.0.0 直接覆盖安装；Android 7/8 原签名版本也使用标准 APK。**仅 Android 7/8 上已装 2.0.0 的用户**使用 `*-compat-2.0.0.apk`，保留该版本签名。无需卸载应用。应用内更新会选择对应的包，并在安装前核验包名、版本和签名。
+正式标准 APK 在 Android 9 及以上支持从原签名 1.18.0 和迁移版 2.0.0 直接覆盖安装；Android 7/8 原签名版本也使用标准 APK。**仅 Android 7/8 上已装 2.0.0 的用户**使用 `*-compat-2.0.0.apk`，保留该版本签名。无需卸载应用。应用内更新会选择对应的包，并在安装前核验包名、版本和签名。
 
 独立包名的“R34V 开发版”用于开发测试，不是正式版更新包。CI 的发布密钥必须与本机固定指纹一致；密钥缺失时仅产生明确标记的开发版。配置方法见 [签名与升级](docs/signing.md)。
+
+CI 配置包含 API 24 / 36 模拟器回归，覆盖分页、播放、下载、存储与阅读；本轮优化和实际验证边界见 [2.2.5 优化记录](docs/dev/optimization-2026-11-05.md)。 2.2.6 统一无描边填充控件，并完善大字体、横屏选择面板和原生交互语义，见 [UI/UX 验证记录](docs/dev/borderless-ui-2026-11-05.md)。
 
 ## 2.0 迁移
 

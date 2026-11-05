@@ -9,6 +9,8 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -21,6 +23,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.*
@@ -39,13 +42,24 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 
 val CanvasColor = Color.Black
-val SurfaceColor = Color(0xff14171b)
-val RaisedColor = Color(0xff1c2025)
-val MutedColor = Color(0xffb4bac3)
+val SurfaceColor = Color(0xff141414)
+val RaisedColor = Color(0xff202020)
+val ControlColor = Color(0xff2b2b2b)
+val ActiveControlColor = Color(0xff404040)
+val ControlFocusColor = Color(0xff686868)
+val SelectedControlColor = Color(0xfff2f2f2)
+val MutedColor = Color(0xffb8b8b8)
 val BrandColor = Color(0xffe50914)
 val MatchColor = Color(0xff46d369)
-val GlassTopColor = Color(0xd117191d)
-val GlassBottomColor = Color(0xeb0c0e11)
+val GlassTopColor = Color(0xee202020)
+val GlassBottomColor = Color(0xf0121212)
+
+@Composable fun filledFieldColors() = TextFieldDefaults.colors(
+    focusedContainerColor = ControlColor, unfocusedContainerColor = RaisedColor,
+    disabledContainerColor = SurfaceColor, errorContainerColor = Color(0xff301417),
+    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
+    disabledIndicatorColor = Color.Transparent, errorIndicatorColor = MaterialTheme.colorScheme.error,
+    cursorColor = Color.White, focusedLabelColor = Color.White, unfocusedLabelColor = MutedColor)
 
 @Composable fun R34Theme(content: @Composable () -> Unit) {
     val base = Typography()
@@ -68,13 +82,14 @@ val GlassBottomColor = Color(0xeb0c0e11)
         onBackground = Color.White, secondaryContainer = RaisedColor, onSecondaryContainer = Color.White,
         primaryContainer = RaisedColor, onPrimaryContainer = Color.White, surfaceTint = Color.Transparent,
         surfaceContainer = SurfaceColor, surfaceContainerLow = SurfaceColor, surfaceContainerHigh = RaisedColor,
-        surfaceContainerHighest = Color(0xff2a2e34), surfaceContainerLowest = CanvasColor,
+        surfaceContainerHighest = ControlColor, surfaceContainerLowest = CanvasColor,
         outline = Color(0xff747474), error = Color(0xffff6670))) {
         Surface(Modifier.fillMaxSize(), color = CanvasColor, contentColor = Color.White, content = content)
     }
 }
 @Composable fun Title(text: String, modifier: Modifier = Modifier, large: Boolean = false) {
-    Text(text, modifier.semantics { heading() }, fontSize = (if (large) 18 else 15).sp, lineHeight = (if (large) 24 else 21).sp, fontWeight = FontWeight.SemiBold)
+    Text(text, modifier.semantics { heading() }, color = MaterialTheme.colorScheme.onSurface,
+        fontSize = (if (large) 18 else 15).sp, lineHeight = (if (large) 24 else 21).sp, fontWeight = FontWeight.SemiBold)
 }
 @Composable fun Copy(text: String, modifier: Modifier = Modifier) { Text(text, modifier, color = MutedColor, fontSize = 12.sp, lineHeight = 18.sp) }
 @Composable fun Glyph(@DrawableRes icon: Int, description: String?, modifier: Modifier = Modifier) {
@@ -87,44 +102,49 @@ val GlassBottomColor = Color(0xeb0c0e11)
     TextButton(onClick, modifier.heightIn(min = 48.dp), enabled,
         colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = MutedColor.copy(alpha = .5f)), content = content)
 }
-@Composable fun Action(text: String, primary: Boolean = false, enabled: Boolean = true, modifier: Modifier = Modifier, click: () -> Unit) {
+@Composable fun Action(text: String, primary: Boolean = false, enabled: Boolean = true, modifier: Modifier = Modifier,
+    icon: Int? = null, selected: Boolean = false, click: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) .97f else 1f, spring(dampingRatio = .72f, stiffness = 380f), label = "actionScale")
-    val radius by animateDpAsState(if (pressed) 11.dp else 14.dp, tween(160), label = "actionRadius")
-    val elevation by animateDpAsState(if (pressed) 2.dp else 6.dp, label = "actionElevation")
-    val shape = RoundedCornerShape(radius)
-    Row(modifier.heightIn(min = 48.dp).graphicsLayer { scaleX = scale; scaleY = scale; alpha = if (enabled) 1f else .45f }
-        .shadow(elevation, shape, clip = false).clip(shape)
-        .background(if (primary) BrandColor else Color(0xc82a2e34))
-        .border(.8.dp, if (primary) BrandColor.copy(alpha = .7f) else Color.White.copy(alpha = .14f), shape)
-        .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled, role = Role.Button, onClick = click),
-        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        Text(text, Modifier.padding(horizontal = 17.dp, vertical = 10.dp), color = Color.White,
-            fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    val focused by interaction.collectIsFocusedAsState()
+    Button(click, modifier.heightIn(min = 48.dp).semantics { this.selected = selected }, enabled,
+        shape = RoundedCornerShape(16.dp), interactionSource = interaction, elevation = null,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (focused) ControlFocusColor else if (primary) BrandColor else if (selected) ActiveControlColor else ControlColor,
+            contentColor = Color.White,
+            disabledContainerColor = ControlColor.copy(alpha = .55f), disabledContentColor = MutedColor.copy(alpha = .65f))) {
+        val glyph = icon ?: R.drawable.ic_check.takeIf { selected }
+        if (glyph != null) { Glyph(glyph, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)) }
+        Text(text, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
     }
 }
 @Composable fun Choice(text: String, selected: Boolean = false, click: () -> Unit) {
-    val container by animateColorAsState(if (selected) Color.White.copy(alpha = .94f) else Color(0xff171a1f).copy(alpha = .78f), label = "choice")
-    val content by animateColorAsState(if (selected) Color.Black else MutedColor, label = "choiceContent")
-    Box(Modifier.height(48.dp).semantics { this.selected = selected }.clip(RoundedCornerShape(17.dp)).clickable(onClick = click), contentAlignment = Alignment.Center) {
-        Box(Modifier.height(34.dp).clip(RoundedCornerShape(17.dp)).background(container)
-            .border(.7.dp, if (selected) Color.White.copy(alpha = .5f) else Color.White.copy(alpha = .13f), RoundedCornerShape(17.dp)),
-            contentAlignment = Alignment.Center) {
-            Text(text, Modifier.padding(horizontal = 14.dp), color = content, fontSize = 11.sp,
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val horizontalPadding = if (LocalDensity.current.fontScale > 1.3f) 10.dp else 14.dp
+    val container by animateColorAsState(if (focused) ControlFocusColor else if (selected) SelectedControlColor else ControlColor, tween(120), label = "choice")
+    val content = if (selected && !focused) Color.Black else Color.White
+    Box(Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(50))
+        .selectable(selected, interactionSource = interaction, indication = LocalIndication.current, role = Role.Tab, onClick = click), contentAlignment = Alignment.Center) {
+        Row(Modifier.heightIn(min = 34.dp).clip(RoundedCornerShape(50)).background(container).padding(horizontal = horizontalPadding, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            if (selected) { CompositionLocalProvider(LocalContentColor provides content) { Glyph(R.drawable.ic_check, null, Modifier.size(14.dp)) }; Spacer(Modifier.width(6.dp)) }
+            Text(text, color = content, fontSize = 12.sp,
                 lineHeight = 15.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
         }
     }
 }
 @Composable fun Selector(text: String, enabled: Boolean = true, modifier: Modifier = Modifier, click: () -> Unit) {
-    OutlinedButton(click, modifier.heightIn(min = 48.dp), enabled, shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(.8.dp, Color.White.copy(alpha = .18f)),
-        colors = ButtonDefaults.outlinedButtonColors(containerColor = RaisedColor.copy(alpha = .82f), contentColor = Color.White)) {
-        Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp); Spacer(Modifier.width(8.dp)); Icon(painterResource(R.drawable.ic_chevron_down), null, Modifier.size(16.dp))
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    FilledTonalButton(click, modifier.heightIn(min = 48.dp), enabled, shape = RoundedCornerShape(16.dp), interactionSource = interaction,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        colors = ButtonDefaults.filledTonalButtonColors(containerColor = if (focused) ControlFocusColor else ControlColor, contentColor = Color.White)) {
+        Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp); Spacer(Modifier.width(8.dp)); Icon(painterResource(R.drawable.ic_chevron_down), null, Modifier.size(16.dp))
     }
 }
 @Composable fun Choices(values: List<String>, selected: Int, choose: (Int) -> Unit) {
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         values.forEachIndexed { i, text -> Choice(text, i == selected) { choose(i) } }
     }
 }
@@ -140,11 +160,19 @@ val GlassBottomColor = Color(0xeb0c0e11)
 }
 @Composable fun Expandable(title: String, expandedInitially: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
     var expanded by rememberSaveable(title) { mutableStateOf(expandedInitially) }
-    Column {
-        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { expanded = !expanded }, verticalAlignment = Alignment.CenterVertically) {
-            Title(title, Modifier.weight(1f)); Glyph(R.drawable.ic_chevron_down, if (expanded) "收起$title" else "展开$title")
+    val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "expandRotation")
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(SurfaceColor)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { stateDescription = if (expanded) "已展开" else "已收起" }
+            .clickable(role = Role.Button) { expanded = !expanded }.padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Title(title, Modifier.weight(1f)); Glyph(R.drawable.ic_chevron_down, if (expanded) "收起$title" else "展开$title",
+                Modifier.graphicsLayer { rotationZ = rotation })
         }
-        if (expanded) Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+        androidx.compose.animation.AnimatedVisibility(expanded,
+            enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut()) {
+            Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+        }
     }
 }
 
@@ -170,14 +198,13 @@ val GlassBottomColor = Color(0xeb0c0e11)
 }
 @Composable fun GlassSurface(url: String? = null, site: SiteContext? = null, modifier: Modifier = Modifier, radius: Int = 22, opaque: Boolean = false, content: @Composable BoxScope.() -> Unit) {
     val shape = RoundedCornerShape(radius.dp)
-    Box(modifier.shadow(18.dp, shape, clip = false).clip(shape)) {
+    Box(modifier.shadow(8.dp, shape, clip = false).clip(shape)) {
         if (url != null && site != null) {
             val blur = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Modifier.blur(28.dp, BlurredEdgeTreatment(shape)) else Modifier
             SiteImage(url, site, Modifier.matchParentSize().then(blur))
         }
         Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-            if (opaque) listOf(Color(0xf517191d), Color(0xfc0c0e11)) else listOf(GlassTopColor, GlassBottomColor))))
-        Box(Modifier.matchParentSize().border(.8.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = .22f), Color.White.copy(alpha = .035f))), shape))
+            if (opaque) listOf(RaisedColor, SurfaceColor) else listOf(GlassTopColor, GlassBottomColor))))
         content()
     }
 }
@@ -187,8 +214,7 @@ val GlassBottomColor = Color(0xeb0c0e11)
     var ratio by remember(video.site, video.id) { mutableFloatStateOf(if (gallery) video.thumbAspectRatio else 16f / 9f) }
     var expanded by remember { mutableStateOf(false) }
     Column(modifier.testTag("media-${video.site}-${video.id}").combinedClickable(onClick = click, onLongClick = { if (menu.isNotEmpty()) expanded = true }).padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Box(Modifier.shadow(10.dp, RoundedCornerShape(14.dp), clip = false).clip(RoundedCornerShape(14.dp))
-            .border(.7.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(14.dp))) {
+        Box(Modifier.clip(RoundedCornerShape(14.dp))) {
             SiteImage(video.thumb, site, Modifier.fillMaxWidth().aspectRatio(ratio.coerceIn(.45f, 1.8f)), gallery) { if (gallery && !video.hasThumbDimensions) ratio = it }
             if (menu.isNotEmpty()) Box(Modifier.align(Alignment.TopEnd)) {
                 IconAction(R.drawable.ic_more, "${video.title} 的更多操作", Modifier.background(Color.Black.copy(alpha = .65f), androidx.compose.foundation.shape.CircleShape)) { expanded = true }
@@ -217,17 +243,21 @@ class ComposeDialogs {
             confirmButton = { TextAction({ dismiss(); action() }) { Text(positive) } }, dismissButton = { TextAction(::dismiss) { Text("取消") } })
     } }
     fun choose(title: String, values: List<String>, selected: Int = -1, action: (Int) -> Unit) { content = {
-        ModalBottomSheet(::dismiss, containerColor = Color.Transparent, scrimColor = Color.Black.copy(alpha = .68f), dragHandle = null) {
+        ModalBottomSheet(::dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = Color.Transparent, scrimColor = Color.Black.copy(alpha = .68f), dragHandle = null) {
             GlassSurface(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp), radius = 28, opaque = true) {
                 Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp)) {
                     Box(Modifier.align(Alignment.CenterHorizontally).size(32.dp, 4.dp).background(Color.White.copy(alpha = .3f), RoundedCornerShape(50)))
                     Title(title, Modifier.padding(top = 16.dp, bottom = 8.dp))
-                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).selectableGroup()) {
                         values.forEachIndexed { i, value -> Row(Modifier.fillMaxWidth().heightIn(min = 50.dp)
                             .clip(RoundedCornerShape(14.dp)).background(if (selected == i) Color.White.copy(alpha = .09f) else Color.Transparent)
-                            .clickable { dismiss(); action(i) }.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (selected >= 0) RadioButton(selected == i, null)
-                            Text(value, Modifier.padding(8.dp), fontSize = 13.sp)
+                            .then(if (selected >= 0) Modifier.selectable(selected == i, role = Role.RadioButton) { dismiss(); action(i) }
+                                else Modifier.clickable(role = Role.Button) { dismiss(); action(i) })
+                            .padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(value, Modifier.weight(1f).padding(vertical = 14.dp), fontSize = 13.sp,
+                                fontWeight = if (selected == i) FontWeight.SemiBold else FontWeight.Normal)
+                            if (selected == i) Glyph(R.drawable.ic_check, null, Modifier.size(20.dp))
                         } }
                     }
                     TextAction(::dismiss, Modifier.align(Alignment.End)) { Text("取消") }
@@ -238,7 +268,8 @@ class ComposeDialogs {
     fun edit(title: String, initial: String = "", hint: String = "", keyboard: KeyboardType = KeyboardType.Text, validate: (String) -> String? = { null }, action: (String) -> Unit) { content = {
         var value by remember { mutableStateOf(initial) }; var error by remember { mutableStateOf<String?>(null) }
         AlertDialog(::dismiss, title = { Text(title) }, text = { Column {
-            OutlinedTextField(value, { value = it; error = null }, label = { Text(hint.ifBlank { title }) }, isError = error != null, keyboardOptions = KeyboardOptions(keyboardType = keyboard))
+            TextField(value, { value = it; error = null }, Modifier.fillMaxWidth(), label = { Text(hint.ifBlank { title }) },
+                shape = RoundedCornerShape(16.dp), colors = filledFieldColors(), isError = error != null, keyboardOptions = KeyboardOptions(keyboardType = keyboard))
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         } }, shape = RoundedCornerShape(24.dp), containerColor = SurfaceColor, tonalElevation = 0.dp,
             confirmButton = { TextAction({ error = validate(value.trim()); if (error == null) { dismiss(); action(value.trim()) } }) { Text("确定") } }, dismissButton = { TextAction(::dismiss) { Text("取消") } })
