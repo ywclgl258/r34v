@@ -144,6 +144,10 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     @Synchronized private fun <T> list(key: String, type: Class<T>): List<T> = runCatching {
         val array = JsonParser.parseString(prefs.getString(key, "[]")).asJsonArray
         array.mapNotNull { raw -> runCatching {
+            if (raw.isJsonObject && !raw.asJsonObject.has("site") &&
+                (type == Watch::class.java || type == Favorite::class.java || type == LocalVideo::class.java)) {
+                key.substringBefore(':', "").takeIf { it.isNotBlank() }?.let { raw.asJsonObject.addProperty("site", it) }
+            }
             if (type == Favorite::class.java && raw.isJsonObject && !raw.asJsonObject.has("t") && raw.asJsonObject.has("id")) raw.asJsonObject.add("t", raw.asJsonObject["id"])
             gson.fromJson(raw, type)
         }.getOrNull() }
@@ -188,12 +192,60 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     fun addSearch(query: String) = write(k("native_search_history"), (listOf(query) + searches().filter { it != query }).take(30))
     fun clearSearches() = prefs.edit().remove(k("native_search_history")).apply()
 
-    fun blockedTags() = list(k("blocked_tags"), String::class.java)
+    fun blockedTags(siteId: String = this.siteId) = list("$siteId:blocked_tags", String::class.java)
     fun toggleBlocked(slug: String) { val tags = blockedTags(); write(k("blocked_tags"), if (slug in tags) tags - slug else tags + slug) }
-    fun allowed(video: Video) = blockedTags().none { slug ->
+    fun allowed(video: Video) = allowed(video, siteId)
+    fun allowed(video: Video, siteId: String) = blockedTags(siteId).none { slug ->
         val needle = slug.replace('-', ' ')
         video.title.contains(needle, ignoreCase = true) || video.url.contains(slug, ignoreCase = true)
     }
+
+    /**
+     * Followed tags for one site, in the order the user arranged them.
+     *
+     * The list order *is* the ranking: `SubscriptionOrder.SUBSCRIBED` shows groups in this order,
+     * so moving an entry here is the custom sort. Per site on purpose — a slug only means
+     * something inside one catalogue.
+     */
+    fun subscriptions(siteId: String = this.siteId): List<Subscription> =
+        list("$siteId:subscriptions_v1", Subscription::class.java).filter { it.slug.isNotBlank() }.map { it.copy(site = siteId) }
+
+    fun isSubscribed(slug: String, siteId: String = this.siteId) = subscriptions(siteId).any { it.slug == slug }
+
+    /** Adds, or removes when already followed. Returns true when the tag is now followed. */
+    @Synchronized fun toggleSubscription(entry: Subscription, siteId: String = this.siteId): Boolean {
+        val all = subscriptions(siteId)
+        val exists = all.any { it.slug == entry.slug }
+        val normalized = entry.copy(site = siteId, label = entry.label.ifBlank { entry.slug },
+            at = all.firstOrNull { it.slug == entry.slug }?.at ?: System.currentTimeMillis())
+        write("$siteId:subscriptions_v1", if (exists) all.filter { it.slug != entry.slug } else all + normalized)
+        return !exists
+    }
+
+    @Synchronized fun removeSubscription(slug: String, siteId: String = this.siteId) =
+        write("$siteId:subscriptions_v1", subscriptions(siteId).filter { it.slug != slug })
+
+    /** Moves one followed tag to [to]; the stored order is what the subscription screen renders. */
+    @Synchronized fun moveSubscription(from: Int, to: Int, siteId: String = this.siteId): Boolean {
+        val all = subscriptions(siteId).toMutableList()
+        if (from !in all.indices || to !in all.indices || from == to) return false
+        all.add(to, all.removeAt(from))
+        write("$siteId:subscriptions_v1", all)
+        return true
+    }
+
+    /** Renames a followed tag locally; the slug stays the fetch key. */
+    @Synchronized fun renameSubscription(slug: String, label: String, siteId: String = this.siteId) =
+        write("$siteId:subscriptions_v1", subscriptions(siteId).map { if (it.slug == slug) it.copy(label = label.ifBlank { it.slug }) else it })
+
+    fun clearSubscriptions(siteId: String = this.siteId) = prefs.edit().remove("$siteId:subscriptions_v1").apply()
+
+    /** Merge order for the subscription screen; stored per site like the list itself. */
+    fun subscriptionOrder(siteId: String = this.siteId): SubscriptionOrder =
+        SubscriptionOrder.entries.firstOrNull { it.name == prefs.getString("$siteId:subscription_order_v1", null) } ?: SubscriptionOrder.SUBSCRIBED
+
+    fun setSubscriptionOrder(value: SubscriptionOrder, siteId: String = this.siteId) =
+        prefs.edit().putString("$siteId:subscription_order_v1", value.name).apply()
 
     // Global preferences: shared by every site on purpose.
     fun string(name: String, default: String = "") = prefs.getString("settings_v1_$name", default) ?: default

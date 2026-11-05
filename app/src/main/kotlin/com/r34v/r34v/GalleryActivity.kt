@@ -34,6 +34,7 @@ class GalleryActivity : ComponentActivity() {
     private var error by mutableStateOf<String?>(null)
     private var gate by mutableStateOf(false)
     private var offlineOnly = false
+    private var sourceRoot = ""
     private var reading by mutableStateOf(false)
     private var controlsVisible by mutableStateOf(true)
     private var page by mutableIntStateOf(1)
@@ -53,6 +54,7 @@ class GalleryActivity : ComponentActivity() {
         stripOffset = savedInstanceState?.getInt("stripOffset") ?: store.reading(entry.id, site.id)?.offset ?: 0
         reading = savedInstanceState?.getBoolean("reading") ?: intent.getBooleanExtra("read", false)
         offlineOnly = savedInstanceState?.getBoolean("offline") ?: intent.getBooleanExtra("offline", false)
+        sourceRoot = intent.getStringExtra("root").orEmpty()
         controlsVisible = savedInstanceState?.getBoolean("controlsVisible") ?: true
         jump = ReaderJump(0, page, stripOffset)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -64,9 +66,9 @@ class GalleryActivity : ComponentActivity() {
         if (gate) return
         error = null; pageJob?.cancel()
         pageJob = lifecycleScope.launch { try {
-            val gallery = app.galleries.detail(entry, offlineOnly); detail = gallery; entry = gallery.entry; page = page.coerceIn(1, gallery.pageCount)
+            val gallery = app.galleries.detail(entry, offlineOnly, sourceRoot); detail = gallery; entry = gallery.entry; page = page.coerceIn(1, gallery.pageCount)
             if (resume) reader(page, stripOffset) else { reading = false; controlsVisible = true }
-        } catch (e: Exception) { if (e is CancellationException) throw e; if (e is GalleryLoginRequiredException) { app.network.session.clear(site); gate = true } else error = e.message ?: "画廊加载失败" } }
+        } catch (e: Exception) { if (e is CancellationException) throw e; if (e is GalleryLoginRequiredException) { app.network.session.clear(site); gate = true } else error = e.message ?: "${site.category.itemNoun}加载失败" } }
     }
     private fun reader(target: Int, offset: Int = 0) { page = target; stripOffset = offset; jump = ReaderJump(jump.serial + 1, target, offset); reading = true }
     private fun applyBars() {
@@ -81,12 +83,12 @@ class GalleryActivity : ComponentActivity() {
             if (!reading || controlsVisible || gate || error != null) Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconAction(R.drawable.ic_back, "返回") { if (reading) { saveReader?.invoke(); reading = false; controlsVisible = true } else finish() }
                 Text(if (reading) entry.title else site.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (reading) IconAction(R.drawable.ic_fullscreen, "全屏阅读") { controlsVisible = false }
+                if (reading) IconAction(R.drawable.ic_fullscreen, "全屏${site.category.verb}") { controlsVisible = false }
             }
             when {
                 gate -> EmptyState("ExHentai 必须登录并具备访问权限", "请在官方页面完成登录，再验证本站访问权限。", "官方网页登录") { officialLogin.launch(Intent(this@GalleryActivity, SiteAuthActivity::class.java).putExtra("site", site.id)) }
-                error != null -> EmptyState("画廊加载失败", error.orEmpty()) { load(reading) }
-                detail == null -> Loading("正在加载画廊")
+                error != null -> EmptyState("${site.category.itemNoun}加载失败", error.orEmpty()) { load(reading) }
+                detail == null -> Loading("正在加载${site.category.itemNoun}")
                 reading -> {
                     val gallery = detail!!
                     Box(Modifier.weight(1f)) { ComicReader(gallery.pageCount, jump, ::loadStripPage, { controlsVisible = !controlsVisible }, { current, image, offset ->
@@ -97,7 +99,7 @@ class GalleryActivity : ComponentActivity() {
                         Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { Copy("单击画面隐藏菜单", Modifier.weight(1f)); TextAction(::jumpDialog) { Text("$page / ${gallery.pageCount}") } }
                         if (gallery.pageCount > 1) {
                             var slider by remember(page) { mutableFloatStateOf(page.toFloat()) }
-                            Slider(slider, { slider = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp).semantics { contentDescription = "漫画阅读进度" }, valueRange = 1f..gallery.pageCount.toFloat(), colors = SliderDefaults.colors(thumbColor = androidx.compose.ui.graphics.Color.White, activeTrackColor = BrandColor, inactiveTrackColor = RaisedColor), onValueChangeFinished = { reader(slider.toInt().coerceIn(1, gallery.pageCount)) })
+                            Slider(slider, { slider = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp).semantics { contentDescription = "${site.category.itemNoun}${site.category.verb}进度" }, valueRange = 1f..gallery.pageCount.toFloat(), colors = SliderDefaults.colors(thumbColor = androidx.compose.ui.graphics.Color.White, activeTrackColor = BrandColor, inactiveTrackColor = RaisedColor), onValueChangeFinished = { reader(slider.toInt().coerceIn(1, gallery.pageCount)) })
                         }
                     }
                 }
@@ -109,24 +111,26 @@ class GalleryActivity : ComponentActivity() {
     @Composable private fun Overview() {
         val gallery = detail ?: return
         @Suppress("UNUSED_VARIABLE") val observedRevision = revision
+        val noun = site.category.itemNoun
+        val verb = site.category.verb
         val progress = store.reading(entry.id, site.id)
         val downloadRevision by app.galleryDownloads.changes.collectAsState()
         val download = remember(downloadRevision, entry.id, entry.site) { app.galleryDownloads.task(entry) }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             if (!offlineOnly) SiteImage(entry.thumb, site, Modifier.fillMaxWidth().height(250.dp), true)
-            else Copy("已下载整本 · ${gallery.pageCount} 页 · 离线阅读")
+            else Copy("已下载整本 · ${gallery.pageCount} 页 · 离线$verb")
             Title(entry.title, large = true)
             if (gallery.alternativeTitle.isNotBlank() && gallery.alternativeTitle != entry.title) Copy(gallery.alternativeTitle)
             Copy(listOf(entry.duration, gallery.language, entry.rating).filter(String::isNotBlank).joinToString(" · "))
-            Action(if (progress == null) "开始阅读" else "继续阅读 · 第 ${progress.page} 页", true, modifier = Modifier.fillMaxWidth()) { reader(progress?.page ?: 1, progress?.offset ?: 0) }
-            Action(if (store.isFavorite("gallery", entry.id, site.id)) "已收藏画廊" else "收藏画廊", modifier = Modifier.fillMaxWidth()) { store.toggleFavorite(Favorite("gallery", entry.id, entry.title, entry.url, entry.thumb, entry.duration, site = site.id), site.id); revision++ }
+            Action(if (progress == null) "开始$verb" else "继续$verb · 第 ${progress.page} 页", true, modifier = Modifier.fillMaxWidth()) { reader(progress?.page ?: 1, progress?.offset ?: 0) }
+            Action(if (store.isFavorite("gallery", entry.id, site.id)) "已收藏$noun" else "收藏$noun", modifier = Modifier.fillMaxWidth()) { store.toggleFavorite(Favorite("gallery", entry.id, entry.title, entry.url, entry.thumb, entry.duration, site = site.id), site.id); revision++ }
             Action(when (download?.state) {
-                GalleryDownloadState.COMPLETED -> "离线阅读"
+                GalleryDownloadState.COMPLETED -> "离线$verb"
                 GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED -> "暂停下载 · ${download.pages} / ${download.total} 页"
                 GalleryDownloadState.PAUSED -> "继续下载"
                 GalleryDownloadState.FAILED -> "重试下载"
                 GalleryDownloadState.REMOVING -> "正在删除下载"
-                null -> "下载整本"
+                null -> if (site.category == SiteCategory.PHOTO) "下载全部图片" else "下载整本"
             }, enabled = download?.state != GalleryDownloadState.REMOVING, modifier = Modifier.fillMaxWidth()) {
                 if (download?.state == GalleryDownloadState.COMPLETED) { offlineOnly = true; load(true) }
                 else lifecycleScope.launch { try {
@@ -140,7 +144,7 @@ class GalleryActivity : ComponentActivity() {
             }
             TextAction({ startActivity(Intent(this@GalleryActivity, MainActivity::class.java).putExtra("downloads", true)) }) { Glyph(R.drawable.ic_download, null); Spacer(Modifier.width(8.dp)); Text("管理下载") }
             if (download?.state == GalleryDownloadState.FAILED) Copy(download.error)
-            if (gallery.cached && !offlineOnly) Copy("当前使用已保存的画廊信息；已保存图页可离线阅读，整本下载可在下载中心查看。")
+            if (gallery.cached && !offlineOnly) Copy("当前使用已保存的$noun 信息；已保存图页可离线$verb，整本下载可在下载中心查看。")
             Copy(gallery.description)
             gallery.groups.forEach { (name, links) -> Title(name); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { links.forEach { link ->
                 Box(Modifier.combinedClickable(onClick = { startActivity(Intent(this@GalleryActivity, MainActivity::class.java).putExtra("link", link.url)) }, onLongClick = {
@@ -151,12 +155,12 @@ class GalleryActivity : ComponentActivity() {
         }
     }
     private suspend fun loadStripPage(target: Int, force: Boolean): GalleryRepository.RenderedPage {
-        val gallery = detail ?: error("画廊信息尚未载入")
+        val gallery = detail ?: error("${site.category.itemNoun}信息尚未载入")
         val remembered = store.reading(entry.id, site.id)?.takeIf { it.page == target }?.pageUrl
-        val cached = withContext(Dispatchers.IO) { app.galleries.cachedPageUrl(entry, target) }
+        val cached = withContext(Dispatchers.IO) { app.galleries.cachedPageUrl(entry, target, sourceRoot) }
         val url = cached ?: images[target]?.pageUrl ?: images[target - 1]?.nextUrl ?: images[target + 1]?.previousUrl ?: remembered
             ?: if (offlineOnly) error("下载图页目录缺失，请重新下载") else AdapterRegistry.adapter(site, app.network).galleryPageLink(gallery, target)
-        return app.galleries.page(site, url, force, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly).also { images[target] = it.image }
+        return app.galleries.page(site, url, force, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly, sourceRoot = sourceRoot).also { images[target] = it.image }
     }
     private fun jumpDialog() {
         val count = detail?.pageCount ?: return

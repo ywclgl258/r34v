@@ -16,16 +16,30 @@ import java.io.IOException
 import java.security.MessageDigest
 
 /** Bounded reading cache and separate, persistent whole-book downloads. */
-class GalleryRepository(private val context: Context, private val network: Network) {
+class GalleryRepository(private val context: Context, private val network: Network, private val storage: StorageRoot) {
+    /**
+     * Plain private-storage repository, for callers that own neither app settings nor a download
+     * location (probes, adapter fixtures). The application always passes a real [StorageRoot].
+     */
+    constructor(context: Context, network: Network) : this(context, network, StorageRoot(context, LibraryStore(context)))
+
     data class RenderedPage(val image: GalleryImage, val bitmap: Bitmap, val cached: Boolean)
     private data class KnownPages(val links: Map<Int, String> = emptyMap())
     private val gson = Gson()
     private fun directory(site: SiteContext) = File(context.filesDir, "gallery-cache/${site.id}").apply { mkdirs() }
-    private fun bookDirectory(entry: Video): File {
-        val site = SiteRegistry.byId(entry.site) ?: error("未知漫画站点")
+    val downloadsAllowed get() = !storage.changing && !storage.pendingRestart
+    fun checkDownloadsAllowed() = storage.checkDownloadsAllowed()
+    private fun bookDirectory(entry: Video, sourceRoot: String = "", write: Boolean = false): File {
+        val site = SiteRegistry.byId(entry.site) ?: error("未知图集站点")
         require(site.mediaKind == MediaKind.GALLERY && entry.id.isNotBlank())
-        return File(context.filesDir, "gallery-downloads/${site.id}/${key(entry.id)}")
+        fun folder(layout: StorageRoot.Layout) = File(File(layout.comics, site.id), key(entry.id))
+        if (sourceRoot.isNotBlank()) return folder(storage.sourceLayout(sourceRoot))
+        if (write) return folder(storage.ensure())
+        val candidates = storage.readableLayouts().sortedBy { it.root != storage.layout().root }.map(::folder)
+        return candidates.firstOrNull(::completeBook) ?: candidates.firstOrNull { File(it, "book.json").isFile }
+            ?: folder(storage.layout())
     }
+    private fun completeBook(folder: File) = isCompleteDownload(folder, gson)
     private fun key(url: String) = MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
     private fun <T> read(file: File, type: Class<T>): T? = runCatching { gson.fromJson(file.readText(), type) }.getOrNull()
     private fun write(file: File, bytes: ByteArray) {
@@ -37,10 +51,10 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         } finally { temporary.delete() }
     }
 
-    suspend fun detail(entry: Video, offlineOnly: Boolean = false): GalleryDetail = withContext(Dispatchers.IO) {
-        val downloaded = read(File(bookDirectory(entry), "book.json"), GalleryDetail::class.java)
+    suspend fun detail(entry: Video, offlineOnly: Boolean = false, sourceRoot: String = ""): GalleryDetail = withContext(Dispatchers.IO) {
+        val downloaded = read(File(bookDirectory(entry, sourceRoot), "book.json"), GalleryDetail::class.java)
         if (offlineOnly) {
-            check(isDownloaded(entry) && downloaded != null) { "漫画下载不完整，请在下载中心继续下载" }
+            check(isDownloaded(entry, sourceRoot) && downloaded != null) { "图集下载不完整，请在下载中心继续下载" }
             return@withContext downloaded.copy(cached = true)
         }
         val site = SiteRegistry.byIdOrDefault(entry.site)
@@ -56,25 +70,26 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         }
     }
 
-    fun cachedPageUrl(entry: Video, page: Int): String? = read(File(bookDirectory(entry), "links.json"), KnownPages::class.java)?.links?.get(page) ?: read(
+    fun cachedPageUrl(entry: Video, page: Int, sourceRoot: String = ""): String? = read(File(bookDirectory(entry, sourceRoot), "links.json"), KnownPages::class.java)?.links?.get(page) ?: read(
         File(directory(SiteRegistry.byIdOrDefault(entry.site)), "${key(entry.url)}.links.json"), KnownPages::class.java
     )?.links?.get(page)
 
     @Synchronized private fun rememberDownloadPage(entry: Video, image: GalleryImage) {
-        val file = File(bookDirectory(entry), "links.json")
+        val file = File(bookDirectory(entry, write = true), "links.json")
         val links = read(file, KnownPages::class.java)?.links.orEmpty() + (image.index to image.pageUrl)
         write(file, gson.toJson(KnownPages(links)).toByteArray())
     }
 
-    fun isDownloaded(entry: Video) = File(bookDirectory(entry), "complete").isFile
+    fun isDownloaded(entry: Video, sourceRoot: String = "") = completeBook(bookDirectory(entry, sourceRoot))
 
     suspend fun prepareDownload(entry: Video): GalleryDetail = withContext(Dispatchers.IO) {
-        val folder = bookDirectory(entry)
+        checkDownloadsAllowed()
+        val folder = bookDirectory(entry, write = true)
         folder.listFiles().orEmpty().filter { it.name.endsWith(".part") }.forEach { it.delete() }
         val file = File(folder, "book.json")
         val gallery = read(file, GalleryDetail::class.java) ?: detail(entry)
-        check(gallery.pageCount > 0) { "漫画没有可下载的图页" }
-        check(gallery.entry.id == entry.id && gallery.entry.site == entry.site) { "画廊身份不匹配" }
+        check(gallery.pageCount > 0) { "这条内容没有可下载的图页" }
+        check(gallery.entry.id == entry.id && gallery.entry.site == entry.site) { "图集身份不匹配" }
         write(file, gson.toJson(gallery).toByteArray())
         gallery
     }
@@ -82,7 +97,7 @@ class GalleryRepository(private val context: Context, private val network: Netwo
     /** Save raw image files; a batch download must not decode every page into a bitmap. */
     suspend fun downloadPage(entry: Video, index: Int, pageUrl: String): Pair<GalleryImage, Long> = withContext(Dispatchers.IO) {
         val site = SiteRegistry.byIdOrDefault(entry.site)
-        val folder = bookDirectory(entry)
+        val folder = bookDirectory(entry, write = true)
         val id = key(pageUrl.substringBefore('?'))
         val imageFile = File(folder, "$id.image")
         val metadataFile = File(folder, "$id.page.json")
@@ -107,17 +122,20 @@ class GalleryRepository(private val context: Context, private val network: Netwo
     }
 
     suspend fun finishDownload(entry: Video, count: Int) = withContext(Dispatchers.IO) {
-        val folder = bookDirectory(entry)
+        val folder = bookDirectory(entry, write = true)
         val links = read(File(folder, "links.json"), KnownPages::class.java)?.links.orEmpty()
-        check((1..count).all { page -> links[page]?.let { File(folder, "${key(it.substringBefore('?'))}.image").isFile } == true }) { "漫画下载尚未完整保存" }
+        check((1..count).all { page -> links[page]?.let { File(folder, "${key(it.substringBefore('?'))}.image").isFile } == true }) { "图集下载尚未完整保存" }
         write(File(folder, "complete"), count.toString().toByteArray())
+        write(File(folder, "readme.txt"), RECOVERY_NOTE.toByteArray())
     }
 
     suspend fun removeDownload(entry: Video) = withContext(Dispatchers.IO) {
-        val folder = bookDirectory(entry)
-        val root = File(context.filesDir, "gallery-downloads").canonicalFile
-        check(folder.canonicalPath.startsWith(root.path + File.separator))
-        check(!folder.exists() || folder.deleteRecursively()) { "部分下载图页无法删除，请重试" }
+        for (layout in storage.readableLayouts()) {
+            val folder = bookDirectory(entry, layout.root.absolutePath)
+            val root = layout.comics.canonicalFile
+            check(folder.canonicalPath.startsWith(root.path + File.separator)) { "下载目录不在允许范围内" }
+            check(!folder.exists() || folder.deleteRecursively()) { "部分下载图页无法删除，请重试" }
+        }
     }
 
     @Synchronized private fun rememberPage(site: SiteContext, galleryUrl: String?, image: GalleryImage) {
@@ -127,10 +145,10 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         write(file, gson.toJson(KnownPages(links)).toByteArray())
     }
 
-    suspend fun page(site: SiteContext, pageUrl: String, force: Boolean = false, galleryUrl: String? = null, entry: Video? = null, offlineOnly: Boolean = false): RenderedPage = withContext(Dispatchers.IO) {
+    suspend fun page(site: SiteContext, pageUrl: String, force: Boolean = false, galleryUrl: String? = null, entry: Video? = null, offlineOnly: Boolean = false, sourceRoot: String = ""): RenderedPage = withContext(Dispatchers.IO) {
         if (entry != null) {
             require(entry.site == site.id)
-            val folder = bookDirectory(entry)
+            val folder = bookDirectory(entry, sourceRoot)
             val id = key(pageUrl.substringBefore('?'))
             val image = read(File(folder, "$id.page.json"), GalleryImage::class.java)
             val file = File(folder, "$id.image")
@@ -202,4 +220,28 @@ class GalleryRepository(private val context: Context, private val network: Netwo
     }
     fun cacheInfo(site: SiteContext): Pair<Int, Long> = directory(site).listFiles().orEmpty().filter { it.extension == "image" }.let { it.size to it.sumOf(File::length) }
     fun clear(site: SiteContext) { directory(site).listFiles().orEmpty().filter { it.isFile }.forEach { check(it.delete()) { "部分图页缓存无法删除，请重试" } } }
+
+    companion object {
+        fun isCompleteDownload(folder: File, gson: Gson = Gson()): Boolean = runCatching {
+            val detail = gson.fromJson(File(folder, "book.json").readText(), GalleryDetail::class.java)
+            val count = detail.pageCount
+            if (count <= 0 || File(folder, "complete").readText().trim().toIntOrNull() != count) return false
+            val links = gson.fromJson(File(folder, "links.json").readText(), KnownPages::class.java).links
+            (1..count).all { page ->
+                val url = links[page] ?: return@all false
+                val id = MessageDigest.getInstance("SHA-256").digest(url.substringBefore('?').toByteArray()).joinToString("") { "%02x".format(it) }
+                val image = File(folder, "$id.image")
+                val metadata = gson.fromJson(File(folder, "$id.page.json").readText(), GalleryImage::class.java)
+                image.isFile && image.length() > 0 && metadata.index == page && metadata.pageUrl == url
+            }
+        }.getOrDefault(false)
+
+        /**
+         * Left beside every finished book so a user who copies the folder elsewhere knows what it
+         * is without this app. Plain text on purpose: it must survive any file manager or cloud sync.
+         */
+        const val RECOVERY_NOTE = "本文件夹是一份已下载的图集（漫画或写真），由 R34V 保存。\n\n" +
+            "book.json  详情与页数\nlinks.json 页码与图源的对应关系\n*.image    原始图页（从第 1 页起依次保存）\n" +
+            "complete   下载完成标记\n\n把整个文件夹放回 R34V/comics/<站点>/ 之下，R34V 会重新识别并显示在下载中心。"
+    }
 }

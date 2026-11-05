@@ -1,8 +1,32 @@
 ---
 project_id: r34v-android
 updated: 2026-11-04
-status: unified-downloads-release-2.2.2
-scope: 漫画整本下载与统一下载中心
+status: review-fixes-verified
+scope: 新功能审查的 12 项缺陷与相关失败回归修复
+---
+
+# 审查修复（最新，2026-11-04）
+
+用户明确要求全部修复。此前 4 项 P1、8 项 P2 已修复，并补全缓存冷数据库重开/真实中性视频播放、双向目录切换、失败回滚、完整图集保护、跨目录删除、权限返回、订阅与 GalleryEpic 目录路由回归。最终 127 项 JVM 通过；Android 16 共 103 项，89 通过 / 14 跳过 / 0 失败（按 XML 去重）；Debug 构建及 Lint 0 errors / 63 warnings。系统授权开关已在测试进程外实际切换，返回窗口正常，原权限已恢复。详细契约、范围、验证和未测边界见 [审查修复记录](review-fixes-2026-11-04.md)。正式版本/包名/签名未变；开发 APK 在 `app/build/outputs/apk/debug/app-debug.apk`。未提交、推送或发布。
+
+# 此前：站点分类与写真站接入（2026-11-04）
+
+站点从 7 个增加到 12 个，并按内容类型分组：视频 3（Rule34Video / Hanime1 / Iwara）、漫画 4（E-Hentai / ExHentai / nhentai / Hitomi）、写真 5（4KHD / Everia / 4KUp / GalleryEpic / Cosplaytele）。切站抽屉按组分段渲染，每组标注名称、说明与站点数量。
+
+分类用新增的 `SiteCategory`（VIDEO / COMIC / PHOTO）表达，与 `MediaKind` 分开：后者回答"用什么界面打开"，写真集和漫画都走同一个阅读器；前者回答"这是什么内容"，所以写真不会被叫作漫画。`SiteCategory` 自带 `itemNoun`（视频 / 漫画 / 写真集）与 `verb`（观看 / 阅读 / 浏览），首页标题、详情按钮、片库分页和搜索页文案全部从这里取词。
+
+五个写真站共用一套引擎 `PhotoArchiveAdapter`，差异收在 `PhotoProfiles.kt` 的选择器表里。写真集对阅读器暴露成一条扁平页索引，页地址自带 `#index-page-offset`（整本第几张 / 内容分页号 / 该页内偏移），因此跨内容分页取图不依赖任何内存状态，进程重启后能直接定位；某个内容分页比首页短时会向后翻着找而不是直接报错。阅读器、收藏、浏览记录、整本下载全部复用漫画站链路，下载目录仍为 `R34V/comics/<站点>/`，按站点独立存放。
+
+五个站形态不同，都已按真实页面确认：4KHD 是 WordPress + Jetpack CDN，79 张分 4 个内容分页，文章 ID 取 slug（数字段是年份桶，不能当 ID）；Everia 是日期式路径 + `/slug/N/` 分页，图片在独立 CDN；4KUp 单页内联，`src` 是 data: 占位、真实地址在 `<a href>`；GalleryEpic 是 Next.js，页面只渲染 12 张预览但完整图片 id 列表在服务端 payload 里；Cosplaytele 单页内联 99 张，`#gallery-1` 之后是推荐区，不能算进本集。
+
+**18comic.vip 未接入**，用户在本轮中途明确要求放弃。实测该站对自动化访问返回 Cloudflare 托管质询（HTTP 403 + `Just a moment...`），需要持续维护的人机验证，不适合放进原生适配器。漫画分组、阅读器与整本下载都已就绪，若日后要接只差一个适配器。
+
+验证：JVM **121 项全绿**（原 86 + 4KHD 解析 11 + 写真引擎 15 + IPv4 优先 2 + 分类口径调整）；Debug Lint **0 errors / 62 warnings**。Android 16 模拟器分批通过 5 项：`SiteSwitcherUiTest`（抽屉分组、真实触摸、分站片库）、`SiteSessionTest`（12 站会话重建与单站退出）、`GalleryUiTest` 三项（漫画站阅读/语言筛选/离线恢复未受文案改动影响）。五个写真站逐站真机联网把首页、详情、阅读器全部点开：4KHD 79 张 / 4 分页、跳第 25 张跨页正确；Everia 75 张 / 5 分页、第 16 张跨页正确；4KUp 26 张、阅读器 1/26；GalleryEpic 62 张、阅读器 1/62；Cosplaytele 99 张、阅读器 1/99。整本下载用 Cosplaytele 跑通全量：99 张下载完成转为「离线浏览」，开飞行模式后仍能打开翻页。收藏与片库实测：GalleryEpic 收藏后按钮变「已收藏写真集」，片库「收藏 → 写真集」页显示该本封面与 62 张；片库分页显示为「浏览 / 收藏 / 下载」，收藏分类为「写真集 / 模特 / 标签」，都按写真站用词参数化。写真站搜索实测（Cosplaytele 搜 `machi` 返回 8 条真实结果）。无崩溃记录。截图在本地 `shots/photos/`，不入 Git。
+
+联调中修掉三个"单测绿、真机打不开"的缺陷，已单独立节记录：IPv6 优先导致整站连接超时（新增 `Ipv4FirstDns`，只调地址顺序，不写死 IP、不改超时）；Everia 图片 CDN 域名按帖子轮换（不再锁主机名，否则换域名的帖子整帖无图）；4KUp 封面取到 `data:` 惰性占位符（封面改为复用图集提取规则）。
+
+边界：4KHD 整本下载未跑全量（阅读与跨页已验证）；写真站未接登录（五站均公开浏览）；未接站外打包下载链接（TeraBox / Mediafire / Gofile 等，站内整本下载已覆盖同需求）；Android 7/8 与系统 200% 字体、横屏下的写真站界面未跑。本机对 `everia.club` 的 DNS 被污染（解析到 Facebook 网段），Everia 的真机验证是把模拟器系统代理指到宿主机代理后做的，属联调环境处理，应用网络策略未改。本轮仅本地交付，未提交、推送或发布；`release.properties` 仍为 2.2.2 / 36。
+
 ---
 
 # 漫画与视频统一下载（最新，2026-11-04）

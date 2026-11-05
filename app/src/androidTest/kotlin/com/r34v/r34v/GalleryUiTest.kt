@@ -10,7 +10,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class GalleryUiTest : ComposeUiCase() {
     @Test fun languageMasonryScrollAndSearchRemainSiteSpecific() = ComposeFixture().use { f ->
-        f.launch(); waitHome(); switchSite(SiteRegistry.EHENTAI.name); waitText("最新画廊")
+        f.launch(); waitHome(); switchSite(SiteRegistry.EHENTAI.name); waitText("最新漫画")
         val first = ui.onNodeWithTag("media-ehentai-${f.video("ehentai").id}").fetchSemanticsNode().boundsInRoot
         val second = ui.onNodeWithTag("media-ehentai-${f.video("ehentai", index = 1).id}").fetchSemanticsNode().boundsInRoot
         assertTrue("Gallery covers must keep their differing aspect ratios", first.height > second.height)
@@ -21,10 +21,10 @@ class GalleryUiTest : ComposeUiCase() {
         ui.onNodeWithContentDescription("内容列表").performTouchInput { swipeDown() }; waitText("中＋日")
         clickText("搜索"); ui.onNode(hasSetTextAction()).performTextInput("sample"); ui.onNodeWithContentDescription("提交搜索").performClick()
         ui.waitUntil(10000) { f.requests.any { it.first == "ehentai" && it.second.kind == FeedKind.SEARCH && it.second.language == GalleryLanguage.CHINESE_JAPANESE } }
-        switchSite(SiteRegistry.NHENTAI.name); waitText("最新画廊"); assertEquals(GalleryLanguage.ALL, f.app.library.galleryLanguage())
+        switchSite(SiteRegistry.NHENTAI.name); waitText("最新漫画"); assertEquals(GalleryLanguage.ALL, f.app.library.galleryLanguage())
     }
     @Test fun continuousReaderPreloadsZoomsFullscreensAndRestoresOffline() = ComposeFixture().use { f ->
-        f.app.library.switchSite("ehentai"); val activity = f.launchGallery(); waitText("开始阅读"); clickText("收藏画廊"); clickText("开始阅读")
+        f.app.library.switchSite("ehentai"); val activity = f.launchGallery(); waitText("开始阅读"); clickText("收藏漫画"); clickText("开始阅读")
         ui.waitUntil(15000) { f.imageCalls.containsAll(listOf(1, 2, 3, 4)) && f.app.library.reading(f.video("ehentai").id)?.page == 1 }
         assertFalse("Pre-reading must not advance the saved page", f.app.library.reading(f.video("ehentai").id)!!.page > 1)
         ui.onNodeWithTag("reader-page-1").performTouchInput { doubleClick() }

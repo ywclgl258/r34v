@@ -21,12 +21,22 @@ interface SiteAdapter {
     fun homeRequest(page: Int = 1) = FeedRequest(page = page)
     fun feedTitle(request: FeedRequest) = request.target.ifBlank { request.kind.title }
     fun sortTitle(sort: Sort) = sort.title
+    fun sortsFor(request: FeedRequest): List<Sort> = sorts.filter { request.kind == FeedKind.SEARCH || it != Sort.RELEVANCE }
     val catalogueTitle: String get() = "影片類型"
     val creatorTitle: String get() = if (site.mediaKind == MediaKind.GALLERY) "上传者" else "作者"
+
+    /** What one item is called on this site, so the UI never calls a photo set a comic. */
+    val itemNoun: String get() = site.category.itemNoun
+
+    /** Whether the site can filter by translation language; only the manga sites can. */
+    val supportsLanguage: Boolean get() = site.mediaKind == MediaKind.GALLERY && site.category == SiteCategory.COMIC
     fun searchRequest(query: String, kind: FeedKind) = FeedRequest(
         kind, if (kind == FeedKind.SEARCH) query else query.lowercase().replace(' ', '-'),
         if (kind == FeedKind.SEARCH) Sort.RELEVANCE else Sort.NEWEST,
     )
+
+    /** A directory request belongs in the index UI rather than the media-card feed. */
+    fun indexSection(request: FeedRequest): String? = null
 
     fun linkRequest(url: String): FeedRequest? {
         val parsed = url.toHttpUrlOrNull() ?: return null

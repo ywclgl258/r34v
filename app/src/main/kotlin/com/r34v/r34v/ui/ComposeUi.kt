@@ -1,8 +1,12 @@
-@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.r34v.r34v.ui
 
+import android.os.Build
 import androidx.annotation.DrawableRes
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -11,8 +15,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -34,26 +39,28 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 
 val CanvasColor = Color.Black
-val SurfaceColor = Color(0xff141414)
-val RaisedColor = Color(0xff181818)
-val MutedColor = Color(0xffb3b3b3)
+val SurfaceColor = Color(0xff14171b)
+val RaisedColor = Color(0xff1c2025)
+val MutedColor = Color(0xffb4bac3)
 val BrandColor = Color(0xffe50914)
 val MatchColor = Color(0xff46d369)
+val GlassTopColor = Color(0xd117191d)
+val GlassBottomColor = Color(0xeb0c0e11)
 
 @Composable fun R34Theme(content: @Composable () -> Unit) {
     val base = Typography()
     val typography = base.copy(
-        headlineLarge = base.headlineLarge.copy(fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold),
-        headlineMedium = base.headlineMedium.copy(fontSize = 24.sp, lineHeight = 30.sp, fontWeight = FontWeight.Bold),
-        titleLarge = base.titleLarge.copy(fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold),
-        titleMedium = base.titleMedium.copy(fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold),
-        titleSmall = base.titleSmall.copy(fontSize = 14.sp, lineHeight = 20.sp),
-        bodyLarge = base.bodyLarge.copy(fontSize = 14.sp, lineHeight = 21.sp),
-        bodyMedium = base.bodyMedium.copy(fontSize = 13.sp, lineHeight = 19.sp),
-        bodySmall = base.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp),
-        labelLarge = base.labelLarge.copy(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold),
-        labelMedium = base.labelMedium.copy(fontSize = 12.sp, lineHeight = 16.sp),
-        labelSmall = base.labelSmall.copy(fontSize = 11.sp, lineHeight = 15.sp),
+        headlineLarge = base.headlineLarge.copy(fontSize = 26.sp, lineHeight = 32.sp, fontWeight = FontWeight.Bold),
+        headlineMedium = base.headlineMedium.copy(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold),
+        titleLarge = base.titleLarge.copy(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold),
+        titleMedium = base.titleMedium.copy(fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold),
+        titleSmall = base.titleSmall.copy(fontSize = 13.sp, lineHeight = 18.sp),
+        bodyLarge = base.bodyLarge.copy(fontSize = 13.sp, lineHeight = 19.sp),
+        bodyMedium = base.bodyMedium.copy(fontSize = 12.sp, lineHeight = 18.sp),
+        bodySmall = base.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
+        labelLarge = base.labelLarge.copy(fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.SemiBold),
+        labelMedium = base.labelMedium.copy(fontSize = 11.sp, lineHeight = 15.sp),
+        labelSmall = base.labelSmall.copy(fontSize = 10.sp, lineHeight = 14.sp),
     )
     MaterialTheme(typography = typography, colorScheme = darkColorScheme(primary = BrandColor, onPrimary = Color.White,
         secondary = Color.White, background = CanvasColor, surface = SurfaceColor,
@@ -61,17 +68,17 @@ val MatchColor = Color(0xff46d369)
         onBackground = Color.White, secondaryContainer = RaisedColor, onSecondaryContainer = Color.White,
         primaryContainer = RaisedColor, onPrimaryContainer = Color.White, surfaceTint = Color.Transparent,
         surfaceContainer = SurfaceColor, surfaceContainerLow = SurfaceColor, surfaceContainerHigh = RaisedColor,
-        surfaceContainerHighest = Color(0xff2a2a2a), surfaceContainerLowest = CanvasColor,
+        surfaceContainerHighest = Color(0xff2a2e34), surfaceContainerLowest = CanvasColor,
         outline = Color(0xff747474), error = Color(0xffff6670))) {
         Surface(Modifier.fillMaxSize(), color = CanvasColor, contentColor = Color.White, content = content)
     }
 }
 @Composable fun Title(text: String, modifier: Modifier = Modifier, large: Boolean = false) {
-    Text(text, modifier.semantics { heading() }, fontSize = (if (large) 22 else 18).sp, lineHeight = (if (large) 28 else 24).sp, fontWeight = FontWeight.Bold)
+    Text(text, modifier.semantics { heading() }, fontSize = (if (large) 18 else 15).sp, lineHeight = (if (large) 24 else 21).sp, fontWeight = FontWeight.SemiBold)
 }
-@Composable fun Copy(text: String, modifier: Modifier = Modifier) { Text(text, modifier, color = MutedColor, fontSize = 13.sp, lineHeight = 19.sp) }
+@Composable fun Copy(text: String, modifier: Modifier = Modifier) { Text(text, modifier, color = MutedColor, fontSize = 12.sp, lineHeight = 18.sp) }
 @Composable fun Glyph(@DrawableRes icon: Int, description: String?, modifier: Modifier = Modifier) {
-    Icon(painterResource(icon), description, modifier.size(22.dp))
+    Icon(painterResource(icon), description, modifier.size(20.dp))
 }
 @Composable fun IconAction(@DrawableRes icon: Int, description: String, modifier: Modifier = Modifier, click: () -> Unit) {
     IconButton(onClick = click, modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) { Glyph(icon, description) }
@@ -81,21 +88,39 @@ val MatchColor = Color(0xff46d369)
         colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = MutedColor.copy(alpha = .5f)), content = content)
 }
 @Composable fun Action(text: String, primary: Boolean = false, enabled: Boolean = true, modifier: Modifier = Modifier, click: () -> Unit) {
-    if (primary) Button(click, modifier.heightIn(min = 48.dp), enabled, shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)) { Text(text) }
-    else FilledTonalButton(click, modifier.heightIn(min = 48.dp), enabled, shape = RoundedCornerShape(8.dp),
-        colors = ButtonDefaults.filledTonalButtonColors(containerColor = Color.White.copy(alpha = .12f), contentColor = Color.White),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)) { Text(text) }
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) .97f else 1f, spring(dampingRatio = .72f, stiffness = 380f), label = "actionScale")
+    val radius by animateDpAsState(if (pressed) 11.dp else 14.dp, tween(160), label = "actionRadius")
+    val elevation by animateDpAsState(if (pressed) 2.dp else 6.dp, label = "actionElevation")
+    val shape = RoundedCornerShape(radius)
+    Row(modifier.heightIn(min = 48.dp).graphicsLayer { scaleX = scale; scaleY = scale; alpha = if (enabled) 1f else .45f }
+        .shadow(elevation, shape, clip = false).clip(shape)
+        .background(if (primary) BrandColor else Color(0xc82a2e34))
+        .border(.8.dp, if (primary) BrandColor.copy(alpha = .7f) else Color.White.copy(alpha = .14f), shape)
+        .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled, role = Role.Button, onClick = click),
+        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+        Text(text, Modifier.padding(horizontal = 17.dp, vertical = 10.dp), color = Color.White,
+            fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
 }
 @Composable fun Choice(text: String, selected: Boolean = false, click: () -> Unit) {
-    Box(Modifier.heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
-        FilterChip(selected, click, label = { Text(text) }, shape = RoundedCornerShape(20.dp),
-            border = FilterChipDefaults.filterChipBorder(enabled = true, selected = selected, borderColor = Color.White.copy(alpha = .28f), selectedBorderColor = Color.Transparent),
-            colors = FilterChipDefaults.filterChipColors(containerColor = Color.Transparent, labelColor = MutedColor, selectedContainerColor = Color.White, selectedLabelColor = Color.Black))
+    val container by animateColorAsState(if (selected) Color.White.copy(alpha = .94f) else Color(0xff171a1f).copy(alpha = .78f), label = "choice")
+    val content by animateColorAsState(if (selected) Color.Black else MutedColor, label = "choiceContent")
+    Box(Modifier.height(48.dp).semantics { this.selected = selected }.clip(RoundedCornerShape(17.dp)).clickable(onClick = click), contentAlignment = Alignment.Center) {
+        Box(Modifier.height(34.dp).clip(RoundedCornerShape(17.dp)).background(container)
+            .border(.7.dp, if (selected) Color.White.copy(alpha = .5f) else Color.White.copy(alpha = .13f), RoundedCornerShape(17.dp)),
+            contentAlignment = Alignment.Center) {
+            Text(text, Modifier.padding(horizontal = 14.dp), color = content, fontSize = 11.sp,
+                lineHeight = 15.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+        }
     }
 }
 @Composable fun Selector(text: String, enabled: Boolean = true, modifier: Modifier = Modifier, click: () -> Unit) {
-    FilledTonalButton(click, modifier.heightIn(min = 48.dp), enabled, shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.filledTonalButtonColors(containerColor = RaisedColor, contentColor = Color.White)) {
-        Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis); Spacer(Modifier.width(8.dp)); Icon(painterResource(R.drawable.ic_chevron_down), null, Modifier.size(16.dp))
+    OutlinedButton(click, modifier.heightIn(min = 48.dp), enabled, shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(.8.dp, Color.White.copy(alpha = .18f)),
+        colors = ButtonDefaults.outlinedButtonColors(containerColor = RaisedColor.copy(alpha = .82f), contentColor = Color.White)) {
+        Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp); Spacer(Modifier.width(8.dp)); Icon(painterResource(R.drawable.ic_chevron_down), null, Modifier.size(16.dp))
     }
 }
 @Composable fun Choices(values: List<String>, selected: Int, choose: (Int) -> Unit) {
@@ -143,23 +168,38 @@ val MatchColor = Color(0xff46d369)
             })
     }
 }
+@Composable fun GlassSurface(url: String? = null, site: SiteContext? = null, modifier: Modifier = Modifier, radius: Int = 22, opaque: Boolean = false, content: @Composable BoxScope.() -> Unit) {
+    val shape = RoundedCornerShape(radius.dp)
+    Box(modifier.shadow(18.dp, shape, clip = false).clip(shape)) {
+        if (url != null && site != null) {
+            val blur = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Modifier.blur(28.dp, BlurredEdgeTreatment(shape)) else Modifier
+            SiteImage(url, site, Modifier.matchParentSize().then(blur))
+        }
+        Box(Modifier.matchParentSize().background(Brush.verticalGradient(
+            if (opaque) listOf(Color(0xf517191d), Color(0xfc0c0e11)) else listOf(GlassTopColor, GlassBottomColor))))
+        Box(Modifier.matchParentSize().border(.8.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = .22f), Color.White.copy(alpha = .035f))), shape))
+        content()
+    }
+}
 @Composable fun MediaCard(video: Video, modifier: Modifier = Modifier, menu: List<Pair<String, () -> Unit>> = emptyList(), progress: Float? = null, click: () -> Unit) {
     val site = SiteRegistry.byIdOrDefault(video.site)
     val gallery = site.mediaKind == MediaKind.GALLERY || video.mediaKind == MediaKind.GALLERY
     var ratio by remember(video.site, video.id) { mutableFloatStateOf(if (gallery) video.thumbAspectRatio else 16f / 9f) }
     var expanded by remember { mutableStateOf(false) }
     Column(modifier.testTag("media-${video.site}-${video.id}").combinedClickable(onClick = click, onLongClick = { if (menu.isNotEmpty()) expanded = true }).padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Box(Modifier.clip(RoundedCornerShape(6.dp))) {
+        Box(Modifier.shadow(10.dp, RoundedCornerShape(14.dp), clip = false).clip(RoundedCornerShape(14.dp))
+            .border(.7.dp, Color.White.copy(alpha = .12f), RoundedCornerShape(14.dp))) {
             SiteImage(video.thumb, site, Modifier.fillMaxWidth().aspectRatio(ratio.coerceIn(.45f, 1.8f)), gallery) { if (gallery && !video.hasThumbDimensions) ratio = it }
             if (menu.isNotEmpty()) Box(Modifier.align(Alignment.TopEnd)) {
                 IconAction(R.drawable.ic_more, "${video.title} 的更多操作", Modifier.background(Color.Black.copy(alpha = .65f), androidx.compose.foundation.shape.CircleShape)) { expanded = true }
                 DropdownMenu(expanded, { expanded = false }) { menu.forEach { (label, action) -> DropdownMenuItem({ Text(label) }, { expanded = false; action() }) } }
             }
         }
-        Text(video.title, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(video.title, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         val metadata = listOf(video.duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
         if (metadata.isNotBlank()) Text(metadata, color = MutedColor, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (progress != null) LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth(), color = BrandColor)
+        if (progress != null) LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(2.dp),
+            color = BrandColor, trackColor = Color.White.copy(alpha = .15f), gapSize = 0.dp, drawStopIndicator = {})
     }
 }
 
@@ -168,23 +208,39 @@ class ComposeDialogs {
     var content: (@Composable () -> Unit)? by mutableStateOf(null)
     fun dismiss() { content = null }
     @Composable fun Host() { content?.invoke() }
-    fun message(title: String, body: String) { content = { AlertDialog(::dismiss, title = { Text(title) }, text = { Text(body, Modifier.verticalScroll(rememberScrollState())) }, confirmButton = { TextAction(::dismiss) { Text("关闭") } }) } }
+    fun message(title: String, body: String) { content = { AlertDialog(::dismiss, title = { Text(title) }, text = { Text(body, Modifier.verticalScroll(rememberScrollState())) },
+        shape = RoundedCornerShape(24.dp), containerColor = SurfaceColor, tonalElevation = 0.dp,
+        confirmButton = { TextAction(::dismiss) { Text("关闭") } }) } }
     fun confirm(title: String, positive: String = "确认", body: String = "", action: () -> Unit) { content = {
         AlertDialog(::dismiss, title = { Text(title) }, text = if (body.isNotBlank()) ({ Text(body, Modifier.verticalScroll(rememberScrollState())) }) else null,
+            shape = RoundedCornerShape(24.dp), containerColor = SurfaceColor, tonalElevation = 0.dp,
             confirmButton = { TextAction({ dismiss(); action() }) { Text(positive) } }, dismissButton = { TextAction(::dismiss) { Text("取消") } })
     } }
     fun choose(title: String, values: List<String>, selected: Int = -1, action: (Int) -> Unit) { content = {
-        AlertDialog(::dismiss, title = { Text(title) }, text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-            values.forEachIndexed { i, value -> Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { dismiss(); action(i) }, verticalAlignment = Alignment.CenterVertically) {
-                if (selected >= 0) RadioButton(selected == i, null); Text(value, Modifier.padding(8.dp))
-            } }
-        } }, confirmButton = { TextAction(::dismiss) { Text("取消") } })
+        ModalBottomSheet(::dismiss, containerColor = Color.Transparent, scrimColor = Color.Black.copy(alpha = .68f), dragHandle = null) {
+            GlassSurface(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp), radius = 28, opaque = true) {
+                Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Box(Modifier.align(Alignment.CenterHorizontally).size(32.dp, 4.dp).background(Color.White.copy(alpha = .3f), RoundedCornerShape(50)))
+                    Title(title, Modifier.padding(top = 16.dp, bottom = 8.dp))
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        values.forEachIndexed { i, value -> Row(Modifier.fillMaxWidth().heightIn(min = 50.dp)
+                            .clip(RoundedCornerShape(14.dp)).background(if (selected == i) Color.White.copy(alpha = .09f) else Color.Transparent)
+                            .clickable { dismiss(); action(i) }.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (selected >= 0) RadioButton(selected == i, null)
+                            Text(value, Modifier.padding(8.dp), fontSize = 13.sp)
+                        } }
+                    }
+                    TextAction(::dismiss, Modifier.align(Alignment.End)) { Text("取消") }
+                }
+            }
+        }
     } }
     fun edit(title: String, initial: String = "", hint: String = "", keyboard: KeyboardType = KeyboardType.Text, validate: (String) -> String? = { null }, action: (String) -> Unit) { content = {
         var value by remember { mutableStateOf(initial) }; var error by remember { mutableStateOf<String?>(null) }
         AlertDialog(::dismiss, title = { Text(title) }, text = { Column {
             OutlinedTextField(value, { value = it; error = null }, label = { Text(hint.ifBlank { title }) }, isError = error != null, keyboardOptions = KeyboardOptions(keyboardType = keyboard))
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        } }, confirmButton = { TextAction({ error = validate(value.trim()); if (error == null) { dismiss(); action(value.trim()) } }) { Text("确定") } }, dismissButton = { TextAction(::dismiss) { Text("取消") } })
+        } }, shape = RoundedCornerShape(24.dp), containerColor = SurfaceColor, tonalElevation = 0.dp,
+            confirmButton = { TextAction({ error = validate(value.trim()); if (error == null) { dismiss(); action(value.trim()) } }) { Text("确定") } }, dismissButton = { TextAction(::dismiss) { Text("取消") } })
     } }
 }

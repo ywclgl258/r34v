@@ -49,7 +49,7 @@ class ComicAdapterTest {
         store.switchSite("hitomi"); assertEquals(GalleryLanguage.ALL, store.galleryLanguage())
         store.setGalleryLanguage(GalleryLanguage.JAPANESE)
         store.switchSite("nhentai"); assertEquals(GalleryLanguage.CHINESE, store.galleryLanguage())
-        val repository = Repository(network)
+        val repository = Repository(network, store)
         for (language in GalleryLanguage.entries) repository.feed(FeedRequest(language = language))
         val field = AdapterRegistry::class.java.getDeclaredField("cache").apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST") val adapters = field.get(AdapterRegistry) as MutableMap<String, SiteAdapter>

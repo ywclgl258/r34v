@@ -1,6 +1,6 @@
 # Streaming design fixtures
 
-Only the Android instrumentation test APK includes these promotional references. Production feeds, builds and playback never include this mock catalog or the sample matching scores.
+Only the Android instrumentation test APK and the separate Debug design preview include these promotional references. Production feeds, Release builds and playback never include this mock catalog or the sample matching scores.
 
 - `stranger.jpg`: Stranger Things, TMDB promotional poster, https://image.tmdb.org/t/p/w500/49WJfeN0moxb9IPfGn8AIqMGskD.jpg
 - `robots.jpg`: Love, Death & Robots, TMDB promotional poster, https://image.tmdb.org/t/p/w500/asDqvkE66EegtKJJXIRhBJPxscr.jpg

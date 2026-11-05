@@ -15,7 +15,12 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /** Persistent task records; the foreground service owns execution, one book at a time. */
-class GalleryDownloadStore(private val context: Context, private val repository: GalleryRepository, private val network: Network) {
+class GalleryDownloadStore(private val context: Context, private val repository: GalleryRepository, private val network: Network,
+                           private val index: LibraryIndex) {
+    /** Test and tooling constructor: records are then purely local to this store. */
+    constructor(context: Context, repository: GalleryRepository, network: Network) :
+        this(context, repository, network, LibraryIndex(context, StorageRoot(context, LibraryStore(context))))
+
     private val prefs = context.getSharedPreferences("gallery_downloads_v1", Context.MODE_PRIVATE)
     private val gson = Gson()
     private val active = ConcurrentHashMap<String, Job>()
@@ -34,17 +39,18 @@ class GalleryDownloadStore(private val context: Context, private val repository:
     @Synchronized fun task(id: String): GalleryDownload? = decode(prefs.getString(id, null))?.takeIf { it.id == id }
     fun task(entry: Video) = task(key(entry))
     @Synchronized private fun write(task: GalleryDownload) {
-        check(prefs.edit().putString(task.id, gson.toJson(task)).commit()) { "无法保存漫画下载记录" }
+        check(prefs.edit().putString(task.id, gson.toJson(task)).commit()) { "无法保存图集下载记录" }
         changes.update { it + 1 }
     }
     @Synchronized private fun update(id: String, change: (GalleryDownload) -> GalleryDownload) { task(id)?.let { write(change(it)) } }
 
     suspend fun add(entry: Video): GalleryDownload = withContext(Dispatchers.IO) {
+        repository.checkDownloadsAllowed()
         require(SiteRegistry.byId(entry.site)?.mediaKind == MediaKind.GALLERY && entry.id.isNotBlank())
         val id = key(entry)
         val value = synchronized(this@GalleryDownloadStore) {
             val previous = task(id)
-            check(previous?.state != GalleryDownloadState.REMOVING) { "漫画正在删除，请稍后再下载" }
+            check(previous?.state != GalleryDownloadState.REMOVING) { "图集正在删除，请稍后再下载" }
             if (previous?.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING)) previous!!
             else if (previous?.state == GalleryDownloadState.COMPLETED && repository.isDownloaded(entry)) previous
             else (previous ?: GalleryDownload(id, entry.copy(mediaKind = MediaKind.GALLERY))).copy(state = GalleryDownloadState.QUEUED, error = "").also(::write)
@@ -62,7 +68,7 @@ class GalleryDownloadStore(private val context: Context, private val repository:
     fun resumePending() {
         val removing = tasks().filter { it.state == GalleryDownloadState.REMOVING }
         if (removing.isNotEmpty()) maintenance.launch { removing.forEach { runCatching { remove(it.id) } } }
-        if (tasks().any { it.state == GalleryDownloadState.QUEUED || it.state == GalleryDownloadState.DOWNLOADING }) runCatching { startService() }
+        if (repository.downloadsAllowed && tasks().any { it.state == GalleryDownloadState.QUEUED || it.state == GalleryDownloadState.DOWNLOADING }) runCatching { startService() }
     }
     suspend fun pause(id: String) = withContext(Dispatchers.IO) {
         update(id) { if (it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING)) it.copy(state = GalleryDownloadState.PAUSED, error = "") else it }
@@ -79,6 +85,7 @@ class GalleryDownloadStore(private val context: Context, private val repository:
                 update(id) { it.copy(state = GalleryDownloadState.FAILED, error = "删除失败，请重试删除：${e.message}") }
                 throw e
             }
+            runCatching { index.forgetComic(record.entry.site, record.entry.id) }
             synchronized(this@GalleryDownloadStore) {
                 check(prefs.edit().remove(id).commit()) { "无法移除下载记录" }
                 changes.update { it + 1 }
@@ -94,6 +101,7 @@ class GalleryDownloadStore(private val context: Context, private val repository:
     fun hasPending() = tasks().any { it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING) }
 
     @Synchronized fun next(scope: CoroutineScope): Job? {
+        if (!repository.downloadsAllowed) return null
         val record = tasks().lastOrNull { it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING) && !active.containsKey(it.id) } ?: return null
         write(record.copy(state = GalleryDownloadState.DOWNLOADING, error = ""))
         val job = scope.launch(start = CoroutineStart.LAZY) {
@@ -122,12 +130,15 @@ class GalleryDownloadStore(private val context: Context, private val repository:
             }
             currentCoroutineContext().ensureActive()
             repository.finishDownload(record.entry, gallery.pageCount)
+            // The book folder is self-describing; the sidecar gives the centre a title and size
+            // that survive an uninstall of this app.
+            runCatching { index.putComic(record.entry, bytes) }
             update(record.id) { if (it.state == GalleryDownloadState.DOWNLOADING) it.copy(state = GalleryDownloadState.COMPLETED, pages = gallery.pageCount, error = "") else it }
         } catch (e: CancellationException) {
             withContext(NonCancellable) { update(record.id) { if (it.state == GalleryDownloadState.DOWNLOADING) it.copy(state = GalleryDownloadState.QUEUED) else it } }
             throw e
         } catch (e: Exception) {
-            update(record.id) { if (it.state == GalleryDownloadState.DOWNLOADING) it.copy(state = GalleryDownloadState.FAILED, error = e.message ?: "漫画下载失败") else it }
+            update(record.id) { if (it.state == GalleryDownloadState.DOWNLOADING) it.copy(state = GalleryDownloadState.FAILED, error = e.message ?: "图集下载失败") else it }
         }
     }
     private suspend fun <T> retryIo(block: suspend () -> T): T {

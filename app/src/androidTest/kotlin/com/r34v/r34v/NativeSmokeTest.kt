@@ -15,6 +15,7 @@ import androidx.compose.ui.test.*
 import java.io.File
 import androidx.media3.datasource.DataSpec
 import androidx.media3.exoplayer.offline.Download
+import androidx.media3.exoplayer.scheduler.Requirements
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.RecordedRequest
@@ -55,6 +56,13 @@ class NativeSmokeTest {
         app.library.switchSite("iwara")
         val stream = Stream("720p", server.url("/sample.mp4").toString())
         val id = app.playback.key(video, stream.label)
+        val manager = app.playback.manager
+        lateinit var previousRequirements: Requirements
+        var previouslyPaused = false
+        instrumentation.runOnMainSync {
+            previousRequirements = manager.requirements
+            previouslyPaused = manager.downloadsPaused
+        }
         fun waitFor(timeout: Long = 15000, predicate: (Download?) -> Boolean): Download? {
             val deadline = System.currentTimeMillis() + timeout
             while (System.currentTimeMillis() < deadline) {
@@ -65,7 +73,8 @@ class NativeSmokeTest {
             error("Download state did not match: ${app.playback.manager.downloadIndex.getDownload(id)?.state}")
         }
         try {
-            instrumentation.runOnMainSync { app.playback.add(video, stream) }
+            // The fixture is loopback-only and must not depend on public-network validation.
+            instrumentation.runOnMainSync { manager.requirements = Requirements(0); app.playback.add(video, stream) }
             waitFor { it?.state == Download.STATE_DOWNLOADING && it.bytesDownloaded > 10000 }
             instrumentation.runOnMainSync { app.playback.pause(id, true) }
             waitFor { it?.state == Download.STATE_STOPPED }
@@ -88,13 +97,19 @@ class NativeSmokeTest {
             } finally { source.close() }
             assertArrayEquals(clip, output.toByteArray())
         } finally {
-            instrumentation.runOnMainSync { app.playback.remove(id); activity.finish() }
+            instrumentation.runOnMainSync {
+                app.playback.remove(id)
+                manager.requirements = previousRequirements
+                if (previouslyPaused) manager.pauseDownloads() else manager.resumeDownloads()
+                activity.finish()
+            }
             app.library.switchSite(previousSite)
             runCatching { server.shutdown() }
         }
     }
 
     @Test fun flutterDataMigrationIsLosslessAndIdempotent() {
+        val previousSite = SiteRegistry.current
         val old = context.getSharedPreferences("migration_fixture_old", Context.MODE_PRIVATE)
         val native = context.getSharedPreferences("migration_fixture_native", Context.MODE_PRIVATE)
         old.edit().clear().putString("flutter.watch_history_v1", """[{"id":"42","title":"Migration example","thumb":"","path":"/video/42/example/","pos":300,"dur":600,"at":1234,"q":"720p"}]""")
@@ -105,16 +120,40 @@ class NativeSmokeTest {
             .putString("flutter.settings_v1_quality", "1080p").putBoolean("flutter.settings_v1_doh", false).commit()
         native.edit().clear().commit()
         try {
+            SiteRegistry.current = SiteRegistry.IWARA
             val store = LibraryStore(context, "migration_fixture_native", "migration_fixture_old")
             assertEquals(300L, store.history().single().position)
+            assertEquals("r34v", store.history().single().site)
             assertEquals("42", store.favorites().single().target)
+            assertEquals("r34v", store.favorites().single().site)
             assertEquals("1080p", store.string("quality")); assertFalse(store.prefs.contains("settings_v1_doh"))
             assertEquals("test-user", store.username); assertEquals("test-session", store.legacyCookies()["PHPSESSID"])
             assertEquals(listOf("example query"), store.searches()); assertEquals("1.5", store.string("native_speed"))
             store.saveWatch(store.history().single().copy(position = 400))
             assertEquals(400L, LibraryStore(context, "migration_fixture_native", "migration_fixture_old").history().single().position)
             assertTrue(old.contains("flutter.watch_history_v1"))
-        } finally { old.edit().clear().commit(); native.edit().clear().commit() }
+        } finally { old.edit().clear().commit(); native.edit().clear().commit(); SiteRegistry.current = previousSite }
+    }
+
+    @Test fun namespacedLegacyRowsKeepOwnersAndPreserveExplicitUnknownSites() {
+        val previousSite = SiteRegistry.current
+        val name = "legacy-site-owner-${System.nanoTime()}"
+        val file = File(context.filesDir, "$name.mp4").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        try {
+            val store = LibraryStore(context, name, "$name-old")
+            store.switchSite("iwara")
+            val path = store.gson.toJson(file.absolutePath)
+            store.prefs.edit()
+                .putString("r34v:watch_history_v1", """[{"id":"legacy"},{"id":"explicit","site":"retired-site"}]""")
+                .putString("r34v:favorites_v1", """[{"t":"legacy"},{"t":"explicit","site":"retired-site"}]""")
+                .putString("r34v:video_cache_v1", """[{"id":"legacy","path":$path},{"id":"explicit","path":$path,"site":"retired-site"}]""").commit()
+            assertEquals(mapOf("legacy" to "r34v", "explicit" to "retired-site"), store.history("r34v").associate { it.id to it.site })
+            assertEquals(mapOf("legacy" to "r34v", "explicit" to "retired-site"), store.favorites("r34v").associate { it.target to it.site })
+            assertEquals(mapOf("legacy" to "r34v", "explicit" to "retired-site"), store.localVideos("r34v").associate { it.id to it.site })
+        } finally {
+            context.deleteSharedPreferences(name); context.deleteSharedPreferences("$name-old"); file.delete()
+            SiteRegistry.current = previousSite
+        }
     }
 
     @Test fun nativePlayerDecodesSeeksAndReleases() {

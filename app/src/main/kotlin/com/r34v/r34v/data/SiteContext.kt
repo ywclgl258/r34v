@@ -6,6 +6,18 @@ import java.net.URI
 enum class SiteMode { NATIVE, WEB }
 
 /**
+ * What a site serves, used by the switcher to group sites instead of showing one flat list.
+ *
+ * The category is a browsing concept and deliberately separate from [MediaKind]: a photo set is
+ * read page by page like a gallery, but calling it a comic in the UI would be wrong.
+ */
+enum class SiteCategory(val title: String, val blurb: String, val itemNoun: String, val verb: String) {
+    VIDEO("视频", "影片与动画", "视频", "观看"),
+    COMIC("漫画", "同人志与连载", "漫画", "阅读"),
+    PHOTO("写真", "写真与 Cosplay 图集", "写真集", "浏览"),
+}
+
+/**
  * One browsable site. Everything the network, parser and UI layers need in order to
  * talk to a site without hard-coding a host anywhere.
  *
@@ -29,6 +41,7 @@ data class SiteContext(
     /** Media receives the owning site's public headers, never its session cookies. */
     val mediaDomains: Set<String> = emptySet(),
     val mediaKind: MediaKind = MediaKind.VIDEO,
+    val category: SiteCategory = SiteCategory.VIDEO,
     val accessNote: String = "",
 ) {
     fun absolute(raw: String): String {
@@ -79,22 +92,85 @@ object SiteRegistry {
     val EHENTAI = SiteContext(
         id = "ehentai", name = "E-Hentai", base = "https://e-hentai.org", host = "e-hentai.org",
         userAgent = "R34V/Android", mediaDomains = setOf("ehgt.org", "hath.network"), mediaKind = MediaKind.GALLERY,
+        category = SiteCategory.COMIC,
     )
     val EXHENTAI = SiteContext(
         id = "exhentai", name = "ExHentai", base = "https://exhentai.org", host = "exhentai.org",
         userAgent = "R34V/Android", mediaDomains = setOf("ehgt.org", "hath.network"), mediaKind = MediaKind.GALLERY,
+        category = SiteCategory.COMIC,
         accessNote = "需登录及账号权限",
     )
     val NHENTAI = SiteContext(
         id = "nhentai", name = "nhentai", base = "https://nhentai.net", host = "nhentai.net",
         userAgent = "R34V/2.2.0 (Android)", mediaDomains = setOf("nhentai.net"), mediaKind = MediaKind.GALLERY,
+        category = SiteCategory.COMIC,
     )
     val HITOMI = SiteContext(
         id = "hitomi", name = "Hitomi", base = "https://hitomi.la", host = "hitomi.la",
         userAgent = "R34V/2.2.0 (Android)", mediaDomains = setOf("gold-usergeneratedcontent.net"), mediaKind = MediaKind.GALLERY,
+        category = SiteCategory.COMIC,
     )
 
-    val all: List<SiteContext> get() = listOf(R34V, HANIME1, IWARA, EHENTAI, EXHENTAI, NHENTAI, HITOMI)
+    /**
+     * 4KHD — a WordPress photo-set archive: one post is one model book, and the images are spread
+     * over numbered content pages (`/content/04/<slug>.html/2`). Read through the same gallery
+     * reader as the comics, because both are "a titled, ordered list of images".
+     */
+    val FOURKHD = SiteContext(
+        id = "4khd", name = "4KHD", base = "https://www.4khd.com", host = "4khd.com",
+        // Every image is served through WordPress' Jetpack CDN, which keeps the pic.4khd.com path.
+        mediaDomains = setOf("i0.wp.com", "pic.4khd.com"),
+        mediaReferer = "https://www.4khd.com/",
+        mediaKind = MediaKind.GALLERY,
+        category = SiteCategory.PHOTO,
+        accent = 0xFF4E9BFF.toInt(),
+    )
+
+    /**
+     * everia.club — 模特写真集；图片在站外 CDN 上，域名按帖子轮换（fujibox.top / karubox.top …），
+     * 所以这里不登记固定媒体域：图片请求由代码显式携带站点身份，不依赖主机名匹配。
+     */
+    val EVERIA = SiteContext(
+        id = "everia", name = "Everia", base = "https://everia.club", host = "everia.club",
+        mediaKind = MediaKind.GALLERY,
+        category = SiteCategory.PHOTO,
+        accent = 0xFFB07BFF.toInt(),
+    )
+
+    /** 4kup.net — Chinese model photo sets; images are served from Blogger's CDN. */
+    val FOURKUP = SiteContext(
+        id = "4kup", name = "4KUp", base = "https://4kup.net", host = "4kup.net",
+        mediaDomains = setOf("blogger.googleusercontent.com"),
+        mediaKind = MediaKind.GALLERY,
+        category = SiteCategory.PHOTO,
+        accent = 0xFFFF9A62.toInt(),
+    )
+
+    /** galleryepic.com — cosplay archive; a Next.js app whose payload carries the whole image list. */
+    val GALLERYEPIC = SiteContext(
+        id = "galleryepic", name = "GalleryEpic", base = "https://galleryepic.com", host = "galleryepic.com",
+        mediaDomains = setOf("static.galleryepic.xyz"),
+        mediaKind = MediaKind.GALLERY,
+        category = SiteCategory.PHOTO,
+        accent = 0xFF4ECDC4.toInt(),
+    )
+
+    /** cosplaytele.com — cosplay galleries published inline in the article, one page each. */
+    val COSPLAYTELE = SiteContext(
+        id = "cosplaytele", name = "Cosplaytele", base = "https://cosplaytele.com", host = "cosplaytele.com",
+        mediaKind = MediaKind.GALLERY,
+        category = SiteCategory.PHOTO,
+        accent = 0xFFFF6B9A.toInt(),
+    )
+
+    val all: List<SiteContext> get() = listOf(
+        R34V, HANIME1, IWARA,
+        EHENTAI, EXHENTAI, NHENTAI, HITOMI,
+        FOURKHD, EVERIA, FOURKUP, GALLERYEPIC, COSPLAYTELE,
+    )
+
+    /** Sites of one category, in registry order; empty categories are never rendered. */
+    fun ofCategory(category: SiteCategory): List<SiteContext> = all.filter { it.category == category }
 
     @Volatile
     var current: SiteContext = R34V

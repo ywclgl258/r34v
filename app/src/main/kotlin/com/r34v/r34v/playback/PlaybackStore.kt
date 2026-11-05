@@ -28,9 +28,11 @@ import kotlinx.coroutines.*
 import java.io.File
 import java.util.concurrent.Executors
 
-class PlaybackStore(private val context: Context, private val network: Network, private val library: LibraryStore) {
+class PlaybackStore(private val context: Context, private val network: Network, private val library: LibraryStore,
+                    private val storage: StorageRoot, private val index: LibraryIndex) {
     private val database = StandaloneDatabaseProvider(context)
-    private val downloadCache by lazy { SimpleCache(File(context.filesDir, "downloads"), NoOpCacheEvictor(), database) }
+    private val downloadCaches = DownloadCaches(context, storage, database)
+    private val downloadCache get() = downloadCaches.cache()
     private val streamCache by lazy { SimpleCache(File(context.cacheDir, "streams"), LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024), database) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val refreshed = mutableSetOf<String>()
@@ -94,28 +96,62 @@ class PlaybackStore(private val context: Context, private val network: Network, 
                                 add(meta.video, fresh)
                             }
                         }
-                    } else if (download.state == Download.STATE_COMPLETED) refreshed.remove(download.request.id)
+                    } else if (download.state == Download.STATE_COMPLETED) {
+                        refreshed.remove(download.request.id)
+                        // The sidecar is what survives an uninstall; Media3's database does not.
+                        runCatching {
+                            val meta = metadata(download) ?: return@runCatching
+                            index.putVideo(meta.video, meta.quality, download.bytesDownloaded)
+                        }
+                    }
                 }
             })
-            resumeDownloads()
+            if (!storage.pendingRestart && !storage.changing) resumeDownloads()
         }
     }
 
-    fun sourceFactory(offline: Boolean = false, siteId: String? = null): DataSource.Factory {
+    fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = ""): DataSource.Factory {
         val streaming = CacheDataSource.Factory().setCache(streamCache)
             .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context, httpFactory(siteId?.let(SiteRegistry::byId))))
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-        return CacheDataSource.Factory().setCache(downloadCache).setCacheWriteDataSinkFactory(null)
-            .setUpstreamDataSourceFactory(if (offline) null else streaming)
+        return DataSource.Factory {
+            object : DataSource {
+                private var impl: DataSource? = null
+                private val listeners = mutableListOf<TransferListener>()
+                override fun addTransferListener(listener: TransferListener) { listeners += listener; impl?.addTransferListener(listener) }
+                override fun open(spec: DataSpec): Long {
+                    val created = CacheDataSource.Factory().setCache(downloadCaches.readCache(spec.key.orEmpty(), sourceRoot))
+                        .setCacheWriteDataSinkFactory(null).setUpstreamDataSourceFactory(if (offline) null else streaming).createDataSource()
+                    impl = created; listeners.forEach(created::addTransferListener)
+                    return created.open(spec)
+                }
+                override fun read(buffer: ByteArray, offset: Int, length: Int) = impl?.read(buffer, offset, length) ?: -1
+                override fun getUri(): Uri? = impl?.uri
+                override fun getResponseHeaders(): Map<String, List<String>> = impl?.responseHeaders.orEmpty()
+                override fun close() { try { impl?.close() } finally { impl = null } }
+            }
+        }
     }
 
     fun key(video: Video, quality: String) = key(video.site, video.id, quality)
 
+    /**
+     * Plays straight from the download cache by key, with no Media3 download record.
+     *
+     * This is the path that matters after a reinstall: the database that used to describe the
+     * download is gone, but the cache and its index survived on shared storage, so a fully
+     * cached key still opens offline. A cache miss raises instead of silently going online.
+     */
+    fun offlineItem(record: LibraryRecord): MediaItem =
+        MediaItem.Builder().setUri(record.url.takeIf { it.startsWith("http") } ?: "https://r34v.local/offline")
+            .setMediaId("${record.site}:${record.id}")
+            .setCustomCacheKey(record.cacheKey).build()
     fun item(video: Video, stream: Stream) =
         MediaItem.Builder().setUri(stream.url).setMediaId("${video.site}:${video.id}")
             .setCustomCacheKey(key(video, stream.label)).build()
 
     fun add(video: Video, stream: Stream) {
+        storage.checkDownloadsAllowed()
         val site = SiteRegistry.byIdOrDefault(video.site)
         val normalized = video.copy(site = site.id)
         val request = DownloadRequest.Builder(key(normalized, stream.label), Uri.parse(stream.url))
@@ -125,10 +161,30 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         DownloadService.sendAddDownload(context, VideoDownloadService::class.java, request, false)
     }
     fun pause(id: String, pause: Boolean) {
+        if (!pause) storage.checkDownloadsAllowed()
         if (!pause) DownloadService.sendResumeDownloads(context, VideoDownloadService::class.java, false)
         DownloadService.sendSetStopReason(context, VideoDownloadService::class.java, id, if (pause) 1 else 0, false)
     }
-    fun remove(id: String) = DownloadService.sendRemoveDownload(context, VideoDownloadService::class.java, id, false)
+    fun remove(id: String) {
+        DownloadService.sendRemoveDownload(context, VideoDownloadService::class.java, id, false)
+        scope.launch(Dispatchers.IO) { runCatching { downloadCaches.remove(id) } }
+        // The id is `site:id:quality`; drop the sidecar so a rescan cannot resurrect the entry.
+        val parts = id.split(':')
+        if (parts.size >= 3) runCatching { index.removeVideo(parts[0], parts.subList(1, parts.size - 1).joinToString(":"), parts.last()) }
+    }
+    suspend fun removeRestored(record: LibraryRecord) = withContext(Dispatchers.IO) {
+        downloadCaches.remove(record.cacheKey)
+        index.removeVideo(record.site, record.id, record.quality)
+    }
+
+    /**
+     * Whether the download cache still holds bytes for [cacheKey].
+     *
+     * Used when rebuilding the library from disk: a sidecar whose media is gone must not look
+     * playable. Any position/length means at least one complete span is cached.
+     */
+    fun cached(cacheKey: String, sourceRoot: String = ""): Boolean = downloadCaches.cached(cacheKey, sourceRoot)
+    suspend fun copyDownloadsToShared() = withContext(Dispatchers.IO) { downloadCaches.copyToShared() }
     fun downloads(): List<Download> = buildList {
         manager.downloadIndex.getDownloads().use { cursor -> while (cursor.moveToNext()) add(cursor.download) }
     }

@@ -1,5 +1,5 @@
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.r34v.r34v
 
 import android.Manifest
@@ -16,10 +16,13 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.*
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
@@ -60,7 +63,9 @@ class PlayerActivity : ComponentActivity() {
     private var position = 0L
     private var local: String? = null
     private var offlineId: String? = null
-    private val offline get() = local != null || offlineId != null
+    private var cachedKey: String? = null
+    private var sourceRoot = ""
+    private val offline get() = local != null || offlineId != null || cachedKey != null
     private var refreshed = false
     private var opening = false
     private var presented = false
@@ -73,7 +78,8 @@ class PlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         video = runCatching { store.gson.fromJson(intent.getStringExtra("video"), Video::class.java) }.getOrNull()?.takeIf { it.id.isNotBlank() } ?: run { finish(); return }
-        local = intent.getStringExtra("local"); offlineId = intent.getStringExtra("download")
+        local = intent.getStringExtra("local"); offlineId = intent.getStringExtra("download"); cachedKey = intent.getStringExtra("cached")
+        sourceRoot = intent.getStringExtra("root").orEmpty()
         position = savedInstanceState?.getLong("position") ?: store.watch(video.id, video.site)?.takeUnless { it.finished }?.position?.times(1000) ?: 0
         userRate = store.string("native_speed", "1.0").toFloatOrNull()?.coerceIn(.25f, 3f) ?: 1f
         fullscreen = savedInstanceState?.getBoolean("fullscreen") ?: false
@@ -96,6 +102,12 @@ class PlayerActivity : ComponentActivity() {
                     check(app.playback.metadata(download)?.site == video.site) { "下载不属于当前站点" }
                     Stream(app.playback.metadata(download)?.quality ?: "下载", download.request.uri.toString())
                 }
+                cachedKey != null -> {
+                    // Restored from storage: the Media3 record is gone, only the cache remains.
+                    check(cachedKey!!.startsWith("${video.site}:${video.id}:")) { "下载身份不匹配" }
+                    check(withContext(Dispatchers.IO) { app.playback.cached(cachedKey!!, sourceRoot) }) { "本地缓存不完整，请重新下载" }
+                    Stream(cachedKey!!.substringAfterLast(':'), video.url)
+                }
                 else -> {
                     val result = app.repository.detail(video.url); detail = result; video = result.video.copy(thumb = result.video.thumb.ifBlank { video.thumb })
                     val preferred = store.watch(video.id, video.site)?.quality?.takeIf(String::isNotBlank) ?: store.string("quality", "720p")
@@ -112,7 +124,7 @@ class PlayerActivity : ComponentActivity() {
         pendingError = null; failureVisible = false; phase = if (presented) "正在缓冲" else "正在校准画面"
         val engine = player ?: ExoPlayer.Builder(this)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(8000, 50000, 400, 800).setPrioritizeTimeOverSizeThresholds(true).build())
-            .setMediaSourceFactory(DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site))).build().also { exo ->
+            .setMediaSourceFactory(DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site, sourceRoot))).build().also { exo ->
                 player = exo; engineRevision++; playerView?.player = exo
                 exo.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true); exo.setHandleAudioBecomingNoisy(true)
                 exo.addListener(object : Player.Listener {
@@ -136,7 +148,9 @@ class PlayerActivity : ComponentActivity() {
                     }
                 })
             }
-        val item = if (local != null) MediaItem.fromUri(value.url) else app.playback.item(video, value)
+        val item = if (local != null) MediaItem.fromUri(value.url)
+            else if (cachedKey != null) MediaItem.Builder().setUri(value.url).setMediaId("${video.site}:${video.id}").setCustomCacheKey(cachedKey).build()
+            else app.playback.item(video, value)
         engine.setMediaItem(item, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
     }
     private fun playbackError(error: Throwable) { pendingError = error; phase = null; status = "播放失败：${error.message}"; failureVisible = true; controls = true }
@@ -164,18 +178,29 @@ class PlayerActivity : ComponentActivity() {
         var current by remember(engine) { mutableLongStateOf(position) }; var duration by remember(engine) { mutableLongStateOf(0) }; var scrubbing by remember { mutableStateOf(false) }
         LaunchedEffect(engine) { while (isActive) { if (!scrubbing) current = engine?.currentPosition?.coerceAtLeast(0) ?: position; duration = engine?.duration?.coerceAtLeast(0) ?: 0; delay(500) } }
         LaunchedEffect(controls, status, scrubbing) { if (controls && engine?.isPlaying == true && !failureVisible && !scrubbing) { delay(4500); controls = false } }
-        Column(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .35f)), verticalArrangement = Arrangement.SpaceBetween) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                IconAction(R.drawable.ic_back, "返回") { if (fullscreen) fullscreen = false else finish() }; Spacer(Modifier.weight(1f))
-                TextAction({ quality() }, enabled = detail?.streams?.isNotEmpty() == true) { Text(stream?.label ?: "清晰度") }
-                TextAction({ speed() }) { Text("${userRate}×") }; IconAction(R.drawable.ic_fullscreen, if (fullscreen) "退出全屏" else "全屏") { fullscreen = !fullscreen }
+        Column(Modifier.fillMaxSize().background(Brush.verticalGradient(
+            listOf(Color.Black.copy(alpha = .65f), Color.Transparent, Color.Transparent, Color.Black.copy(alpha = .65f)))), verticalArrangement = Arrangement.SpaceBetween) {
+            GlassSurface(modifier = Modifier.fillMaxWidth().padding(8.dp), radius = 18) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    IconAction(R.drawable.ic_back, "返回") { if (fullscreen) fullscreen = false else finish() }; Spacer(Modifier.weight(1f))
+                    Selector(stream?.label ?: "清晰度", enabled = detail?.streams?.isNotEmpty() == true, click = ::quality)
+                    Spacer(Modifier.width(6.dp)); Selector("${userRate}×", click = ::speed)
+                    IconAction(R.drawable.ic_fullscreen, if (fullscreen) "退出全屏" else "全屏") { fullscreen = !fullscreen }
+                }
             }
             if (failureVisible) Action("重试", true, modifier = Modifier.align(Alignment.CenterHorizontally), click = ::restart)
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconAction(if (engine?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play, if (engine?.isPlaying == true) "暂停" else "播放") { engine?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); if (it.isPlaying) it.pause() else it.play() } }
-                Text(timeText(current), style = MaterialTheme.typography.labelSmall)
-                Slider(current.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)), { scrubbing = true; current = it.toLong() }, Modifier.weight(1f).semantics { contentDescription = "播放进度" }, valueRange = 0f..duration.toFloat().coerceAtLeast(1f), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = BrandColor, inactiveTrackColor = RaisedColor), enabled = duration > 0, onValueChangeFinished = { engine?.seekTo(current); scrubbing = false })
-                Text(timeText(duration), style = MaterialTheme.typography.labelSmall)
+            GlassSurface(modifier = Modifier.fillMaxWidth().padding(8.dp), radius = 18) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconAction(if (engine?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play, if (engine?.isPlaying == true) "暂停" else "播放") { engine?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); if (it.isPlaying) it.pause() else it.play() } }
+                    Text(timeText(current), style = MaterialTheme.typography.labelSmall)
+                    Slider(current.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)), { scrubbing = true; current = it.toLong() }, Modifier.weight(1f).semantics { contentDescription = "播放进度" },
+                        valueRange = 0f..duration.toFloat().coerceAtLeast(1f), enabled = duration > 0, onValueChangeFinished = { engine?.seekTo(current); scrubbing = false },
+                        thumb = { Box(Modifier.size(12.dp).shadow(3.dp, CircleShape).background(Color.White, CircleShape)) },
+                        track = { state -> Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Color.White.copy(alpha = .17f))) {
+                            Box(Modifier.fillMaxWidth(if (duration > 0) (state.value / duration.toFloat()).coerceIn(0f, 1f) else 0f).height(3.dp).background(BrandColor, CircleShape))
+                        } })
+                    Text(timeText(duration), style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
     }
@@ -190,8 +215,10 @@ class PlayerActivity : ComponentActivity() {
                 IconAction(R.drawable.ic_more, "更多播放操作") { dialogs.choose("播放操作", listOf("重新播放")) { restart() } }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextAction({ store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site); revision++ }) { Text(if (store.isFavorite("video", video.id, video.site)) "已收藏" else "收藏") }
-                if (!offline) TextAction(::download) { Text("下载") }
+                TextAction({ store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site); revision++ }) {
+                    Glyph(R.drawable.ic_bookmark, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text(if (store.isFavorite("video", video.id, video.site)) "已收藏" else "收藏")
+                }
+                if (!offline) TextAction(::download) { Glyph(R.drawable.ic_download, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("下载") }
             }
             detail?.let { data ->
                 if (data.description.isNotBlank()) Expandable("简介", true) { Copy(data.description) }

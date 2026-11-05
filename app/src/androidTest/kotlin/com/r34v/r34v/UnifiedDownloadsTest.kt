@@ -92,7 +92,7 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         ui.onNodeWithTag("download-gallery:${task(f, "exhentai")!!.id}").assertExists()
         ui.onNodeWithTag("download-center").performScrollToIndex(0)
         f.shot("22-unified-downloads")
-        ui.onNodeWithText("视频", substring = false).performClick()
+        ui.onNode(hasText("视频", substring = false) and hasAnyAncestor(hasTestTag("download-center"))).performClick()
         ui.waitUntil(15000) { ui.onAllNodes(hasTestTag("download-video:${f.app.playback.key(clip, "720p")}")).fetchSemanticsNodes().isNotEmpty() }
         f.shot("23-video-downloads")
         runBlocking { f.app.playback.downloads().filter { f.app.playback.metadata(it)?.video?.id == f.video("r34v").id }.forEach { f.app.playback.remove(it.request.id) } }

@@ -10,7 +10,7 @@
 - `PlayerActivity`：Compose 详情、播放控件、清晰度、倍速、手势、横竖屏全屏、进度保存和过期地址刷新。仅 Media3 PlayerView 画面使用 AndroidView，关闭自带控制器，所有控制按钮与时间轴均为 Compose。
 - `GalleryActivity` 与 `ui/ComposeReader`：Compose 画廊详情与 LazyColumn 条漫、缩放、全屏、跳页及页内进度。ReaderBuffer 独立管理可见页和后续三页预读，最多两个并发，额外屏外解码预算24MiB；位图释放采用移除引用，避免 RenderThread 使用已 recycle 的位图。
 - `SiteAuthActivity`：Compose 登录说明与操作，仅官方 WebView 使用 AndroidView；保留官方域名限制、TLS校验、权限验证与退出时临时 Cookie 清理。
-- `ui/ComposeUi`：黑底灰阶主题、共享字体/圆角、红色进度/开关、白色文本操作、Coil AsyncImage 封面、菜单和对话框。`R34Application.coverLoader` 按站点缓存 loader，共享有界内存/磁盘缓存并为每次请求取得当前 Network.client。旧 View 组件与 RecyclerView/DrawerLayout 直接依赖已删除。
+- `ui/ComposeUi`：黑底中性灰阶与三级材质主题、共享小字号/圆角/形变按钮、`GlassSurface`、Coil AsyncImage 封面、菜单、玻璃底部面板和对话框。`R34Application.coverLoader` 按站点缓存 loader，共享有界内存/磁盘缓存并为每次请求取得当前 Network.client。旧 View 组件与 RecyclerView/DrawerLayout 直接依赖已删除。
 - `data/HtmlParser`：Jsoup 离线解析站点 HTML，不运行页面脚本。列表、详情、分类和两类排行榜分别解析。
 - `data/Network` 和 `data/SystemProxySelector`：OkHttp、分站 Cookie、系统代理与系统 DNS。遵循系统按 URL 作出的代理/PAC 排除决定，未配置代理才直连；不尝试代理列表中的后续直连回退。移除 DoH、固定/手填 IP、IP 池、VPN 分支和应用内独立代理，旧配置在迁移时清除。系统代理变更广播使旧空闲连接失效，新请求采用新设置。页面请求可取消且有限时，视频连接不设整文件请求时限。
 - `data/LibraryStore`：原生私有 SharedPreferences，沿用旧 JSON 字段。对旧 Flutter 配置只做一次复制迁移，保留原件供回退。

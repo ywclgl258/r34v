@@ -12,6 +12,9 @@ import java.net.Proxy
 import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.TimeUnit
@@ -113,7 +116,7 @@ class Network(private val context: Context, private val store: LibraryStore) {
     private fun build(): OkHttpClient {
         return OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
             .callTimeout(25, TimeUnit.SECONDS).cookieJar(session)
-            .cache(diskCache).dns(Dns.SYSTEM).proxySelector(systemRoutes)
+            .cache(diskCache).dns(Ipv4FirstDns).proxySelector(systemRoutes)
             .eventListenerFactory { object : EventListener() {
                 override fun connectionAcquired(call: Call, connection: Connection) {
                     val route = connection.route(); val peer = route.socketAddress.address?.hostAddress.orEmpty()
@@ -200,6 +203,15 @@ object AdapterRegistry {
             SiteRegistry.EHENTAI.id, SiteRegistry.EXHENTAI.id -> com.r34v.r34v.data.adapter.EhAdapter(site, net)
             SiteRegistry.NHENTAI.id -> com.r34v.r34v.data.adapter.NhentaiAdapter(net)
             SiteRegistry.HITOMI.id -> com.r34v.r34v.data.adapter.HitomiAdapter(net)
+            SiteRegistry.FOURKHD.id -> com.r34v.r34v.data.adapter.FourKhdAdapter(site, net)
+            SiteRegistry.EVERIA.id -> com.r34v.r34v.data.adapter.PhotoArchiveAdapter(
+                site, net, com.r34v.r34v.data.adapter.PhotoProfiles.everia())
+            SiteRegistry.FOURKUP.id -> com.r34v.r34v.data.adapter.PhotoArchiveAdapter(
+                site, net, com.r34v.r34v.data.adapter.PhotoProfiles.fourKup())
+            SiteRegistry.COSPLAYTELE.id -> com.r34v.r34v.data.adapter.PhotoArchiveAdapter(
+                site, net, com.r34v.r34v.data.adapter.PhotoProfiles.cosplayTele())
+            SiteRegistry.GALLERYEPIC.id -> com.r34v.r34v.data.adapter.PhotoArchiveAdapter(
+                site, net, com.r34v.r34v.data.adapter.GalleryEpicProfile())
             else -> com.r34v.r34v.data.adapter.KvsAdapter(site, net)
         }
         cache[site.id] = created
@@ -210,11 +222,11 @@ object AdapterRegistry {
     fun warm(network: Network) { SiteRegistry.all.forEach { adapter(it, network) } }
 }
 
-class Repository(private val network: Network) {
+class Repository(private val network: Network, private val library: LibraryStore) {
     private fun adapter() = AdapterRegistry.adapter(SiteRegistry.current, network)
 
-    suspend fun feed(request: FeedRequest): FeedPage {
-        val adapter = adapter()
+    suspend fun feed(request: FeedRequest, site: SiteContext = SiteRegistry.current): FeedPage {
+        val adapter = AdapterRegistry.adapter(site, network)
         return withContext(Dispatchers.IO) {
             val site = adapter.site
             val url = adapter.resolve(request)
@@ -246,6 +258,37 @@ class Repository(private val network: Network) {
     suspend fun index(segment: String) = withContext(Dispatchers.IO) { adapter().index(segment) }
     suspend fun works() = withContext(Dispatchers.IO) { adapter().index("works") }
     suspend fun ranking(url: String) = withContext(Dispatchers.IO) { adapter().index("artists") }
+
+    /**
+     * Fetches every followed tag for [site] at once.
+     *
+     * One tag failing must not blank the screen: each failure is recorded on its own [TagFeed] and
+     * the rest still render. Results are merged by [SubscriptionMerge], so a work carrying several
+     * followed tags appears once, in the position the user's tag order gives it.
+     */
+    suspend fun subscriptions(site: SiteContext, order: SubscriptionOrder, tags: List<Subscription>): SubscriptionPage =
+        withContext(Dispatchers.IO) {
+            val feeds = coroutineScope {
+                tags.map { entry ->
+                    async {
+                        runCatching {
+                            val page = feed(FeedRequest(FeedKind.TAG, entry.slug, Sort.NEWEST), site)
+                            TagFeed(entry, page.videos.filter { library.allowed(it, site.id) }, null, page.cached)
+                        }.getOrElse { error ->
+                            if (error is CancellationException) throw error
+                            TagFeed(entry, emptyList(), error.message ?: "这个标签暂时取不到内容")
+                        }
+                    }
+                }.awaitAll()
+            }
+            SubscriptionPage(tags = feeds, videos = SubscriptionMerge.sort(feeds, order), order = order,
+                failed = feeds.filter { it.error != null })
+        }
+
+    /** Whether a tag has anything to show right now, used to keep the follow list honest. */
+    suspend fun probeTag(site: SiteContext, slug: String): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching { AdapterRegistry.adapter(site, network).feed(FeedRequest(FeedKind.TAG, slug, Sort.NEWEST)).videos.size }
+    }
 }
 
 /** Cancellation remains connected to the call until the full body has been consumed. */

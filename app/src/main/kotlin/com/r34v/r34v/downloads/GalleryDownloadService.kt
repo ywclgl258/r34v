@@ -23,7 +23,7 @@ class GalleryDownloadService : Service() {
     override fun onCreate() {
         super.onCreate()
         if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)
-            .createNotificationChannel(NotificationChannel(CHANNEL, "漫画下载", NotificationManager.IMPORTANCE_LOW))
+            .createNotificationChannel(NotificationChannel(CHANNEL, "图集下载", NotificationManager.IMPORTANCE_LOW))
         showProgress()
         wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "R34V:GalleryDownload").apply {
             setReferenceCounted(false); acquire(6 * 60 * 60 * 1000L)
@@ -35,7 +35,7 @@ class GalleryDownloadService : Service() {
         val open = PendingIntent.getActivity(this, 42, Intent(this, MainActivity::class.java).putExtra("downloads", true)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("漫画下载").setContentText(task?.let { "${it.entry.title} · ${it.pages} / ${it.total} 页" } ?: "正在准备下载任务")
+            .setContentTitle("图集下载").setContentText(task?.let { "${it.entry.title} · ${it.pages} / ${it.total} 页" } ?: "正在准备下载任务")
             .setContentIntent(open).setOnlyAlertOnce(true).setOngoing(true)
             .setProgress(task?.total ?: 0, task?.pages ?: 0, task == null || task.total == 0).build()
         if (Build.VERSION.SDK_INT >= 29) startForeground(42, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)

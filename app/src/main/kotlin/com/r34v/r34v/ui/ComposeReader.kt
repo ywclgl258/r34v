@@ -124,7 +124,7 @@ data class ReaderJump(val serial: Int, val page: Int, val offset: Int = 0)
                     } while (event.changes.any { it.pressed })
                 } }, contentAlignment = Alignment.Center) {
                 when {
-                    rendered != null -> Image(rendered.bitmap.asImageBitmap(), "漫画第 $number 页，双击或双指缩放", Modifier.fillMaxSize().graphicsLayer { scaleX = zoom; scaleY = zoom; translationX = pan.x; translationY = pan.y }, contentScale = ContentScale.Fit)
+                    rendered != null -> Image(rendered.bitmap.asImageBitmap(), "第 $number 页，双击或双指缩放", Modifier.fillMaxSize().graphicsLayer { scaleX = zoom; scaleY = zoom; translationX = pan.x; translationY = pan.y }, contentScale = ContentScale.Fit)
                     error != null -> Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) { Copy("第 $number 页：$error"); Action("重试此页") { buffer.retry(number) } }
                     else -> CircularProgressIndicator(Modifier.size(32.dp), color = BrandColor)
                 }

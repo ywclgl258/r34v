@@ -46,6 +46,8 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
     val imageRequests = ConcurrentLinkedQueue<Pair<String, Int>>()
     @Volatile var offline = false
     @Volatile var brokenPage = 0
+    /** A tag slug that must fail, so a partially broken subscription can be exercised. */
+    @Volatile var failTag = ""
     @Volatile var imageDelayMillis = 0L
     val nonce = System.nanoTime()
     private val png = Bitmap.createBitmap(600, 900, Bitmap.Config.ARGB_8888).let { image ->
@@ -98,7 +100,13 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
         override fun homeUrl() = "${site.base}/compose-$nonce/"
         override suspend fun feed(request: FeedRequest): FeedPage {
             requests.add(site.id to request); if (offline) throw IOException("Fixture offline")
-            return FeedPage((0..15).map { video(site.id, request.page, it) }, request.page, 3, "Neutral fixture")
+            // Every tag gets its own ids so a merged subscription list can be told apart from a
+            // plain feed and per-tag failures stay visible.
+            val tag = request.target.takeIf { request.kind == FeedKind.TAG }.orEmpty()
+            if (tag.isNotBlank() && tag == failTag) throw IOException("Fixture tag unavailable")
+            return FeedPage((0..15).map { video(site.id, request.page, it).let { v ->
+                if (tag.isBlank()) v else v.copy(id = "$tag-${v.id}", title = "$tag 作品 $it")
+            } }, request.page, 3, "Neutral fixture")
         }
         override suspend fun detail(url: String): Detail {
             if (offline) throw IOException("Fixture offline")

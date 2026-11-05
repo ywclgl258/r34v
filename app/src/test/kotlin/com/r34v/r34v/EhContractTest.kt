@@ -100,6 +100,8 @@ class EhContractTest {
     @Test fun newMediaFieldsKeepExistingVideoAndFeedDefaults() {
         assertEquals(MediaKind.VIDEO, Gson().fromJson("""{"id":"42","title":"Old video"}""", Video::class.java).mediaKind)
         assertEquals("", Gson().fromJson("""{"page":1}""", FeedRequest::class.java).cursor)
-        assertEquals(7, SiteRegistry.all.size)
+        // Every registered site must belong to exactly one switcher group; the count itself is
+        // asserted in FourKhdParserTest, where the grouping is under test.
+        assertEquals(SiteRegistry.all.size, SiteCategory.entries.sumOf { SiteRegistry.ofCategory(it).size })
     }
 }

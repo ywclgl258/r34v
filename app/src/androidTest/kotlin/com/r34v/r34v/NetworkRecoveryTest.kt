@@ -38,7 +38,11 @@ class NetworkRecoveryTest {
         try {
             val store = LibraryStore(context, name, "$name-legacy"); val network = Network(context, store)
             assertFalse(store.prefs.contains("settings_v1_player_proxy")); assertFalse(store.prefs.contains("r34v:ip_pool")); assertEquals("keep", store.prefs.getString("sentinel", null))
-            assertSame(Dns.SYSTEM, network.client.dns); assertSame(Dns.SYSTEM, network.mediaClient.dns)
+            assertSame(Ipv4FirstDns, network.client.dns); assertSame(network.client.dns, network.mediaClient.dns)
+            val systemAddresses = Dns.SYSTEM.lookup("localhost")
+            val expected = systemAddresses.sortedBy { if (it is java.net.Inet4Address) 0 else 1 }
+            assertEquals(expected, network.client.dns.lookup("localhost"))
+            assertEquals(expected, network.mediaClient.dns.lookup("localhost"))
             assertTrue(network.client.proxySelector is SystemProxySelector); assertSame(network.client.proxySelector, network.mediaClient.proxySelector)
             assertNull(network.client.proxy); assertNull(network.mediaClient.proxy)
         } finally { context.deleteSharedPreferences(name); context.deleteSharedPreferences("$name-legacy") }
