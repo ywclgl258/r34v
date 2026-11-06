@@ -11,9 +11,14 @@ import org.junit.runner.RunWith
 class GalleryUiTest : ComposeUiCase() {
     @Test fun languageMasonryScrollAndSearchRemainSiteSpecific() = ComposeFixture().use { f ->
         f.launch(); waitHome(); switchSite(SiteRegistry.EHENTAI.name); waitText("最新漫画")
-        val first = ui.onNodeWithTag("media-ehentai-${f.video("ehentai").id}").fetchSemanticsNode().boundsInRoot
-        val second = ui.onNodeWithTag("media-ehentai-${f.video("ehentai", index = 1).id}").fetchSemanticsNode().boundsInRoot
-        assertTrue("Gallery covers must keep their differing aspect ratios", first.height > second.height)
+        val firstTag = "media-ehentai-${f.video("ehentai").id}"
+        ui.onNodeWithContentDescription("内容列表").performScrollToNode(hasTestTag(firstTag))
+        // The cover stage can put this row below a short viewport. Compare the complete
+        // layout bounds so clipping at the screen edge cannot flatten both card heights.
+        val first = ui.onNodeWithTag(firstTag).getUnclippedBoundsInRoot()
+        val second = ui.onNodeWithTag("media-ehentai-${f.video("ehentai", index = 1).id}").getUnclippedBoundsInRoot()
+        assertTrue("Gallery covers must keep their differing aspect ratios", first.bottom - first.top > second.bottom - second.top)
+        ui.onNodeWithContentDescription("内容列表").performScrollToIndex(0)
         clickText("中＋日"); ui.waitUntil(10000) { f.requests.any { it.first == "ehentai" && it.second.language == GalleryLanguage.CHINESE_JAPANESE } }
         waitCovers(); f.shot("08-gallery-language")
         ui.onNodeWithContentDescription("内容列表").performTouchInput { swipeUp() }
