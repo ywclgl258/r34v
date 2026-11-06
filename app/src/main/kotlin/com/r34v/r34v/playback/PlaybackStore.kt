@@ -35,7 +35,9 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     private val downloadCache get() = downloadCaches.cache()
     private val streamCache by lazy { SimpleCache(File(context.cacheDir, "streams"), LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024), database) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val refreshed = mutableSetOf<String>()
+    private val refreshed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val refreshJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val generations = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val removals = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Unit>>()
     private val submitted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private fun cleanRemoved(id: String, removed: CompletableDeferred<Unit>) {
@@ -103,19 +105,26 @@ class PlaybackStore(private val context: Context, private val network: Network, 
                 }
                 override fun onDownloadChanged(downloadManager: DownloadManager, download: Download, finalException: Exception?) {
                     submitted.remove(download.request.id)
-                    if (download.state == Download.STATE_FAILED && refreshed.add(download.request.id)) {
-                        scope.launch {
-                            runCatching {
-                                val meta = metadata(download) ?: return@runCatching
-                                // Signed stream URLs expire; re-resolve against the owning site.
+                    if (download.state == Download.STATE_FAILED && !removals.containsKey(download.request.id) && refreshed.add(download.request.id)) {
+                        val id = download.request.id
+                        val generation = generations[id] ?: 0L
+                        val job = scope.launch {
+                            try {
+                                val meta = metadata(download) ?: return@launch
                                 val site = SiteRegistry.byIdOrDefault(meta.site)
                                 val detail = AdapterRegistry.adapter(site, network).detail(meta.video.url)
-                                val fresh = detail.streams.firstOrNull { it.label == meta.quality } ?: return@runCatching
-                                add(meta.video, fresh)
-                            }
+                                ensureActive()
+                                val fresh = detail.streams.firstOrNull { it.label == meta.quality } ?: return@launch
+                                add(meta.video, fresh, generation)
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (_: Exception) {
+                            } finally { refreshJobs.remove(id, coroutineContext[Job]) }
                         }
+                        refreshJobs[id] = job
                     } else if (download.state == Download.STATE_COMPLETED) {
                         refreshed.remove(download.request.id)
+                        refreshJobs.remove(download.request.id)?.cancel()
                         // The sidecar is what survives an uninstall; Media3's database does not.
                         runCatching {
                             val meta = metadata(download) ?: return@runCatching
@@ -168,16 +177,21 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         MediaItem.Builder().setUri(stream.url).setMediaId("${video.site}:${video.id}")
             .setCustomCacheKey(key(video, stream.label)).build()
 
-    fun add(video: Video, stream: Stream) {
+    fun add(video: Video, stream: Stream) = add(video, stream, null)
+    private fun add(video: Video, stream: Stream, expectedGeneration: Long?) {
         storage.checkDownloadsAllowed()
         val site = SiteRegistry.byIdOrDefault(video.site)
         val normalized = video.copy(site = site.id)
-        removals[key(normalized, stream.label)]?.let { removing ->
-            scope.launch { removing.await(); runCatching { add(normalized, stream) } }
+        val id = key(normalized, stream.label)
+        fun stale() = expectedGeneration != null && (removals.containsKey(id) || expectedGeneration != (generations[id] ?: 0L))
+        if (stale()) return
+        removals[id]?.let { removing ->
+            scope.launch { removing.await(); if (isActive && !stale()) runCatching { add(normalized, stream, expectedGeneration) } }
             return
         }
-        val request = DownloadRequest.Builder(key(normalized, stream.label), Uri.parse(stream.url))
-            .setCustomCacheKey(key(normalized, stream.label))
+        if (stale()) return
+        val request = DownloadRequest.Builder(id, Uri.parse(stream.url))
+            .setCustomCacheKey(id)
             .setData(library.gson.toJson(DownloadMeta(normalized, stream.label, site.id)).toByteArray()).build()
         submitted.add(request.id)
         try {
@@ -193,6 +207,9 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     fun remove(id: String) {
         val removed = CompletableDeferred<Unit>()
         if (removals.putIfAbsent(id, removed) != null) return
+        generations[id] = (generations[id] ?: 0L) + 1L
+        refreshed.remove(id)
+        refreshJobs.remove(id)?.cancel()
         try {
             // Missing records have no Media3 removal callback. A queued add still needs its
             // ordered remove command; otherwise the absent-record cleanup can finish directly.

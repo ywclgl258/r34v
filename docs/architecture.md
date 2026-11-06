@@ -37,7 +37,7 @@
 
 ## 数据迁移
 
-保持包名 `com.r34v.r34v`，当前本地交付候选为2.4.0 / 42。2.0.0 与1.18.0的签名来源不同，现已加入签名继承，支持覆盖升级并保留数据；详细平台边界见 [签名与升级](signing.md)。开发版使用 `com.r34v.r34v.debug` 并明确显示“开发版”，与发布版隔离。
+保持包名 `com.r34v.r34v`，当前发布版本为2.5.1 / 44。2.0.0 与1.18.0的签名来源不同，现已加入签名继承，支持覆盖升级并保留数据；详细平台边界见 [签名与升级](signing.md)。开发版使用 `com.r34v.r34v.debug` 并明确显示“开发版”，与发布版隔离。
 
 迁移包括观看历史、视频/角色/作者/标签收藏、设置、登录会话、搜索历史和旧缓存索引。搜索列表兼容旧 Java 列表格式和 JSON 格式，旧浮点倍速转换成原生配置。迁移幂等，重启不会再次覆盖新进度。原生版的持续播放缓存使用新目录，旧版未完成的临时传输文件不会当作完整视频导入。
 
@@ -60,3 +60,18 @@ JVM 测试覆盖页面样本、分页、懒加载图片、分组边界、播放�
 - `data/PersonalCatalog`、`PlaybackQueue`、`IncomingLink`：跨来源片库快照与智能规则、持久顺序会话、小体积媒体路由 Intent 和受支持分享链接识别。
 - `ui/ComposePersonalHome`、`ComposeLibraryHub`、`ComposeCollections`：个人继续入口、固定／智能片单、离线准备和宽屏列表详情。`ComposeThumbnails` 与 `ComposeLocalImport` 复用既有阅读器及系统选择器。
 - `ui/ComposeLiquid`：Backdrop 1.0.0 封装，控制与内容为兄弟图层；API 31 模糊、33 折射、旧版及减少透明效果使用实底并停止图层记录。`ComposeMediaStage` 根据视频／漫画／写真选择展示比例和动作词。正文、内容卡片和下载任务不使用采样材质；Media3 SurfaceView 不作为 Compose 背景采样。
+
+## 2.5 首批功能与恢复模型
+
+- `data/NextFeatures`、`SearchSupport`：高级筛选、包含／排除标签、播放与阅读偏好、时间书签、单图收藏和发现频道共用 `PersonalStore` 与既有备份。`FeedRequest` 增加内容类型和条件身份；Iwara 图库以 `site + gallery + id` 区分旧视频，缓存键不改写。
+- `data/adapter/IwaraAdapter`：视频继续使用 `/videos`，图库使用 `/images` 与 `/image/<id>`。图库页地址以 `#page=N` 保持页文件身份唯一；混合文件中的视频不进入图片解码路径。
+- `downloads/DownloadRecovery`：下载错误分类、有限退避、`Retry-After` 秒数／HTTP 日期解析、长期限流等待和存储／TLS 边界。`PlaybackStore` 以删除代次和刷新任务取消阻止过期回包重建任务。
+- `GalleryDownloadStore`：持久优先级、分组、所选页、真实完成页集合、失败阶段和重试时间。图集提交前执行完整性审计，部分保存不写整本完成标记；Media3 视频继续由原引擎调度，不伪造优先级接口。
+- `GalleryRepository`：图页校验、缺页／坏页审计、部分选择清单和原下载目录恢复。部分保存只开放有效页；修复只重取损坏或缺失页。
+- `ui/ComposeAdvancedSearch`、`TimestampText`、`ComposeDownloads`：组合搜索、时间戳跳转、任务详情与恢复入口复用现有黑底 Liquid UI；没有另建导航或视觉系统。
+
+## 2.5.1 混合文章与图页恢复
+
+- `data/adapter/CossoraProtocol`：仅识别 Cosplaytele 文章里的指定 cossora HTTPS 嵌入页，以 `video-<UUID>` 和 `文章地址#video-<UUID>` 保持视频与图集身份独立。嵌入页的公开 AES-CBC 参数在原生代码中解码，不运行整站脚本；只接受 cossora 域下的 HLS 与封面，短效令牌不写入图集目录。
+- `PhotoArchiveAdapter` 的 `gallery()` 保持图页读取，并在 `GalleryDetail.videoEntries` 携带可选视频列表；`detail()` 仅在实际打开或刷新视频时解析嵌入页。`GalleryActivity` 复用 `PlayerActivity` 和 Media3 HLS，图页缓存、阅读位置、收藏与下载身份不混用。
+- `DownloadRecovery` 区分 TLS 连接中断与证书／主机名安全错误。E／Ex 仅在异常链明确为连接关闭、重置或超时等传输故障时，通过页面已有 `nl` 地址单次刷新；证书与安全错误不重试。响应地址不同也先拒绝，再按页面刷新策略处理。所有路径沿用系统代理、HTTPS 证书校验与既有完成页／取消／落盘事务。

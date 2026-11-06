@@ -161,6 +161,7 @@ object SiteRegistry {
     /** cosplaytele.com — cosplay galleries published inline in the article, one page each. */
     val COSPLAYTELE = SiteContext(
         id = "cosplaytele", name = "Cosplaytele", base = "https://cosplaytele.com", host = "cosplaytele.com",
+        mediaDomains = setOf("cossora.stream"),
         mediaKind = MediaKind.GALLERY,
         category = SiteCategory.PHOTO,
         accent = 0xFFFF6B9A.toInt(),

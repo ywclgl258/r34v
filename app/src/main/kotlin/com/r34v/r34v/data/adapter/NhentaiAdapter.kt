@@ -33,11 +33,11 @@ class NhentaiAdapter(private val network: Network) : SiteAdapter {
     })
     private suspend fun json(url: String): JsonElement = network.client.readResponse(Request.Builder().url(url).tag(SiteContext::class.java, site).header("Cache-Control", "no-cache").build()) { response ->
         when (response.code) {
-            429 -> throw GalleryAccessException("nhentai 请求频率已达限制，请稍后重试${response.header("Retry-After")?.toLongOrNull()?.let { "（约 $it 秒）" }.orEmpty()}")
-            401, 403 -> throw GalleryAccessException("nhentai 暂时拒绝访问，请检查网络或稍后重试")
-            404 -> throw GalleryAccessException("该画廊已被原站移除或不存在")
+            429 -> throw GalleryResponseException(429, response.header("Retry-After"), "nhentai 请求频率已达限制，请稍后重试${response.header("Retry-After")?.toLongOrNull()?.let { "（约 $it 秒）" }.orEmpty()}")
+            401, 403 -> throw GalleryResponseException(response.code, response.header("Retry-After"), "nhentai 暂时拒绝访问，请检查登录权限或稍后重试")
+            404 -> throw GalleryResponseException(404, message = "该画廊已被原站移除或不存在")
         }
-        check(response.isSuccessful) { "nhentai 读取失败：HTTP ${response.code}" }
+        if (!response.isSuccessful) throw GalleryResponseException(response.code, response.header("Retry-After"), "nhentai 读取失败：HTTP ${response.code}")
         JsonParser.parseString(response.body?.string().orEmpty())
     }
     private suspend fun servers(refresh: Boolean = false): NhentaiProtocol.Cdn = mutex.withLock {
@@ -132,7 +132,15 @@ object NhentaiProtocol {
             FeedKind.CATEGORY -> "category:${request.target}"
             else -> request.target
         }
-        val query = listOf(target, request.language.languages.firstOrNull()?.let { "language:$it" }.orEmpty()).filter { it.isNotBlank() }.joinToString(" ")
+        request.filter.validate()
+        val advanced = buildList {
+            addAll(request.includeTags)
+            addAll(request.excludeTags.map { "-$it" })
+            if (request.filter.minPages > 0) add("pages:>=${request.filter.minPages}")
+            if (request.filter.maxPages > 0) add("pages:<=${request.filter.maxPages}")
+            if (request.filter.category.isNotBlank()) add("category:${request.filter.category}")
+        }
+        val query = (listOf(target, request.language.languages.firstOrNull()?.let { "language:$it" }.orEmpty()) + advanced).filter { it.isNotBlank() }.joinToString(" ")
         val builder = "${site.base}/api/v2".toHttpUrl().newBuilder()
         return when {
             request.kind == FeedKind.POPULAR && request.language == GalleryLanguage.ALL -> builder.addPathSegments("galleries/popular")

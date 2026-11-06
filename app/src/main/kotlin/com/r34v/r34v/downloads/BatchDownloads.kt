@@ -20,7 +20,7 @@ class BatchDownloads(private val app: R34Application) {
                 for (video in entries) {
                     ensureActive()
                     try {
-                        if (SiteRegistry.byIdOrDefault(video.site).mediaKind == MediaKind.GALLERY) app.galleryDownloads.add(video)
+                        if (video.mediaKind == MediaKind.GALLERY || SiteRegistry.byIdOrDefault(video.site).mediaKind == MediaKind.GALLERY) app.galleryDownloads.add(video)
                         else {
                             val detail = app.repository.detail(video.url)
                             val preferred = app.library.string("quality", "720p")

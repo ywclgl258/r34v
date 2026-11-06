@@ -175,8 +175,8 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     fun reading(id: String, siteId: String = this.siteId) = readings(siteId).firstOrNull { it.entry.id == id }
     @Synchronized fun saveReading(progress: ReadingProgress) {
         val siteId = progress.entry.site
-        require(SiteRegistry.byId(siteId)?.mediaKind == MediaKind.GALLERY)
-        write("$siteId:reading_history_v1", (listOf(progress) + readings(siteId).filter { it.entry.id != progress.entry.id }).take(500))
+        require(SiteRegistry.byId(siteId) != null && progress.entry.mediaKind == MediaKind.GALLERY)
+        check(prefs.edit().putString("$siteId:reading_history_v1", gson.toJson((listOf(progress) + readings(siteId).filter { it.entry.id != progress.entry.id }).take(500))).commit()) { "无法保存阅读进度" }
     }
     fun removeReading(id: String) = write(k("reading_history_v1"), readings().filter { it.entry.id != id })
     fun clearReadings() = prefs.edit().remove(k("reading_history_v1")).apply()

@@ -53,7 +53,7 @@ object PhotoProfiles {
         reservedSegments = reserved,
     )
 
-    /** cosplaytele.com — full-resolution gallery inline in the article, one page. */
+    /** cosplaytele.com — one image gallery; supported cossora embeds open separately as videos. */
     fun cosplayTele() = WordPressPhotoProfile(
         itemSelector = "div.col.post-item",
         linkSelector = "h5.post-title a[href]",

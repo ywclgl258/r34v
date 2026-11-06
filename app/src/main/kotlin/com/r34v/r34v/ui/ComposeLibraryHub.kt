@@ -63,7 +63,8 @@ import kotlinx.coroutines.*
 }
 
 @Composable fun LibraryHubScreen(app: R34Application, dialogs: ComposeDialogs, catalog: List<CatalogEntry>, play: (Video) -> Unit,
-    task: (String) -> Unit, search: () -> Unit, importLocal: () -> Unit, openLink: () -> Unit, download: (List<Video>) -> Unit) {
+    task: (String) -> Unit, search: () -> Unit, importLocal: () -> Unit, openLink: () -> Unit, download: (List<Video>) -> Unit,
+    image: (ImageFavorite) -> Unit = { play(it.video) }) {
     val revision by app.library.personal.changes.collectAsState()
     val snapshot = remember(revision) { app.library.personal.snapshot() }
     var selected by rememberSaveable { mutableStateOf("") }
@@ -72,6 +73,27 @@ import kotlinx.coroutines.*
     val smart = snapshot.smartShelves.firstOrNull { it.id == selected }
     if (shelf != null) Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         ShelfScreen(app, dialogs, play, download, shelf.id, catalog, onBack = { selected = "" }, discover = search)
+    } else if (selected == "images") {
+        Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            TextAction({ selected = "" }) { Text("返回我的片库") }
+            Title("单图收藏 · ${snapshot.imageFavorites.size}", large = true)
+            if (snapshot.imageFavorites.isEmpty()) Copy("在漫画或图集阅读工具中收藏当前图片，之后可从这里回到原图集页。")
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(snapshot.imageFavorites.chunked(2), key = { it.first().key }) { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        row.forEach { favorite ->
+                            Column(Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(SurfaceColor).clickable { image(favorite) }.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                SiteImage(favorite.imageUrl.ifBlank { favorite.video.thumb }, SiteRegistry.byIdOrDefault(favorite.video.site), Modifier.fillMaxWidth().height(210.dp), true)
+                                Text(favorite.video.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Copy("${SiteRegistry.byIdOrDefault(favorite.video.site).name} · 第 ${favorite.page} 页")
+                                TextAction({ app.library.personal.toggleImageFavorite(favorite.video, favorite.page, favorite.pageUrl, favorite.imageUrl) }) { Text("取消收藏") }
+                            }
+                        }
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
+        }
     } else if (smart != null || selected == "local") {
         val entries = if (smart != null) smart.select(catalog) else catalog.filter { it.video.site == SiteRegistry.LOCAL.id }
         Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -94,6 +116,7 @@ import kotlinx.coroutines.*
         item { Row(verticalAlignment = Alignment.CenterVertically) { Title("智能片单", Modifier.weight(1f)); TextAction({ newSmartShelf(dialogs, app) }) { Text("新建智能片单") } } }
         items(snapshot.smartShelves, key = { it.id }) { value -> val matches = value.select(catalog); ShelfCover(value.name, "${value.rule.title} · ${matches.size} 部", matches.take(2).map { it.video }) { selected = value.id } }
         if (snapshot.smartShelves.isEmpty()) item { Copy("按未看完、已离线未看或最近加入，自动整理已有作品。") }
+        item { Action("单图收藏 · ${snapshot.imageFavorites.size} 张", modifier = Modifier.fillMaxWidth()) { selected = "images" } }
         item { Title("导入与打开") }
         item { Action("本地导入 · ${catalog.count { it.video.site == SiteRegistry.LOCAL.id }} 本", modifier = Modifier.fillMaxWidth()) { selected = "local" }; Spacer(Modifier.height(8.dp)); Action("导入 CBZ / ZIP / 图片目录", modifier = Modifier.fillMaxWidth(), click = importLocal) }
         item { Action("从链接打开作品", modifier = Modifier.fillMaxWidth(), click = openLink) }

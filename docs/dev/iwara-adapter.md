@@ -30,8 +30,9 @@ status: implemented
 | 相关推荐/评论 | 并行读取，各有 1.2 秒可选请求预算，失败不阻断主片源 |
 | 视频源 | `fileUrl` + `X-Version`；排除 preview 与非 HTTPS 源，Source 采用文件真实高度参与清晰度选择 |
 | 下载/片库 | Media3 持久缓存与后台服务；key 保持 `iwara:<videoId>:<quality>`，按站点筛选 |
+| 图库 | `/images` 列表、`/image/<id>` 详情、作者图库与图集阅读；图片使用 `#page=N` 保持文件身份，混合视频文件不进入图片解码路径 |
 | 账号/私密内容 | 未接入，设置页明确显示公开浏览；无账号凭据或 token 的存储/发送 |
-| 图库/站外嵌入/AI 站 | 未接入，站外嵌入给出明确提示 |
+| 站外嵌入/AI 站 | 未接入，站外嵌入给出明确提示 |
 
 `/videos` 的 `count` 在实测中会随页码增长（例如 limit=3，page=0 返回 count=4、page=1 返回 count=7），继续按每页返回的 count 更新可翻页上限。不能把第一页 count 缓存为全站总数。
 

@@ -92,14 +92,36 @@ fun validateBackup(value: LibraryBackup) {
         box.entries.forEach { video(it.video); require(it.video.site == site) }
         box.known.forEach { (slug, ids) -> require(slug.isNotBlank() && ids.size <= 1000 && ids.all { it.isNotBlank() }) }
     }
-    require(personal.savedSearches.size <= 1000 && personal.smartShelves.size <= 1000)
-    personal.savedSearches.forEach { search ->
-        require(search.id.isNotBlank() && search.name.length in 1..80 && search.query.length in 1..2048)
+    fun validSearch(search: SavedSearch) {
+        require(search.id.isNotBlank() && search.name.length in 1..80 && search.query.length <= 2048 && !search.condition.isEmpty)
+        search.filter.validate()
+        require(search.includeTags.size + search.excludeTags.size <= 200 && (search.includeTags + search.excludeTags).all { it.length in 1..200 })
         require(search.sources.isNotEmpty() && search.sources.distinct().size == search.sources.size && search.sources.all { id -> SiteRegistry.all.any { it.id == id } })
         require(search.category.isBlank() || SiteCategory.entries.any { it.name == search.category })
         search.languages.forEach { (id, lang) -> require(id in search.sources && GalleryLanguage.entries.any { it.name == lang }) }
     }
+    require(personal.savedSearches.size <= 1000 && personal.smartShelves.size <= 1000)
+    personal.savedSearches.forEach(::validSearch)
     personal.smartShelves.forEach { shelf -> require(shelf.id.isNotBlank() && shelf.name.length in 1..80 && shelf.rule in SmartRule.entries); if (shelf.source.isNotBlank()) source(shelf.source); require(shelf.category.isBlank() || SiteCategory.entries.any { it.name == shelf.category }) }
+    require(personal.timeBookmarks.size <= 5000 && personal.timeBookmarks.map { it.id }.distinct().size == personal.timeBookmarks.size)
+    personal.timeBookmarks.forEach { video(it.video); require(it.positionMs >= 0 && it.note.length <= 500 && it.group.length <= 80 && it.id.isNotBlank()) }
+    personal.playbackPreferences.forEach { (site, prefs) -> source(site); require(prefs.validated() == prefs) }
+    personal.readerPreferences.forEach { (key, prefs) ->
+        require(key.contains(':') && SiteRegistry.byId(key.substringBefore(':')) != null)
+        require(prefs.cropPercent in 0..20 && (prefs.mode.isBlank() || ReaderMode.entries.any { it.name == prefs.mode }))
+    }
+    personal.readingBehaviors.forEach { (site, behavior) -> source(site); require(behavior.autoPageSeconds in 0..300 && behavior.slideshowSeconds in 0..300) }
+    require(personal.imageFavorites.size <= 20000 && personal.imageFavorites.map { it.key }.distinct().size == personal.imageFavorites.size)
+    personal.imageFavorites.forEach { favorite ->
+        video(favorite.video); require(favorite.page in 1..100000); location(favorite.pageUrl, favorite.video.site)
+        require(favorite.imageUrl.length <= 16384 && (favorite.imageUrl.isBlank() || favorite.imageUrl.toHttpUrlOrNull()?.isHttps == true))
+    }
+    require(personal.channels.size <= 100 && personal.channels.map { it.id }.distinct().size == personal.channels.size)
+    personal.channels.forEach { channel ->
+        require(channel.id.isNotBlank() && channel.name.length in 1..80 && channel.kind in FeedKind.entries && channel.target.length <= 2048)
+        if (channel.site.isNotBlank()) source(channel.site)
+        channel.savedSearch?.let(::validSearch)
+    }
     require(value.settings.keys.all { it in backupBooleans || it in backupStrings })
     value.settings.forEach { (key, setting) -> require(setting.length <= 2048); if (key in backupBooleans) require(setting in setOf("true", "false")) }
     value.settings["native_speed"]?.let { require(it.toFloatOrNull()?.let { rate -> rate in .25f..3f } == true) }
@@ -132,9 +154,20 @@ fun mergeBackups(local: LibraryBackup, incoming: LibraryBackup): LibraryBackup {
         SubscriptionInbox((first.known.keys + second.known.keys).associateWith { (first.known[it].orEmpty() + second.known[it].orEmpty()).distinct().take(1000) },
             (first.entries + second.entries).groupBy { it.video.entryKey }.values.map { entries -> entries.maxBy { it.at }.copy(read = entries.any { it.read }) }.sortedByDescending { it.at }.take(1000))
     }
-    return LibraryBackup(sites = sites, personal = PersonalLibrary(shelves,
-        (a.bookmarks + b.bookmarks).sortedByDescending { it.at }.distinctBy { it.key }, a.readerModes + b.readerModes, boxes,
-        (b.savedSearches + a.savedSearches).distinctBy { it.id }, (b.smartShelves + a.smartShelves).distinctBy { it.id }), settings = local.settings + incoming.settings)
+    return LibraryBackup(sites = sites, personal = PersonalLibrary(
+        shelves = shelves,
+        bookmarks = (a.bookmarks + b.bookmarks).sortedByDescending { it.at }.distinctBy { it.key },
+        readerModes = a.readerModes + b.readerModes,
+        inboxes = boxes,
+        savedSearches = (b.savedSearches + a.savedSearches).distinctBy { it.id },
+        smartShelves = (b.smartShelves + a.smartShelves).distinctBy { it.id },
+        timeBookmarks = (b.timeBookmarks + a.timeBookmarks).sortedByDescending { it.at }.distinctBy { it.id },
+        playbackPreferences = a.playbackPreferences + b.playbackPreferences,
+        readerPreferences = a.readerPreferences + b.readerPreferences,
+        readingBehaviors = a.readingBehaviors + b.readingBehaviors,
+        imageFavorites = (b.imageFavorites + a.imageFavorites).sortedByDescending { it.at }.distinctBy { it.key },
+        channels = (b.channels + a.channels).distinctBy { it.id },
+    ), settings = local.settings + incoming.settings)
 }
 
 fun LibraryStore.backupSnapshot(): LibraryBackup = synchronized(this) {

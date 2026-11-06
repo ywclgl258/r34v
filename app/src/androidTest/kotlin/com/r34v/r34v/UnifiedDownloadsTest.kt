@@ -115,6 +115,78 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         done(f, "hitomi")
     }
 
+    @Test fun selectedPagesStayPartialAndOpenOfflineWithoutJoiningMissingPages() = ComposeFixture().use { f ->
+        notifications(f); f.launch(); waitHome()
+        runBlocking { f.app.galleryDownloads.add(f.video("ehentai"), listOf(1, 3, 5)) }; done(f)
+        val task = task(f)!!
+        assertTrue(task.partial); assertEquals(listOf(1, 3, 5), task.completedPages)
+        assertFalse(f.app.galleries.isDownloaded(f.video("ehentai")))
+        val detail = runBlocking { f.app.galleries.detail(f.video("ehentai"), offlineOnly = true) }
+        assertEquals(listOf(1, 3, 5), detail.downloadedPages); assertEquals(listOf(1, 3, 5), detail.requestedPages)
+        val calls = f.galleryCalls.size; val images = f.imageRequests.size; f.offline = true
+        f.launchGallery(read = false, offline = true)
+        waitText("部分保存 · 3 / 8 页 · 仅已存页可离线阅读"); clickText("开始阅读")
+        ui.waitUntil(15000) { ui.onAllNodesWithTag("reader-page-1").fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(calls, f.galleryCalls.size); assertEquals(images, f.imageRequests.size)
+    }
+
+    @Test fun integrityRepairOnlyRedownloadsTheCorruptPage() = ComposeFixture().use { f ->
+        notifications(f); f.launch(); waitHome()
+        runBlocking { f.app.galleryDownloads.add(f.video("ehentai")) }; done(f)
+        val entry = f.video("ehentai")
+        fun hash(raw: String) = java.security.MessageDigest.getInstance("SHA-256").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
+        val folder = File(f.app.filesDir, "gallery-downloads/ehentai/${hash(entry.id)}")
+        val links = com.google.gson.JsonParser.parseString(File(folder, "links.json").readText()).asJsonObject.getAsJsonObject("links")
+        val url = links.get("2").asString
+        File(folder, "${hash(url.substringBefore('?'))}.image").writeBytes(byteArrayOf(1, 2, 3))
+        val audit = runBlocking { f.app.galleryDownloads.inspect(task(f)!!.id) }
+        assertEquals(listOf(2), audit.corruptPages)
+        val untouched = f.imageRequests.filter { it.first == "ehentai" && it.second != 2 }.size
+        runBlocking { f.app.galleryDownloads.repair(task(f)!!.id) }; done(f)
+        assertTrue(f.app.galleries.isDownloaded(entry))
+        assertEquals(1, f.imageRequests.count { it.first == "ehentai" && it.second == 2 })
+        assertEquals(untouched, f.imageRequests.filter { it.first == "ehentai" && it.second != 2 }.size)
+        assertFalse(task(f)!!.partial)
+    }
+
+    @Test fun queuePriorityAndGroupsSurviveStoreRecreation() = ComposeFixture().use { f ->
+        notifications(f); f.launch(); waitHome()
+        val first = runBlocking { f.app.galleryDownloads.add(f.video("ehentai")); f.app.galleryDownloads.add(f.video("nhentai")) }
+        runBlocking { f.app.galleryDownloads.pause(first.id) }
+        val second = task(f, "nhentai")!!
+        runBlocking { f.app.galleryDownloads.pause(second.id) }
+        f.app.galleryDownloads.prioritize(second.id); f.app.galleryDownloads.setGroup(second.id, "周末")
+        val restored = GalleryDownloadStore(f.ins.targetContext, f.app.galleries, f.app.network).task(second.id)!!
+        assertTrue(restored.priority > task(f)!!.priority); assertEquals("周末", restored.group)
+        f.app.galleryDownloads.move(second.id, 1)
+        assertTrue(task(f, "nhentai")!!.priority >= 0)
+    }
+
+    @Test fun temporary503RetriesAndPersistent503BecomesClassifiedFailure() = ComposeFixture().use { f ->
+        notifications(f); f.launch(); waitHome()
+        f.imageHttpStatus = 503; f.imageHttpFailures = 1
+        runBlocking { f.app.galleryDownloads.add(f.video("ehentai")) }; done(f)
+        assertTrue(f.app.galleries.isDownloaded(f.video("ehentai")))
+        f.imageHttpFailures = 99
+        runBlocking { f.app.galleryDownloads.add(f.video("nhentai")) }
+        ui.waitUntil(25000) { task(f, "nhentai")?.state == GalleryDownloadState.FAILED }
+        val failed = task(f, "nhentai")!!
+        assertEquals(GalleryFailureKind.NETWORK, failed.failure); assertEquals(GalleryDownloadStage.DOWNLOADING_PAGE, failed.stage)
+        assertTrue(failed.error.contains("503"))
+    }
+
+    @Test fun longRateLimitWaitPersistsAndManualPauseCancelsIt() = ComposeFixture().use { f ->
+        notifications(f); f.launch(); waitHome()
+        f.imageHttpStatus = 429; f.imageHttpFailures = 1; f.imageRetryAfter = "120"
+        runBlocking { f.app.galleryDownloads.add(f.video("nhentai")) }
+        ui.waitUntil(15000) { task(f, "nhentai")?.state == GalleryDownloadState.RETRY_WAIT }
+        val waiting = task(f, "nhentai")!!
+        assertEquals(GalleryFailureKind.RATE_LIMIT, waiting.failure)
+        assertTrue(waiting.retryAt > System.currentTimeMillis() + 60_000)
+        runBlocking { f.app.galleryDownloads.pause(waiting.id) }
+        assertEquals(GalleryDownloadState.PAUSED, task(f, "nhentai")!!.state); assertEquals(0, task(f, "nhentai")!!.retryAt)
+    }
+
     @Test fun legacyFilesStayInPlaceAndDeletionKeepsOtherSites() = ComposeFixture().use { f ->
         val files = listOf("r34v", "hanime1").associateWith { site -> File(f.app.filesDir, "legacy-download-${f.nonce}-$site.mp4").apply { writeBytes(byteArrayOf(1, 2, 3)) } }
         try {

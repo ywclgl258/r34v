@@ -75,6 +75,7 @@ class PhotoArchiveAdapter(
         return GalleryDetail(
             entry = entry, pageCount = total, pageLinks = pageLinks, previewPageSize = firstImages.size,
             description = profile.description(first, total, pageCount), groups = profile.groups(first, site),
+            videoEntries = articleVideos(first, canonical),
         )
     }
 
@@ -95,7 +96,22 @@ class PhotoArchiveAdapter(
         error("这条内容的分页结构与记录不一致，请刷新后重试")
     }
 
-    override suspend fun detail(url: String): Detail = error("请使用阅读器打开写真集")
+    override suspend fun detail(url: String): Detail {
+        val canonical = profile.canonical(site, url) ?: error("无法识别 ${site.name} 内容地址")
+        val article = document(profile.pageUrl(canonical, 1))
+        val (video, embed) = CossoraProtocol.select(article.outerHtml(), canonical, url)
+        val media = CossoraProtocol.media(document(embed.url).outerHtml(), embed)
+        val title = profile.title(article)
+        return Detail(
+            video = video.copy(title = "$title · ${video.title}", thumb = media.poster),
+            streams = listOf(media.stream), groups = profile.groups(article, site),
+            description = "$title 的文章内视频。图片请返回写真集阅读。",
+            related = emptyList(), comments = emptyList(), downloads = emptyList(),
+        )
+    }
+
+    private fun articleVideos(article: Document, canonical: String): List<Video> =
+        if (site.id == SiteRegistry.COSPLAYTELE.id) CossoraProtocol.videos(article.outerHtml(), canonical) else emptyList()
 
     override suspend fun index(section: String): List<Link> {
         val url = profile.indexUrl(site, section) ?: return emptyList()
@@ -195,8 +211,8 @@ interface PhotoProfile {
 /**
  * The WordPress-shaped archives: everia.club, 4kup.net and cosplaytele.com.
  *
- * They differ only in card markup, article container and whether a post is split over
- * `/post-slug/N/` content pages.
+ * Their card markup, article containers and content-page routes differ. Cosplaytele's supported
+ * video embeds stay separate from the image-gallery profile and never become gallery pages.
  */
 class WordPressPhotoProfile(
     private val latestPath: String = "/",

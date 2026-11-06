@@ -63,6 +63,7 @@ class PlayerActivity : ComponentActivity() {
     private var phase by mutableStateOf<String?>("正在连接放映厅")
     private var hint by mutableStateOf("")
     private var userRate by mutableFloatStateOf(1f)
+    private var playbackPreferences by mutableStateOf(PlaybackPreferences())
     private var failureVisible by mutableStateOf(false)
     private var revision by mutableIntStateOf(0)
     private var position = 0L
@@ -91,7 +92,11 @@ class PlayerActivity : ComponentActivity() {
         local = intent.getStringExtra("local"); offlineId = intent.getStringExtra("download"); cachedKey = intent.getStringExtra("cached")
         sourceRoot = intent.getStringExtra("root").orEmpty()
         position = savedInstanceState?.getLong("position") ?: store.watch(video.id, video.site)?.takeUnless { it.finished }?.position?.times(1000) ?: 0
-        userRate = store.string("native_speed", "1.0").toFloatOrNull()?.coerceIn(.25f, 3f) ?: 1f
+        val globalRate = store.string("native_speed", "1.0").toFloatOrNull()?.coerceIn(.25f, 3f) ?: 1f
+        playbackPreferences = store.personal.playback(video.site).let { prefs ->
+            if (store.personal.snapshot().playbackPreferences.containsKey(video.site)) prefs else prefs.copy(defaultRate = globalRate)
+        }
+        userRate = playbackPreferences.defaultRate
         fullscreen = savedInstanceState?.getBoolean("fullscreen") ?: false
         autoFullscreenApplied = savedInstanceState?.getBoolean("autoFullscreenApplied") ?: false
         resumePlay = savedInstanceState?.getBoolean("resumePlay") ?: true
@@ -268,7 +273,8 @@ class PlayerActivity : ComponentActivity() {
             QueueNextAction(this@PlayerActivity, video, intent.getStringExtra("queue_session"), dialogs)
             if (timerRemaining > 0) TextAction(::sleepTimer) { Text("将在 ${timeText(timerRemaining)} 后暂停") }
             detail?.let { data ->
-                if (data.description.isNotBlank()) Expandable("简介", true) { Copy(data.description) }
+                val mediaDuration = (player?.duration?.takeIf { it > 0 } ?: durationSeconds(video.duration) * 1000)
+                if (data.description.isNotBlank()) Expandable("简介", true) { TimestampText(data.description, mediaDuration, ::seekTimestamp) }
                 data.groups.filterValues { it.isNotEmpty() }.forEach { (name, links) -> Expandable("$name · ${links.size}") { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { links.forEach { link ->
                     val translated = if (store.bool("translate_tags", true)) TagNames.lookup(this@PlayerActivity, link.slug) else null
                     Box(Modifier.combinedClickable(onClick = { startActivity(Intent(this@PlayerActivity, MainActivity::class.java).putExtra("link", link.url)) }, onLongClick = {
@@ -278,7 +284,7 @@ class PlayerActivity : ComponentActivity() {
                         Text(translated ?: link.label, fontSize = 12.sp)
                     }
                 } } } }
-                if (data.comments.isNotEmpty()) Expandable("评论 · ${data.comments.size}") { data.comments.forEach { Copy("${it.author}  ${it.date}"); Text(it.text, fontSize = 12.sp, lineHeight = 18.sp) } }
+                if (data.comments.isNotEmpty()) Expandable("评论 · ${data.comments.size}") { data.comments.forEach { Copy("${it.author}  ${it.date}"); TimestampText(it.text, mediaDuration, ::seekTimestamp) } }
                 if (data.related.isNotEmpty()) { Title("相关推荐"); data.related.filter(store::allowed).take(24).chunked(2).forEach { pair -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     pair.forEach { related -> MediaCard(related, Modifier.weight(1f)) { startActivity(Intent(this@PlayerActivity, PlayerActivity::class.java).putExtra("video", store.gson.toJson(related))) } }; if (pair.size == 1) Spacer(Modifier.weight(1f))
                 } } }
@@ -292,9 +298,83 @@ class PlayerActivity : ComponentActivity() {
     private fun speed() { val rates = listOf(.25f, .5f, .75f, 1f, 1.25f, 1.5f, 2f, 3f); dialogs.choose("播放速度", rates.map { "${it}×" }, rates.indexOf(userRate)) { userRate = rates[it]; store.set("native_speed", userRate.toString()); player?.setPlaybackSpeed(userRate) } }
     private fun playbackOptions() {
         val pip = Build.VERSION.SDK_INT >= 26 && packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
-        val choices = listOf("重新播放", "锁定画面，防止误触", "定时暂停", "清晰度", "播放速度") + if (pip) listOf("进入画中画") else emptyList()
+        val choices = listOf("重新播放", "锁定画面，防止误触", "定时暂停", "清晰度", "播放速度", "时间书签与片段", "播放偏好") + if (pip) listOf("进入画中画") else emptyList()
         dialogs.choose("播放操作", choices) {
-            when (it) { 0 -> restart(); 1 -> { locked = true; controls = false }; 2 -> sleepTimer(); 3 -> quality(); 4 -> speed(); 5 -> pictureInPicture() }
+            when (it) { 0 -> restart(); 1 -> { locked = true; controls = false }; 2 -> sleepTimer(); 3 -> quality(); 4 -> speed(); 5 -> timeBookmarks(); 6 -> playbackPreferenceOptions(); 7 -> pictureInPicture() }
+        }
+    }
+    private fun seekTimestamp(target: Long) {
+        val duration = player?.duration?.takeIf { it > 0 } ?: Long.MAX_VALUE
+        position = target.coerceIn(0, duration); player?.seekTo(position); controls = true; gestureHint("已跳到 ${timeText(position)}")
+    }
+    private fun timeBookmarks() {
+        dialogs.content = {
+            val changed by store.personal.changes.collectAsState()
+            val marks = remember(changed, video.entryKey) { store.personal.timeBookmarks(video) }
+            AlertDialog(dialogs::dismiss, title = { Text("时间书签与片段") }, text = {
+                Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TextAction({ dialogs.dismiss(); addTimeBookmark() }) { Text("添加当前位置 · ${timeText(player?.currentPosition ?: position)}") }
+                    if (marks.isEmpty()) Copy("为当前视频保存时间点、备注和分组；备份时会一并导出。")
+                    marks.groupBy { it.group.ifBlank { "时间点" } }.forEach { (group, entries) ->
+                        Title(group)
+                        entries.forEach { mark ->
+                            Column(Modifier.fillMaxWidth().contentPanel(12).padding(10.dp)) {
+                                Text(timeText(mark.positionMs), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                                if (mark.note.isNotBlank()) Copy(mark.note)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextAction({ dialogs.dismiss(); seekTimestamp(mark.positionMs) }) { Text("跳转") }
+                                    TextAction({ store.personal.removeTimeBookmark(mark.id) }) { Text("删除") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }, confirmButton = { TextAction(dialogs::dismiss) { Text("关闭") } })
+        }
+    }
+    private fun addTimeBookmark() {
+        val target = (player?.currentPosition ?: position).coerceAtLeast(0)
+        dialogs.content = {
+            var note by remember { mutableStateOf("") }; var group by remember { mutableStateOf("时间点") }
+            AlertDialog(dialogs::dismiss, title = { Text("添加 ${timeText(target)} 时间书签") }, text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TextField(note, { note = it }, Modifier.fillMaxWidth(), label = { Text("备注（可选）") }, colors = filledFieldColors())
+                    TextField(group, { group = it }, Modifier.fillMaxWidth(), label = { Text("分组") }, singleLine = true, colors = filledFieldColors())
+                }
+            }, confirmButton = { TextAction({
+                if (note.length <= 500 && group.trim().length <= 80) {
+                    store.personal.saveTimeBookmark(TimeBookmark(video = video, positionMs = target, note = note.trim(), group = group.trim().ifBlank { "时间点" }))
+                    dialogs.dismiss(); toast("已保存时间书签")
+                }
+            }) { Text("保存") } }, dismissButton = { TextAction(dialogs::dismiss) { Text("取消") } })
+        }
+    }
+    private fun playbackPreferenceOptions() {
+        fun save(value: PlaybackPreferences) { playbackPreferences = value.validated(); store.personal.setPlayback(video.site, playbackPreferences) }
+        dialogs.content = {
+            AlertDialog(dialogs::dismiss, title = { Text("${SiteRegistry.byIdOrDefault(video.site).name} · 播放偏好") }, text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Selector("默认倍速 · ${playbackPreferences.defaultRate}×") {
+                        val values = listOf(.5f, .75f, 1f, 1.25f, 1.5f, 2f, 3f)
+                        dialogs.choose("默认倍速", values.map { "${it}×" }, values.indexOf(playbackPreferences.defaultRate)) { selected ->
+                            save(playbackPreferences.copy(defaultRate = values[selected])); userRate = values[selected]; player?.setPlaybackSpeed(userRate); playbackPreferenceOptions()
+                        }
+                    }
+                    Selector("长按倍速 · ${playbackPreferences.holdRate}×") {
+                        val values = listOf(1.5f, 2f, 2.5f, 3f, 4f)
+                        dialogs.choose("长按倍速", values.map { "${it}×" }, values.indexOf(playbackPreferences.holdRate)) { save(playbackPreferences.copy(holdRate = values[it])); playbackPreferenceOptions() }
+                    }
+                    Selector("快进 / 快退 · ${playbackPreferences.seekStepMs / 1000} 秒") {
+                        val values = listOf(5_000L, 10_000L, 15_000L, 30_000L, 60_000L)
+                        dialogs.choose("快进步长", values.map { "${it / 1000} 秒" }, values.indexOf(playbackPreferences.seekStepMs)) { save(playbackPreferences.copy(seekStepMs = values[it])); playbackPreferenceOptions() }
+                    }
+                    Selector("整屏进度手势 · ${playbackPreferences.gestureRangeMs / 1000} 秒") {
+                        val values = listOf(30_000L, 60_000L, 120_000L, 300_000L, 600_000L)
+                        dialogs.choose("手势灵敏度", values.map { "整屏 ${it / 1000} 秒" }, values.indexOf(playbackPreferences.gestureRangeMs)) { save(playbackPreferences.copy(gestureRangeMs = values[it])); playbackPreferenceOptions() }
+                    }
+                    Copy("只覆盖当前来源，点选后立即保存并作用于当前播放。“取消”仅关闭选项，不撤销已保存值；其他来源和播放器音量逻辑保持不变。")
+                }
+            }, confirmButton = { TextAction(dialogs::dismiss) { Text("完成") } })
         }
     }
     private fun sleepTimer() {
@@ -343,13 +423,13 @@ class PlayerActivity : ComponentActivity() {
         val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean { x = e.x; y = e.y; start = player?.currentPosition ?: 0; mode = 0; hold = false; brightness = window.attributes.screenBrightness.takeIf { it >= 0 } ?: .5f; volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC); return true }
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean { controls = !controls; return true }
-            override fun onDoubleTap(e: MotionEvent): Boolean { when { e.x < view.width * .4f -> { player?.seekTo((start - 10000).coerceAtLeast(0)); gestureHint("后退 10 秒") }; e.x > view.width * .6f -> { player?.seekTo((start + 10000).coerceAtMost(player?.duration?.takeIf { it > 0 } ?: Long.MAX_VALUE)); gestureHint("前进 10 秒") }; else -> fullscreen = !fullscreen }; return true }
-            override fun onLongPress(e: MotionEvent) { hold = true; player?.setPlaybackSpeed(2f); gestureHint("2× 临时倍速") }
+            override fun onDoubleTap(e: MotionEvent): Boolean { when { e.x < view.width * .4f -> { player?.seekTo((start - playbackPreferences.seekStepMs).coerceAtLeast(0)); gestureHint("后退 ${playbackPreferences.seekStepMs / 1000} 秒") }; e.x > view.width * .6f -> { player?.seekTo((start + playbackPreferences.seekStepMs).coerceAtMost(player?.duration?.takeIf { it > 0 } ?: Long.MAX_VALUE)); gestureHint("前进 ${playbackPreferences.seekStepMs / 1000} 秒") }; else -> fullscreen = !fullscreen }; return true }
+            override fun onLongPress(e: MotionEvent) { hold = true; player?.setPlaybackSpeed(playbackPreferences.holdRate); gestureHint("${playbackPreferences.holdRate}× 临时倍速") }
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
                 val dx = e2.x - x; val dy = e2.y - y
                 if (mode == 0 && (kotlin.math.abs(dx) > dp(12) || kotlin.math.abs(dy) > dp(12))) mode = if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) 1 else if (x < view.width / 2f) 2 else 3
                 when (mode) {
-                    1 -> { val duration = player?.duration?.takeIf { it > 0 } ?: return true; seek = (start + dx / view.width * 120000).toLong().coerceIn(0, duration); gestureHint(timeText(seek)) }
+                    1 -> { val duration = player?.duration?.takeIf { it > 0 } ?: return true; seek = (start + dx / view.width * playbackPreferences.gestureRangeMs).toLong().coerceIn(0, duration); gestureHint(timeText(seek)) }
                     2 -> { val value = (brightness - dy / view.height).coerceIn(.02f, 1f); window.attributes = window.attributes.apply { screenBrightness = value }; gestureHint("亮度 ${(value * 100).toInt()}%") }
                     3 -> { val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC); val value = (volume - dy / view.height * max).toInt().coerceIn(0, max); audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0); gestureHint("音量 ${value * 100 / max.coerceAtLeast(1)}%") }
                 }; return true

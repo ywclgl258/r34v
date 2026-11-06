@@ -30,9 +30,12 @@ class CrossSearchState : ViewModel() {
     private val jobs = mutableMapOf<String, Job>()
     private val permits = Semaphore(3)
     private var languages: Map<String, String> = emptyMap()
-    fun search(app: R34Application, query: String, sites: List<String>, force: Boolean = false, languageOverrides: Map<String, String> = emptyMap()) {
-        val key = "$query|${sites.joinToString()}|$languageOverrides|" + sites.joinToString { "${app.library.galleryLanguage(it)}:${app.library.blockedTags(it)}" }
+    private var condition = SearchCondition()
+    fun search(app: R34Application, query: String, sites: List<String>, force: Boolean = false, languageOverrides: Map<String, String> = emptyMap(), condition: SearchCondition? = null) {
+        val effective = (condition ?: SearchCondition(query)).copy(query = query).normalized()
+        val key = "$effective|${sites.joinToString()}|$languageOverrides|" + sites.joinToString { "${app.library.galleryLanguage(it)}:${app.library.blockedTags(it)}" }
         if (!force && key == signature) return
+        this.condition = effective
         languages = languageOverrides
         jobs.values.forEach { it.cancel() }; jobs.clear(); generation++; signature = key
         buckets = sites.associateWith { SearchBucket() }
@@ -53,7 +56,8 @@ class CrossSearchState : ViewModel() {
                     if (siteId == "exhentai" && !app.network.session.hasGallerySession(site)) error("本站需要登录，请在站点设置中完成认证")
                     val adapter = AdapterRegistry.adapter(site, app.network)
                     check(Capability.SEARCH in adapter.capabilities) { "本站不支持关键词搜索" }
-                    app.repository.feed(adapter.searchRequest(query, FeedKind.SEARCH).copy(page = bucket.next, cursor = bucket.cursor,
+                    app.repository.feed(adapter.searchRequest(condition.query, FeedKind.SEARCH).copy(page = bucket.next, cursor = bucket.cursor,
+                        includeTags = condition.includeTags, excludeTags = condition.excludeTags, filter = condition.filter,
                         language = if (adapter.supportsLanguage) GalleryLanguage.entries.firstOrNull { it.name == languages[siteId] } ?: app.library.galleryLanguage(siteId) else GalleryLanguage.ALL), site)
                 }
                 ensureActive()
@@ -88,22 +92,27 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
 
 @Composable fun CrossSearchScreen(app: R34Application, state: CrossSearchState, query: String, sites: List<String>,
     play: (Video) -> Unit, favorite: (Video) -> Unit, rulesVersion: Int, initialCategory: String = "", languages: Map<String, String> = emptyMap(),
-    categoryChanged: (String) -> Unit = {}, save: (() -> Unit)? = null) {
+    categoryChanged: (String) -> Unit = {}, save: (() -> Unit)? = null, condition: SearchCondition? = null) {
     var category by rememberSaveable(initialCategory) { mutableIntStateOf(SiteCategory.entries.indexOfFirst { it.name == initialCategory } + 1) }
-    LaunchedEffect(query, sites, rulesVersion, languages) { state.search(app, query, sites, languageOverrides = languages) }
+    LaunchedEffect(query, sites, rulesVersion, languages, condition) { state.search(app, query, sites, languageOverrides = languages, condition = condition) }
     LazyColumn(Modifier.fillMaxSize().testTag("cross-search-results"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
-            Title("搜索：$query")
+            Title(if (query.isBlank()) "高级条件搜索" else "搜索：$query")
+            if (condition != null && !condition.isEmpty) Copy("已应用组合条件；各来源的实际筛选范围如下。")
             Choices(listOf("全部") + SiteCategory.entries.map { it.title }, category) { category = it; categoryChanged(if (it == 0) "" else SiteCategory.entries[it - 1].name) }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextAction({ state.search(app, query, sites, force = true, languageOverrides = languages) }) { Text("刷新全部来源") }
+                TextAction({ state.search(app, query, sites, force = true, languageOverrides = languages, condition = condition) }) { Text("刷新全部来源") }
                 if (save != null) TextAction(save) { Text("保存搜索方案") }
             }
         }
         sites.filter { category == 0 || SiteRegistry.byIdOrDefault(it).category == SiteCategory.entries[category - 1] }.forEach { id ->
             val site = SiteRegistry.byIdOrDefault(id)
             val bucket = state.buckets[id] ?: SearchBucket(busy = true)
-            item(key = "$id:title") { Title("${site.name} · ${bucket.videos.size} 项"); if (bucket.cached) Copy("离线缓存结果") }
+            item(key = "$id:title") {
+                Title("${site.name} · ${bucket.videos.size} 项")
+                if (condition != null && !condition.isEmpty) Copy(filterScope(id))
+                if (bucket.cached) Copy("离线缓存结果")
+            }
             items(bucket.videos.chunked(2), key = { "$id:${it.first().id}" }) { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     row.forEach { video -> MediaCard(video, Modifier.weight(1f), menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) } }

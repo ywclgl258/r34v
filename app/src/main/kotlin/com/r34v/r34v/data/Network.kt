@@ -134,9 +134,8 @@ class Network(private val context: Context, private val store: LibraryStore) {
                 chain.proceed(request.build())
             }.build()
     }
-    suspend fun diagnose(): String = withContext(Dispatchers.IO) {
+    suspend fun diagnose(site: SiteContext = SiteRegistry.current): String = withContext(Dispatchers.IO) {
         val start = System.currentTimeMillis()
-        val site = SiteRegistry.current
         try {
             val result = AdapterRegistry.adapter(site, this@Network).feed(AdapterRegistry.adapter(site, this@Network).homeRequest())
             "实时请求成功 · ${System.currentTimeMillis() - start} ms\n${site.name} · ${result.videos.size} 个条目\n${routeDescription(site.base)}\n$lastPeer"
@@ -147,7 +146,7 @@ class Network(private val context: Context, private val store: LibraryStore) {
     }
     private suspend fun getText(request: Request): String {
         return client.readResponse(request) { response ->
-            if (!response.isSuccessful) error("请求失败：HTTP ${response.code}")
+            if (!response.isSuccessful) throw GalleryResponseException(response.code, response.header("Retry-After"), "请求失败：HTTP ${response.code}")
             response.body?.string().orEmpty()
         }
     }

@@ -68,7 +68,9 @@ class HanimeAdapter(
     override suspend fun feed(request: FeedRequest): FeedPage {
         val url = resolve(request)
         val doc = Jsoup.parse(network.html(url))
-        val videos = parseCards(doc, site)
+        val videos = parseCards(doc, site).let { cards ->
+            if (request.filter.maxDurationSec > 0 || request.filter.minRating > 0) cards.filter(request.filter::matchesLoaded) else cards
+        }
         // The listing is a plain infinite-ish pager; the pagination block exposes the last page.
         val total = doc.select("ul.pagination a[href*=page]").mapNotNull {
             Regex("[?&]page=(\\d+)").find(it.attr("href"))?.groupValues?.get(1)?.toIntOrNull()
@@ -125,6 +127,7 @@ class HanimeAdapter(
 
         /** hanime1 routes everything through `/search?...`, so the KVS path builder must not be used. */
         fun resolve(site: SiteContext, request: FeedRequest): String {
+            request.filter.validate()
             val params = linkedMapOf<String, String>()
             when (request.kind) {
                 FeedKind.SEARCH -> if (request.target.isNotBlank()) params["query"] = request.target
@@ -139,13 +142,20 @@ class HanimeAdapter(
                     else sortKey[key]?.let { params["sort"] = it }
                 }
             }
-            // A sort only makes sense together with a plain listing; the site ignores it otherwise.
-            if (params["genre"] == null && params["query"] == null && params["tags[]"] == null) {
+            if (request.filter.category.isNotBlank() && params["genre"] == null) params["genre"] = request.filter.category
+            if (request.filter.brand.isNotBlank()) params["brands[]"] = request.filter.brand
+            if (request.filter.year > 0) params["year"] = "${request.filter.year} 年"
+            if (request.filter.month > 0) params["month"] = "${request.filter.month} 月"
+            val minimum = (request.filter.minDurationSec + 59) / 60
+            val maximum = request.filter.maxDurationSec / 60
+            if (minimum > 0) params["duration"] = "$minimum 分鐘 +" else if (maximum > 0) params["duration"] = "0 - $maximum 分鐘"
+            if (params["genre"] == null && params["query"] == null && params["tags[]"] == null && request.includeTags.isEmpty()) {
                 if (request.kind == FeedKind.LATEST && request.target in listOf("", "recent") && request.sort in listOf(Sort.VIEWS, Sort.RATING, Sort.DURATION)) params["sort"] = request.sort.hanime
                 if (params["sort"] == null) params["sort"] = request.sort.hanime.ifBlank { "最新上市" }
             }
             if (request.page > 1) params["page"] = request.page.toString()
-            val query = params.entries.joinToString("&") { (k, v) ->
+            val pairs = params.entries.map { it.key to it.value } + request.includeTags.map { "tags[]" to it }
+            val query = pairs.joinToString("&") { (k, v) ->
                 "${java.net.URLEncoder.encode(k, "UTF-8")}=${java.net.URLEncoder.encode(v, "UTF-8")}"
             }
             return "${site.base}/search?$query"

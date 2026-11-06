@@ -101,6 +101,40 @@ class EhAdapterTest {
         repository.clear(SiteRegistry.EXHENTAI)
         assertEquals(2, repository.cacheInfo(SiteRegistry.EHENTAI).first)
     }
+    @Test fun connectionFailureRefreshesButCertificateFailureDoesNotWriteOrReload() = fixture { _, network, source, context ->
+        val repository = GalleryRepository(context, network)
+        val adapter = EhAdapter(SiteRegistry.EHENTAI, network)
+        val entry = adapter.feed(FeedRequest()).videos.single()
+        val detail = repository.prepareDownload(entry)
+        source.resetImagePage = 1; source.resetImageFailures = 1
+        repository.downloadPage(entry, 1, detail.pageLinks.first().url)
+        val reload = source.requests.first { it.url.queryParameter("nl") == "reload-1" }
+        assertEquals("https://e-hentai.org/s/a1/8888-1?nl=reload-1", reload.url.toString())
+        assertTrue(source.requests.any { it.url.host == "sample.hath.network" && it.header("Referer") == reload.url.toString() })
+        val imageCalls = source.requests.count { it.url.host == "sample.hath.network" }
+        repository.downloadPage(entry, 1, detail.pageLinks.first().url)
+        assertEquals("completed pages must not download again", imageCalls, source.requests.count { it.url.host == "sample.hath.network" })
+
+        source.certificateImagePage = 2
+        assertThrows(javax.net.ssl.SSLHandshakeException::class.java) {
+            kotlinx.coroutines.runBlocking { repository.downloadPage(entry, 2, adapter.galleryPageLink(detail, 2)) }
+        }
+        assertTrue(source.requests.none { it.url.encodedPath.endsWith("8888-2") && it.url.queryParameter("nl") != null })
+        assertEquals(listOf(1), repository.auditDownload(entry).validPages)
+        assertFalse(repository.isDownloaded(entry))
+    }
+
+    @Test fun unexpectedImageRedirectUsesThePageReloadInsteadOfAcceptingAnotherHost() = fixture { _, network, source, context ->
+        val repository = GalleryRepository(context, network)
+        val adapter = EhAdapter(SiteRegistry.EHENTAI, network)
+        val entry = adapter.feed(FeedRequest()).videos.single()
+        val detail = repository.prepareDownload(entry)
+        source.redirectImagePage = 1
+        repository.downloadPage(entry, 1, detail.pageLinks.first().url)
+        assertEquals(1, source.requests.count { it.url.queryParameter("nl") == "reload-1" })
+        assertEquals(2, source.requests.count { it.url.host == "sample.hath.network" && it.url.encodedPath.endsWith("page1.png") })
+    }
+
     @Test fun readingProgressIsSavedToTheGalleryOwnerEvenAfterSwitching() = fixture { store, _, _, _ ->
         val entry = Video("8888", "City sketchbook", "https://e-hentai.org/g/8888/abcdef1234/", site = "ehentai", mediaKind = MediaKind.GALLERY)
         store.switchSite("exhentai")

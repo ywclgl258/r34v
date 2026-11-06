@@ -29,7 +29,8 @@ import kotlinx.coroutines.*
 }
 
 @Composable fun PersonalHomeScreen(app: R34Application, catalog: List<CatalogEntry>, play: (Video) -> Unit,
-    waiting: () -> Unit, updates: () -> Unit, search: (SavedSearch?) -> Unit, discover: () -> Unit) {
+    waiting: () -> Unit, updates: () -> Unit, search: (SavedSearch?) -> Unit, discover: () -> Unit,
+    channel: (DiscoveryChannel) -> Unit = {}, manageChannels: () -> Unit = {}) {
     val personal by app.library.personal.changes.collectAsState()
     val snapshot = remember(personal) { app.library.personal.snapshot() }
     val later = snapshot.shelves.firstOrNull { it.id == PersonalLibrary.WATCH_LATER }?.entries.orEmpty().filterNot { it.completed }
@@ -49,6 +50,13 @@ import kotlinx.coroutines.*
         }
         item { FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Action("稍后看 · ${later.size}", click = waiting); Action("订阅更新 · $unread", click = updates) } }
         if (snapshot.savedSearches.isNotEmpty()) item { Title("常用搜索"); Spacer(Modifier.height(8.dp)); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { snapshot.savedSearches.take(12).forEach { saved -> Choice(saved.name) { search(saved) } }; Choice("去搜索") { search(null) } } }
+        if (snapshot.channels.isNotEmpty()) item {
+            Row(verticalAlignment = Alignment.CenterVertically) { Title("我的频道", Modifier.weight(1f)); TextAction(manageChannels) { Text("管理频道") } }
+            Spacer(Modifier.height(8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                snapshot.channels.filterNot { it.hidden }.sortedBy { it.order }.take(12).forEach { saved -> Choice(saved.name) { channel(saved) } }
+            }
+        }
         if (continuing.size > 1) item { Title("继续观看与阅读"); Spacer(Modifier.height(10.dp)); LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) { items(continuing.drop(1).take(12), key = { it.video.entryKey }) { entry -> Column(Modifier.width(130.dp)) { MediaCard(entry.video) { play(entry.video) }; Copy(entry.progress) } } } }
         if (later.isNotEmpty()) item { Row(verticalAlignment = Alignment.CenterVertically) { Title("下一部，已经选好", Modifier.weight(1f)); TextAction(waiting) { Text("查看片单") } }; LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) { items(later.take(12), key = { it.video.entryKey }) { value -> MediaCard(value.video, Modifier.width(130.dp)) { play(value.video) } } } }
         item { Action("浏览当前来源的最新内容", modifier = Modifier.fillMaxWidth(), click = discover) }

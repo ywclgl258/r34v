@@ -19,6 +19,10 @@ internal class EhFixtures {
     var offline = false
     var rejectEx = false
     var quotaPage = 0
+    var resetImagePage = 0
+    var resetImageFailures = 0
+    var certificateImagePage = 0
+    var redirectImagePage = 0
     val cookie = "ipb_member_id=12345; ipb_pass_hash=0123456789abcdef0123456789abcdef; igneous=fixture"
     private val pictures = (1..5).associateWith(::picture)
     private fun picture(page: Int): ByteArray {
@@ -55,6 +59,20 @@ internal class EhFixtures {
             request.url.host == "rule34video.com" -> { bytes = "<div class='thumbs'></div><button class='page-of'>Page 1 of 1</button>".toByteArray(); type = "text/html" }
             request.url.host == "sample.hath.network" || request.url.host == "ehgt.org" -> {
                 val index = Regex("page(\\d+)").find(path)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+                when {
+                    certificateImagePage == index -> throw javax.net.ssl.SSLHandshakeException("fixture untrusted chain").apply {
+                        initCause(java.security.cert.CertPathValidatorException("fixture PKIX failure"))
+                    }
+                    resetImagePage == index && resetImageFailures > 0 -> {
+                        resetImageFailures--
+                        throw javax.net.ssl.SSLHandshakeException("Read error: ssl=0x1: I/O error during system call, Connection reset by peer")
+                    }
+                    redirectImagePage == index -> {
+                        redirectImagePage = 0
+                        return Response.Builder().request(request.newBuilder().url("https://sample.hath.network/redirected.png").build())
+                            .protocol(Protocol.HTTP_1_1).code(200).message("Unexpected redirect").body(pictures.getValue(index).toResponseBody("image/png".toMediaType())).build()
+                    }
+                }
                 bytes = pictures[index] ?: pictures.getValue(1); type = "image/png"
             }
             rejectEx && request.url.host == "exhentai.org" -> { bytes = "GIF89a".toByteArray(); type = "image/gif" }

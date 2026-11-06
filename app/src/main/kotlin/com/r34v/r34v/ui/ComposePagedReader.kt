@@ -26,41 +26,44 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable fun PagedComicReader(count: Int, jump: ReaderJump, mode: ReaderMode,
     load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage, toggle: () -> Unit,
-    position: (Int, GalleryImage?, Int) -> Unit, attachSave: ((() -> Unit)?) -> Unit) {
+    position: (Int, GalleryImage?, Int) -> Unit, attachSave: ((() -> Unit)?) -> Unit,
+    fit: ReaderFit = ReaderFit.WIDTH, cropPercent: Int = 0, combineCover: Boolean = true) {
     val config = LocalConfiguration.current
     val spread = if (mode == ReaderMode.SPREAD && config.screenWidthDp > config.screenHeightDp) 2 else 1
-    key(spread, mode) {
+    key(spread, mode, combineCover) {
         val scope = rememberCoroutineScope()
         val buffer = remember { ReaderBuffer(count, scope, load) }
-        val pager = rememberPagerState(initialPage = (jump.page - 1) / spread) { (count + spread - 1) / spread }
+        val sheets = remember(count, spread, combineCover) { readerSheets(count, spread, combineCover) }
+        val initial = sheets.indexOfFirst { jump.page in it }.coerceAtLeast(0)
+        val pager = rememberPagerState(initialPage = initial) { sheets.size }
         var pending by remember { mutableStateOf<ReaderJump?>(jump) }
         val currentPosition by rememberUpdatedState(position)
         fun logicalPage(): Int {
-            val first = pager.settledPage * spread + 1
-            return if (jump.page in first until minOf(first + spread, count + 1)) jump.page else first
+            val sheet = sheets[pager.settledPage.coerceIn(0, sheets.lastIndex)]
+            return if (jump.page in sheet) jump.page else sheet.first()
         }
         fun save() { if (pending == null) { val page = logicalPage(); currentPosition(page, buffer.pages[page]?.image, 0) } }
         DisposableEffect(buffer) { attachSave(::save); onDispose { save(); attachSave(null); buffer.close() } }
         LaunchedEffect(jump) {
-            pending = jump; pager.scrollToPage((jump.page.coerceIn(1, count) - 1) / spread)
+            pending = jump; pager.scrollToPage(sheets.indexOfFirst { jump.page in it }.coerceAtLeast(0))
             withFrameNanos { }; pending = null
         }
         LaunchedEffect(pager, jump) {
             snapshotFlow { Triple(pager.settledPage, buffer.pages[logicalPage()]?.image, pending) }.distinctUntilChanged().collect {
-                val first = pager.settledPage * spread + 1
-                buffer.window(first, (first until minOf(first + spread, count + 1)).toSet())
+                val sheet = sheets[pager.settledPage.coerceIn(0, sheets.lastIndex)]
+                buffer.window(sheet.first(), sheet.toSet())
                 save()
             }
         }
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             HorizontalPager(pager, Modifier.fillMaxSize().testTag("paged-reader"), reverseLayout = mode == ReaderMode.RIGHT_TO_LEFT,
-                beyondViewportPageCount = 0) { sheet ->
-                val first = sheet * spread + 1
+                beyondViewportPageCount = 0) { sheetIndex ->
+                val sheet = sheets[sheetIndex]
                 Row(Modifier.fillMaxSize()) {
-                    (first until minOf(first + spread, count + 1)).forEach { number ->
-                        ReaderLeaf(number, buffer.pages[number], buffer.errors[number], Modifier.weight(1f).fillMaxHeight(), toggle) { buffer.retry(number) }
+                    sheet.forEach { number ->
+                        ReaderLeaf(number, buffer.pages[number], buffer.errors[number], Modifier.weight(1f).fillMaxHeight(), toggle, fit, cropPercent) { buffer.retry(number) }
                     }
-                    if (spread == 2 && first == count) Spacer(Modifier.weight(1f))
+                    if (sheet.size == 1 && spread == 2) Spacer(Modifier.weight(1f))
                 }
             }
         }
@@ -68,7 +71,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 }
 
 @Composable private fun ReaderLeaf(number: Int, rendered: GalleryRepository.RenderedPage?, error: String?, modifier: Modifier,
-    toggle: () -> Unit, retry: () -> Unit) {
+    toggle: () -> Unit, fit: ReaderFit, cropPercent: Int, retry: () -> Unit) {
     var zoom by remember(number) { mutableFloatStateOf(1f) }
     var pan by remember(number) { mutableStateOf(Offset.Zero) }
     val currentToggle by rememberUpdatedState(toggle)
@@ -91,7 +94,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         } }, contentAlignment = Alignment.Center) {
         when {
             rendered != null -> Image(rendered.bitmap.asImageBitmap(), "第 $number 页，双击或双指缩放", Modifier.fillMaxSize()
-                .graphicsLayer { scaleX = zoom; scaleY = zoom; translationX = pan.x; translationY = pan.y }, contentScale = ContentScale.Fit)
+                .graphicsLayer {
+                    val crop = 1f + cropPercent / 100f; scaleX = zoom * crop; scaleY = zoom * crop; translationX = pan.x; translationY = pan.y
+                }, contentScale = when (fit) { ReaderFit.WIDTH -> ContentScale.FillWidth; ReaderFit.HEIGHT -> ContentScale.FillHeight; ReaderFit.ORIGINAL -> ContentScale.None })
             error != null -> Column(Modifier.padding(16.dp)) { Copy("第 $number 页：$error"); Action("重试此页", click = retry) }
             else -> CircularProgressIndicator(Modifier.size(32.dp), color = BrandColor)
         }

@@ -71,4 +71,37 @@ class LiveIwaraProbe {
             File(dir, "iwara-live.txt").writeText(report.joinToString("\n"))
         }
     }
+
+    @Test fun publicGalleryApiDownloadAndOfflineDecode() = runBlocking {
+        val ins = InstrumentationRegistry.getInstrumentation()
+        val app = ins.targetContext.applicationContext as R34Application
+        val originalSite = app.library.siteId
+        val adapter = IwaraAdapter(SiteRegistry.IWARA, app.network)
+        val repository = GalleryRepository(app, app.network, app.storage)
+        var entry: Video? = null
+        val report = mutableListOf<String>()
+        try {
+            app.library.switchSite("iwara")
+            val data = app.network.json("${SiteRegistry.IWARA.apiBase}/images?sort=date&rating=general&limit=3&page=0")
+            val feed = IwaraProtocol.imageFeed(data, SiteRegistry.IWARA, FeedRequest(contentKind = MediaKind.GALLERY))
+            check(feed.videos.isNotEmpty()) { "No public general-rated gallery returned" }
+            entry = feed.videos.first()
+            val detail = adapter.gallery(entry.url)
+            check(detail.pageCount > 0)
+            repository.prepareDownload(entry)
+            repository.downloadPage(entry, 1, detail.pageLinks.first().url)
+            val rendered = repository.page(SiteRegistry.IWARA, detail.pageLinks.first().url, entry = entry, offlineOnly = true)
+            rendered.bitmap.recycle()
+            val audit = repository.auditDownload(entry)
+            check(audit.validPages.contains(1))
+            report.add("Gallery list: ${feed.videos.size}; readable pages: ${detail.pageCount}; first page downloaded and decoded offline")
+        } finally {
+            entry?.let { runCatching { repository.removeDownload(it) } }
+            app.library.switchSite(originalSite)
+            val output = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
+            val dir = if (output == null) ins.targetContext.filesDir else File(output).apply { mkdirs() }
+            File(dir, "iwara-gallery-live.txt").writeText(report.joinToString("\n"))
+        }
+        Unit
+    }
 }

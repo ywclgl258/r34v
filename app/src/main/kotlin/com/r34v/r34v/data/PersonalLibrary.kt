@@ -4,7 +4,7 @@ import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 
-val Video.entryKey: String get() = "$site:$id"
+val Video.entryKey: String get() = if (site == SiteRegistry.IWARA.id && mediaKind == MediaKind.GALLERY) "$site:gallery:$id" else "$site:$id"
 data class ShelfEntry(val video: Video, val completed: Boolean = false, val at: Long = System.currentTimeMillis(), val addedAt: Long = at)
 data class Shelf(val id: String = UUID.randomUUID().toString(), val name: String, val entries: List<ShelfEntry> = emptyList())
 data class PageBookmark(val video: Video, val page: Int, val offset: Int = 0, val at: Long = System.currentTimeMillis()) {
@@ -16,7 +16,10 @@ enum class ReaderMode(val title: String) {
 data class InboxEntry(val video: Video, val read: Boolean = false, val at: Long = System.currentTimeMillis())
 data class SubscriptionInbox(val known: Map<String, List<String>> = emptyMap(), val entries: List<InboxEntry> = emptyList())
 data class SavedSearch(val id: String = UUID.randomUUID().toString(), val name: String = "", val query: String = "",
-    val sources: List<String> = emptyList(), val category: String = "", val languages: Map<String, String> = emptyMap())
+    val sources: List<String> = emptyList(), val category: String = "", val languages: Map<String, String> = emptyMap(),
+    val includeTags: List<String> = emptyList(), val excludeTags: List<String> = emptyList(), val filter: AdvancedFilter = AdvancedFilter()) {
+    val condition: SearchCondition get() = SearchCondition(query, includeTags, excludeTags, filter)
+}
 enum class SmartRule(val title: String) { UNFINISHED("未看完"), OFFLINE_UNSEEN("已离线未看"), RECENT("最近加入") }
 data class SmartShelf(val id: String = UUID.randomUUID().toString(), val name: String = "", val rule: SmartRule = SmartRule.UNFINISHED,
     val category: String = "", val source: String = "")
@@ -27,6 +30,12 @@ data class PersonalLibrary(
     val inboxes: Map<String, SubscriptionInbox> = emptyMap(),
     val savedSearches: List<SavedSearch> = emptyList(),
     val smartShelves: List<SmartShelf> = emptyList(),
+    val timeBookmarks: List<TimeBookmark> = emptyList(),
+    val playbackPreferences: Map<String, PlaybackPreferences> = emptyMap(),
+    val readerPreferences: Map<String, ReaderPreferences> = emptyMap(),
+    val readingBehaviors: Map<String, ReadingBehavior> = emptyMap(),
+    val imageFavorites: List<ImageFavorite> = emptyList(),
+    val channels: List<DiscoveryChannel> = emptyList(),
 ) {
     companion object { const val WATCH_LATER = "watch-later" }
 }
@@ -77,7 +86,8 @@ class PersonalStore(private val library: LibraryStore) {
     }
     fun shelves() = snapshot().shelves
     fun saveSearch(value: SavedSearch) {
-        require(value.name.trim().length in 1..80 && value.query.trim().length in 1..2048)
+        require(value.name.trim().length in 1..80 && value.query.length <= 2048 && !value.condition.isEmpty)
+        value.filter.validate()
         require(value.sources.isNotEmpty() && value.sources.all { id -> SiteRegistry.all.any { it.id == id } })
         change { it.copy(savedSearches = it.savedSearches.filterNot { p -> p.id == value.id } + value.copy(name = value.name.trim(), query = value.query.trim(), sources = value.sources.distinct())) }
     }
@@ -139,4 +149,51 @@ class PersonalStore(private val library: LibraryStore) {
         if (box == null || box.entries.none { !it.read && it.video.entryKey in keys }) data
         else data.copy(inboxes = data.inboxes + (site to box.copy(entries = box.entries.map { if (it.video.entryKey in keys) it.copy(read = true) else it })))
     }
+    fun timeBookmarks(video: Video) = snapshot().timeBookmarks.filter { it.video.entryKey == video.entryKey }.sortedBy { it.positionMs }
+    fun saveTimeBookmark(value: TimeBookmark) {
+        require(value.positionMs >= 0 && value.note.length <= 500 && value.group.length <= 80 && value.video.id.isNotBlank())
+        change { it.copy(timeBookmarks = (it.timeBookmarks.filterNot { mark -> mark.id == value.id } + value).takeLast(5000)) }
+    }
+    fun removeTimeBookmark(id: String) = change { it.copy(timeBookmarks = it.timeBookmarks.filterNot { mark -> mark.id == id }) }
+    fun playback(site: String) = snapshot().playbackPreferences[site] ?: PlaybackPreferences()
+    fun setPlayback(site: String, value: PlaybackPreferences) {
+        require(SiteRegistry.byId(site) != null)
+        change { it.copy(playbackPreferences = it.playbackPreferences + (site to value.validated())) }
+    }
+    fun readerPreferences(video: Video) = snapshot().readerPreferences[video.entryKey] ?: ReaderPreferences()
+    fun setReaderPreferences(video: Video, value: ReaderPreferences) {
+        require(value.cropPercent in 0..20 && (value.mode.isBlank() || ReaderMode.entries.any { it.name == value.mode }))
+        change { it.copy(readerPreferences = it.readerPreferences + (video.entryKey to value)) }
+    }
+    fun clearReaderPreferences(video: Video) = change { it.copy(readerPreferences = it.readerPreferences - video.entryKey) }
+    fun readingBehavior(site: String) = snapshot().readingBehaviors[site] ?: ReadingBehavior()
+    fun setReadingBehavior(site: String, value: ReadingBehavior) {
+        require(SiteRegistry.byId(site) != null && value.autoPageSeconds in 0..300 && value.slideshowSeconds in 0..300)
+        change { it.copy(readingBehaviors = it.readingBehaviors + (site to value)) }
+    }
+    fun imageFavorites() = snapshot().imageFavorites.sortedByDescending { it.at }
+    fun isImageFavorite(video: Video, page: Int) = snapshot().imageFavorites.any { it.video.entryKey == video.entryKey && it.page == page }
+    fun toggleImageFavorite(video: Video, page: Int, pageUrl: String, imageUrl: String = "") {
+        require(page > 0 && video.id.isNotBlank())
+        val favorite = ImageFavorite(video, page, pageUrl, imageUrl)
+        change { data -> data.copy(imageFavorites = if (data.imageFavorites.any { it.key == favorite.key }) data.imageFavorites.filterNot { it.key == favorite.key }
+            else (data.imageFavorites + favorite).takeLast(20000)) }
+    }
+    fun pinSearch(value: SavedSearch) {
+        val order = (snapshot().channels.minOfOrNull { it.order } ?: 0) - 1
+        change { it.copy(channels = it.channels.filterNot { channel -> channel.savedSearch?.id == value.id } + DiscoveryChannel(name = value.name, savedSearch = value, order = order)) }
+    }
+    fun pinFeed(site: String, request: FeedRequest, name: String) {
+        require(SiteRegistry.byId(site) != null && name.trim().length in 1..80)
+        val channel = DiscoveryChannel(name = name.trim(), site = site, kind = request.kind, target = request.target,
+            order = (snapshot().channels.minOfOrNull { it.order } ?: 0) - 1)
+        change { it.copy(channels = it.channels.filterNot { old -> old.site == site && old.kind == request.kind && old.target == request.target } + channel) }
+    }
+    fun moveChannel(id: String, delta: Int) = change { data ->
+        val all = data.channels.sortedBy { it.order }.toMutableList(); val from = all.indexOfFirst { it.id == id }; val to = from + delta
+        if (from in all.indices && to in all.indices) all.add(to, all.removeAt(from))
+        data.copy(channels = all.mapIndexed { index, channel -> channel.copy(order = index) })
+    }
+    fun hideChannel(id: String, hidden: Boolean) = change { data -> data.copy(channels = data.channels.map { if (it.id == id) it.copy(hidden = hidden) else it }) }
+    fun removeChannel(id: String) = change { data -> data.copy(channels = data.channels.filterNot { it.id == id }) }
 }

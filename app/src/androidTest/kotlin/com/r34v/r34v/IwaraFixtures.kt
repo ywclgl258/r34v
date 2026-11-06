@@ -6,7 +6,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** Neutral API-shaped data used only by instrumentation; no content enters the app APK. */
-internal class IwaraFixtures(private val clip: ByteArray = byteArrayOf()) {
+internal class IwaraFixtures(private val clip: ByteArray = byteArrayOf(), private val image: ByteArray = byteArrayOf()) {
     val requests = CopyOnWriteArrayList<Request>()
     var refreshSalt: String? = null
     var failRefresh = false
@@ -17,6 +17,16 @@ internal class IwaraFixtures(private val clip: ByteArray = byteArrayOf()) {
       "fileUrl":"https://filesq.iwara.tv/file/01234567-89ab-cdef-0123-456789abcdef?expires=1999999999999&hash=fixture",
       "tags":[{"id":"city_walk","type":"general"}],
       "user":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","name":"Sample author","username":"sample_author"}
+    }"""
+    val galleryMetadata = """{
+      "id":"GallerySample01","slug":"neutral-set","title":"Neutral gallery","body":"Two images and one clip.","numImages":3,"numLikes":8,"numViews":20,
+      "thumbnail":{"id":"cover-id","name":"cover.webp","width":800,"height":1200},
+      "tags":[{"id":"city_walk"}],"user":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","name":"Sample author","username":"sample_author"},
+      "files":[
+        {"id":"image-one","type":"image","mime":"image/png","name":"one.png","width":800,"height":1200},
+        {"id":"image-two","type":"image","mime":"image/webp","name":"two.webp","width":1200,"height":800},
+        {"id":"clip-one","type":"video","mime":"video/webm","name":"clip.webm","width":1200,"height":800}
+      ]
     }"""
 
     fun respond(request: Request): Response {
@@ -32,10 +42,16 @@ internal class IwaraFixtures(private val clip: ByteArray = byteArrayOf()) {
             path.endsWith("/related") || path.endsWith("/comments") -> {
                 type = "application/json"; bytes = """{"page":0,"limit":12,"count":0,"results":[]}""".toByteArray()
             }
+            path == "/images" || path == "/search" && request.url.queryParameter("type") == "images" -> {
+                val page = request.url.queryParameter("page")?.toIntOrNull() ?: 0
+                type = "application/json"; bytes = """{"page":$page,"limit":20,"count":${page * 20 + 1},"results":[$galleryMetadata]}""".toByteArray()
+            }
             path == "/videos" || path == "/search" -> {
                 val page = request.url.queryParameter("page")?.toIntOrNull() ?: 0
                 type = "application/json"; bytes = """{"page":$page,"limit":20,"count":${page * 20 + 1},"results":[$metadata]}""".toByteArray()
             }
+            path.startsWith("/image/original/") -> { type = "image/png"; bytes = image }
+            path.startsWith("/image/") -> { type = "application/json"; bytes = galleryMetadata.toByteArray() }
             path.startsWith("/profile/") -> {
                 type = "application/json"; bytes = """{"user":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}}""".toByteArray()
             }

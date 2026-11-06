@@ -43,7 +43,8 @@ class KvsAdapter(
 
     override suspend fun feed(request: FeedRequest): FeedPage {
         val page = HtmlParser.feed(network.html(resolve(request)), request, site)
-        return page
+        return if (request.filter.minDurationSec > 0 || request.filter.maxDurationSec > 0 || request.filter.minRating > 0)
+            page.copy(videos = page.videos.filter(request.filter::matchesLoaded)) else page
     }
 
     override suspend fun detail(url: String) = HtmlParser.detail(network.html(site.absolute(url)), site.absolute(url), site)

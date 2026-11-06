@@ -70,7 +70,8 @@ internal class ReaderBuffer(private val count: Int, private val scope: Coroutine
 data class ReaderJump(val serial: Int, val page: Int, val offset: Int = 0)
 
 @Composable fun ComicReader(count: Int, jump: ReaderJump, load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage,
-    toggle: () -> Unit, position: (Int, GalleryImage?, Int) -> Unit, attachSave: ((() -> Unit)?) -> Unit) {
+    toggle: () -> Unit, position: (Int, GalleryImage?, Int) -> Unit, attachSave: ((() -> Unit)?) -> Unit,
+    fit: ReaderFit = ReaderFit.WIDTH, cropPercent: Int = 0) {
     val scope = rememberCoroutineScope()
     val buffer = remember { ReaderBuffer(count, scope, load) }
     val list = rememberLazyListState(jump.page - 1, (-jump.offset).coerceAtLeast(0))
@@ -124,7 +125,9 @@ data class ReaderJump(val serial: Int, val page: Int, val offset: Int = 0)
                     } while (event.changes.any { it.pressed })
                 } }, contentAlignment = Alignment.Center) {
                 when {
-                    rendered != null -> Image(rendered.bitmap.asImageBitmap(), "第 $number 页，双击或双指缩放", Modifier.fillMaxSize().graphicsLayer { scaleX = zoom; scaleY = zoom; translationX = pan.x; translationY = pan.y }, contentScale = ContentScale.Fit)
+                    rendered != null -> Image(rendered.bitmap.asImageBitmap(), "第 $number 页，双击或双指缩放", Modifier.fillMaxSize().graphicsLayer {
+                        val crop = 1f + cropPercent / 100f; scaleX = zoom * crop; scaleY = zoom * crop; translationX = pan.x; translationY = pan.y
+                    }, contentScale = when (fit) { ReaderFit.WIDTH -> ContentScale.FillWidth; ReaderFit.HEIGHT -> ContentScale.FillHeight; ReaderFit.ORIGINAL -> ContentScale.None })
                     error != null -> Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) { Copy("第 $number 页：$error"); Action("重试此页") { buffer.retry(number) } }
                     else -> CircularProgressIndicator(Modifier.size(32.dp), color = BrandColor)
                 }

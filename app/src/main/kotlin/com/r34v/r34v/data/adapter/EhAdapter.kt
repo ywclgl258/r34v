@@ -105,19 +105,31 @@ object EhProtocol {
 
     fun resolve(site: SiteContext, request: FeedRequest): String {
         fun filtered(url: HttpUrl.Builder): String {
-            if (request.language != GalleryLanguage.ALL) {
-                val query = when (request.kind) {
-                    FeedKind.SEARCH, FeedKind.TAG, FeedKind.CHARACTER -> request.target
-                    FeedKind.MODEL -> "uploader:\"${request.target.replace("\"", "\\\"")}\""
-                    else -> ""
-                }
-                val languages = request.language.languages.joinToString(" ") {
-                    (if (request.language.languages.size > 1) "~" else "") + "language:$it$"
-                }
-                url.setQueryParameter("f_search", listOf(query, languages).filter { it.isNotBlank() }.joinToString(" "))
-                // The app's explicit choice takes precedence over the account's language exclusions.
-                url.setQueryParameter("f_sfl", "on")
+            request.filter.validate()
+            val requested = when (request.kind) {
+                FeedKind.SEARCH, FeedKind.TAG, FeedKind.CHARACTER -> request.target
+                FeedKind.MODEL -> "uploader:\"${request.target.replace("\"", "\\\"")}\""
+                else -> ""
             }
+            val query = requested.ifBlank { url.build().queryParameter("f_search").orEmpty() }
+            val languages = request.language.languages.joinToString(" ") {
+                (if (request.language.languages.size > 1) "~" else "") + "language:$it$"
+            }
+            val terms = listOf(query, languages) + request.includeTags + request.excludeTags.map { "-$it" }
+            url.setQueryParameter("f_search", terms.filter { it.isNotBlank() }.joinToString(" "))
+            if (request.language != GalleryLanguage.ALL) url.setQueryParameter("f_sfl", "on")
+            if (request.filter.minPages > 0) url.setQueryParameter("f_spf", request.filter.minPages.toString())
+            if (request.filter.maxPages > 0) url.setQueryParameter("f_spt", request.filter.maxPages.toString())
+            if (request.filter.minRating > 0) {
+                url.setQueryParameter("f_sr", "on")
+                url.setQueryParameter("f_srdd", request.filter.minRating.toString())
+            }
+            if (request.filter.category.isNotBlank() && request.kind != FeedKind.CATEGORY) {
+                val category = categories.entries.firstOrNull { it.key == request.filter.category || it.value == request.filter.category }?.key
+                    ?: error("不支持的画廊分类")
+                url.setQueryParameter("f_cats", (1023 xor category.toInt()).toString())
+            }
+            if (!request.filter.isEmpty || request.includeTags.isNotEmpty() || request.excludeTags.isNotEmpty()) url.setQueryParameter("advsearch", "1")
             return url.setQueryParameter("inline_set", "dm_l").build().toString()
         }
         if (request.cursor.isNotBlank()) {

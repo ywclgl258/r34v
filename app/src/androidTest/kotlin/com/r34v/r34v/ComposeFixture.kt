@@ -50,6 +50,11 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
     @Volatile var failTag = ""
     @Volatile var imageDelayMillis = 0L
     @Volatile var detailDelayMillis = 0L
+    @Volatile var videoStatus = 0
+    @Volatile var imageHttpStatus = 0
+    @Volatile var imageHttpFailures = 0
+    @Volatile var imageRetryAfter: String? = null
+    @Volatile var detailHook: (suspend () -> Unit)? = null
     @Volatile var feedOverride: (suspend (String, FeedRequest) -> FeedPage?)? = null
     val nonce = System.nanoTime()
     private val png = Bitmap.createBitmap(600, 900, Bitmap.Config.ARGB_8888).let { image ->
@@ -59,18 +64,24 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
     private val clip = ins.context.assets.open("test-pattern.mp4").use { it.readBytes() }
     private val server = MockWebServer().apply {
         dispatcher = object : okhttp3.mockwebserver.Dispatcher() { override fun dispatch(request: RecordedRequest): MockResponse {
+            if (videoStatus > 0) return MockResponse().setResponseCode(videoStatus)
             val start = request.getHeader("Range")?.substringAfter("bytes=")?.substringBefore('-')?.toIntOrNull()?.coerceIn(0, clip.size) ?: 0
             return MockResponse().setResponseCode(if (request.getHeader("Range") != null) 206 else 200).setHeader("Content-Type", "video/mp4").setHeader("Accept-Ranges", "bytes")
                 .apply { if (request.getHeader("Range") != null) setHeader("Content-Range", "bytes $start-${clip.size - 1}/${clip.size}") }.setBody(Buffer().write(clip.copyOfRange(start, clip.size)))
         } }; start()
     }
-    private val fixtureClient = originalClient.newBuilder().dispatcher(okhttp3.Dispatcher()).connectionPool(ConnectionPool()).addInterceptor { chain ->
+    private val fixtureClient = originalClient.newBuilder().proxy(java.net.Proxy.NO_PROXY).dispatcher(okhttp3.Dispatcher()).connectionPool(ConnectionPool()).addInterceptor { chain ->
         val path = chain.request().url.encodedPath
         if (path.contains("compose-image") || path.contains("compose-cover")) {
             val number = Regex("compose-image-(\\d+)").find(path)?.groupValues?.get(1)?.toIntOrNull()
             if (number != null) imageRequests.add(chain.request().tag(SiteContext::class.java)?.id.orEmpty() to number)
             if (offline) throw IOException("Fixture offline")
             if (number != null) { imageCalls.add(number); if (imageDelayMillis > 0) Thread.sleep(imageDelayMillis); if (brokenPage == number) throw IOException("Fixture page error") }
+            if (number != null && imageHttpFailures > 0 && imageHttpStatus > 0) {
+                imageHttpFailures--
+                return@addInterceptor Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(imageHttpStatus).message("Fixture HTTP error")
+                    .apply { imageRetryAfter?.let { header("Retry-After", it) } }.body("failure".toResponseBody("text/plain".toMediaType())).build()
+            }
             if (path.contains("compose-cover")) coverRequests.add(chain.request())
             val cover = if (cinematic && path.contains("compose-cover")) {
                 val i = Regex("compose-cover-\\d+-(\\d+)").find(path)?.groupValues?.get(1)?.toIntOrNull() ?: 0
@@ -108,12 +119,14 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
             val tag = request.target.takeIf { request.kind == FeedKind.TAG }.orEmpty()
             if (tag.isNotBlank() && tag == failTag) throw IOException("Fixture tag unavailable")
             return FeedPage((0..15).map { video(site.id, request.page, it).let { v ->
-                if (tag.isBlank()) v else v.copy(id = "$tag-${v.id}", title = "$tag 作品 $it")
+                val content = if (site.id == "iwara" && request.contentKind == MediaKind.GALLERY) v.copy(mediaKind = MediaKind.GALLERY, duration = "8 张", type = "图库") else v
+                if (tag.isBlank()) content else content.copy(id = "$tag-${content.id}", title = "$tag 作品 $it")
             } }, request.page, 3, "Neutral fixture")
         }
         override suspend fun detail(url: String): Detail {
             if (offline) throw IOException("Fixture offline")
             kotlinx.coroutines.delay(detailDelayMillis)
+            detailHook?.invoke()
             return Detail(video(site.id), listOf(Stream("720p", server.url("/clip.mp4?quality=720").toString()), Stream("480p", server.url("/clip.mp4?quality=480").toString())), mapOf("标签" to listOf(Link("sample", "示例标签", "${site.base}/tags/sample/"))), "用于验证原生播放的中性测试片段。", listOf(video(site.id, 1, 1)), listOf(Comment("测试作者", "中性测试评论", "2026")), emptyList())
         }
         override suspend fun index(section: String) = listOf(Link("sample", "示例索引", "${site.base}/tags/sample/"))
@@ -122,7 +135,8 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
         override suspend fun gallery(url: String): GalleryDetail {
             galleryCalls.add("${site.id}:detail")
             if (offline) throw IOException("Fixture offline")
-            return GalleryDetail(video(site.id), 8, (1..8).map { GalleryPageLink(it, "${site.base}/compose-page-$nonce-$it") }, 8, description = "原创中性图页，用于测试连续阅读、预读与恢复。", language = "中文", groups = mapOf("标签" to listOf(Link("sample", "示例标签", "${site.base}/tags/sample/"))))
+            val entry = video(site.id).let { if (site.id == "iwara") it.copy(mediaKind = MediaKind.GALLERY, duration = "8 张", type = "图库") else it }
+            return GalleryDetail(entry, 8, (1..8).map { GalleryPageLink(it, "${site.base}/compose-page-$nonce-$it") }, 8, description = "原创中性图页，用于测试连续阅读、预读与恢复。", language = "中文", groups = mapOf("标签" to listOf(Link("sample", "示例标签", "${site.base}/tags/sample/"))))
         }
         override suspend fun galleryImage(url: String): GalleryImage {
             galleryCalls.add("${site.id}:page")

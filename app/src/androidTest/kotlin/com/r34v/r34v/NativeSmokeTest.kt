@@ -34,6 +34,9 @@ class NativeSmokeTest {
     @Test fun backgroundDownloadPausesResumesAndPlaysOffline() {
         val app = context.applicationContext as R34Application
         val previousSite = app.library.siteId
+        val clientField = Network::class.java.getDeclaredField("current").apply { isAccessible = true }
+        val originalClient = app.network.client
+        clientField.set(app.network, originalClient.newBuilder().proxy(java.net.Proxy.NO_PROXY).build())
         val clip = instrumentation.context.assets.open("test-pattern.mp4").use { it.readBytes() }
         val ranges = AtomicInteger()
         val server = MockWebServer().apply {
@@ -104,6 +107,7 @@ class NativeSmokeTest {
                 activity.finish()
             }
             app.library.switchSite(previousSite)
+            clientField.set(app.network, originalClient)
             runCatching { server.shutdown() }
         }
     }

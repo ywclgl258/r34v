@@ -12,4 +12,13 @@ object TagNames {
         }.getOrDefault(emptyMap())
         return names?.get(slug)
     }
+    @Synchronized fun suggestions(context: Context, raw: String, limit: Int = 8): List<Pair<String, String>> {
+        if (raw.isBlank()) return emptyList()
+        if (names == null) lookup(context, raw)
+        val needle = raw.trim().removePrefix("-").substringAfter(':').lowercase()
+        if (needle.isBlank()) return emptyList()
+        return names.orEmpty().entries.filter { it.key.contains(needle, true) || it.value.contains(needle, true) }
+            .sortedWith(compareBy({ !it.key.startsWith(needle, true) }, { it.key.length }, { it.key }))
+            .take(limit).map { it.key to it.value }
+    }
 }

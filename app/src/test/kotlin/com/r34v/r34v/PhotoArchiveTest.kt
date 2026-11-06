@@ -96,6 +96,36 @@ class PhotoArchiveTest {
         assertFalse("related posts are not this set", images.any { it.contains("other-48") })
     }
 
+    @Test fun cosplayTeleVideoIsIndependentOfTheImagePages() {
+        val article = "https://cosplaytele.com/sample-gallery/"
+        val html = fixture("cosplaytele-content.html").replace("</div>\n    <div class=\"crp_related\">", "</div><p><iframe src=\"https://cossora.stream/embed/33c3b905-5871-4657-9714-6fcfa42148e3\"></iframe></p></div>\n    <div class=\"crp_related\">")
+        val entries = CossoraProtocol.videos(html, article)
+        assertEquals(1, entries.size)
+        assertTrue(com.google.gson.Gson().fromJson("{}", GalleryDetail::class.java).embeddedVideos.isEmpty())
+        assertEquals("video-33c3b905-5871-4657-9714-6fcfa42148e3", entries.single().id)
+        assertEquals("https://cosplaytele.com/sample-gallery/#video-33c3b905-5871-4657-9714-6fcfa42148e3", entries.single().url)
+        assertEquals(entries.single() to CossoraProtocol.embeds(html, article).single(), CossoraProtocol.select(html, article, entries.single().url))
+        assertEquals(3, PhotoProfiles.cosplayTele().images(profile(SiteRegistry.COSPLAYTELE, html)).size)
+        assertTrue(CossoraProtocol.embeds("<iframe src='https://example.invalid/embed/33c3b905-5871-4657-9714-6fcfa42148e3'>", article).isEmpty())
+        val decrypted = CossoraProtocol.decrypt(fixture("cossora-link.txt"), "03c34d8f64f8ff77b5b4d754bc8e25bf")
+        assertEquals("https://cossora.stream/api-embed/33c3b905-5871-4657-9714-6fcfa42148e3/index.m3u8?token=fixture", decrypted)
+        val player = """<script>const videoURL = '${fixture("cossora-link.txt")}'; const portadaURL = '${fixture("cossora-link.txt")}';
+            const videoURLDescrypt = decryptLink(videoURL, '03c34d8f64f8ff77b5b4d754bc8e25bf');
+            var config = { file: videoURLDescrypt, defaultQuality: '1920p', type: 'hls' };</script>"""
+        val media = CossoraProtocol.media(player, CossoraProtocol.embeds(html, article).single())
+        assertEquals("1920p", media.stream.label)
+        assertEquals(decrypted, media.stream.url)
+        assertEquals(SiteRegistry.COSPLAYTELE, SiteRegistry.forMediaHost("hls-cdn.cossora.stream"))
+        val iv = ByteArray(16) { it.toByte() }
+        val cipher = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding").apply {
+            init(javax.crypto.Cipher.ENCRYPT_MODE, javax.crypto.spec.SecretKeySpec("03c34d8f64f8ff77b5b4d754bc8e25bf".toByteArray(), "AES"), javax.crypto.spec.IvParameterSpec(iv))
+        }
+        val untrusted = java.util.Base64.getEncoder().encodeToString(iv + cipher.doFinal("https://example.invalid/video.m3u8".toByteArray()))
+        assertThrows(IllegalStateException::class.java) {
+            CossoraProtocol.media(player.replace(fixture("cossora-link.txt"), untrusted), CossoraProtocol.embeds(html, article).single())
+        }
+    }
+
     // ---- galleryepic.com --------------------------------------------------------------------
 
     @Test fun galleryEpicReadsTheWholeBookFromTheServerPayload() {

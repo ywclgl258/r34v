@@ -36,9 +36,14 @@ class LiveDownloadAudit {
     private val ins get() = InstrumentationRegistry.getInstrumentation()
     private val app get() = ins.targetContext.applicationContext as R34Application
     private val output get() = File(app.cacheDir, "live-download-audit").apply { mkdirs() }
-    private fun cleanError(error: Throwable) = "${error.javaClass.simpleName}: ${error.message}".replace(Regex("https?://[^\\s]+")) { match ->
-        match.value.toHttpUrlOrNull()?.let { "${it.scheme}://${it.host}/…" } ?: "[url]"
-    }.take(800)
+    private fun cleanError(error: Throwable): String {
+        val chain = generateSequence(error) { it.cause?.takeUnless { cause -> cause === it } }.take(12).joinToString(" <- ") {
+            "${it.javaClass.name}: ${it.message}"
+        }
+        return chain.replace(Regex("https?://[^\\s]+")) { match ->
+            match.value.toHttpUrlOrNull()?.let { "${it.scheme}://${it.host}/…" } ?: "[url]"
+        }.take(1600)
+    }
     private class AuditContext(base: Context, val root: File, val prefix: String) : ContextWrapper(base) {
         val preferences = mutableSetOf<String>()
         override fun getFilesDir() = File(root, "files").apply { mkdirs() }
@@ -50,19 +55,32 @@ class LiveDownloadAudit {
         val rows = mutableListOf<MutableMap<String, Any>>()
         val sources = SiteRegistry.all.filter { selected.isEmpty() || it.id in selected }
         check(sources.isNotEmpty())
-        for (site in sources) {
-            val row = linkedMapOf<String, Any>("site" to site.id, "kind" to site.category.name, "stage" to "feed", "outcome" to "pending")
-            rows += row
-            val started = System.currentTimeMillis()
-            row["route"] = app.network.routeDescription(site.base)
-            if (site.id == "nhentai") row["systemDns"] = listOf("nhentai.net", "i1.nhentai.net", "i2.nhentai.net", "i3.nhentai.net", "i4.nhentai.net").associateWith { host ->
-                runCatching { java.net.InetAddress.getAllByName(host).map { it.hostAddress } }.getOrDefault(emptyList())
+        val failures = java.util.concurrent.CopyOnWriteArrayList<Pair<String, java.io.IOException>>()
+        val clientField = Network::class.java.getDeclaredField("current").apply { isAccessible = true }
+        val original = app.network.client
+        clientField.set(app.network, original.newBuilder().eventListenerFactory {
+            object : okhttp3.EventListener() {
+                override fun callFailed(call: okhttp3.Call, ioe: java.io.IOException) { failures += call.request().url.host to ioe }
             }
-            try { withTimeout(150_000) { probe(site, row) }; row["outcome"] = "passed" }
-            catch (error: Exception) { row["outcome"] = if (error is GalleryLoginRequiredException) "login_required" else "failed"; row["error"] = cleanError(error) }
-            row["elapsedMs"] = System.currentTimeMillis() - started
-            File(output, "latest.json").writeText(app.library.gson.toJson(rows))
-            android.util.Log.i("R34VDownloadAudit", app.library.gson.toJson(row))
+        }.build())
+        try {
+            for (site in sources) {
+                val row = linkedMapOf<String, Any>("site" to site.id, "kind" to site.category.name, "stage" to "feed", "outcome" to "pending")
+                rows += row
+                val started = System.currentTimeMillis()
+                row["route"] = app.network.routeDescription(site.base)
+                if (site.id == "nhentai") row["systemDns"] = listOf("nhentai.net", "i1.nhentai.net", "i2.nhentai.net", "i3.nhentai.net", "i4.nhentai.net").associateWith { host ->
+                    runCatching { java.net.InetAddress.getAllByName(host).map { it.hostAddress } }.getOrDefault(emptyList())
+                }
+                try { withTimeout(150_000) { probe(site, row) }; row["outcome"] = "passed" }
+                catch (error: Exception) { row["outcome"] = if (error is GalleryLoginRequiredException) "login_required" else "failed"; row["error"] = cleanError(error) }
+                row["networkFailures"] = failures.map { (host, error) -> mapOf("host" to host, "error" to cleanError(error)) }
+                row["elapsedMs"] = System.currentTimeMillis() - started
+                File(output, "latest.json").writeText(app.library.gson.toJson(rows))
+                android.util.Log.i("R34VDownloadAudit", app.library.gson.toJson(row))
+            }
+        } finally {
+            clientField.set(app.network, original)
         }
     }
     private suspend fun probe(site: SiteContext, row: MutableMap<String, Any>) {
@@ -76,7 +94,12 @@ class LiveDownloadAudit {
         row["feedItems"] = feed.videos.size
         val candidates = feed.videos.take(8).filterNot { Regex("lolicon|shotacon|underage", RegexOption.IGNORE_CASE).containsMatchIn(it.title) }
         check(candidates.isNotEmpty()) { "No eligible sample in the returned feed" }
-        val video = if (site.mediaKind == MediaKind.GALLERY) candidates.minBy { Regex("\\d+").find(it.duration)?.value?.toIntOrNull() ?: Int.MAX_VALUE } else candidates.first { it.type.isBlank() || site.id != "iwara" }
+        val video = if (site.mediaKind == MediaKind.GALLERY) {
+            val ordered = candidates.sortedBy { Regex("\\d+").find(it.duration)?.value?.toIntOrNull() ?: Int.MAX_VALUE }
+            val rank = InstrumentationRegistry.getArguments().getString("sampleRank")?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+            row["sampleRank"] = rank
+            ordered.getOrElse(rank) { ordered.first() }
+        } else candidates.first { it.type.isBlank() || site.id != "iwara" }
         row["sampleId"] = video.id
         row["stage"] = "detail"
         if (site.mediaKind == MediaKind.VIDEO) {

@@ -51,6 +51,10 @@ data class FeedRequest(
     val page: Int = 1,
     val cursor: String = "",
     val language: GalleryLanguage = GalleryLanguage.ALL,
+    val includeTags: List<String> = emptyList(),
+    val excludeTags: List<String> = emptyList(),
+    val filter: AdvancedFilter = AdvancedFilter(),
+    val contentKind: MediaKind = MediaKind.VIDEO,
 ) {
     val slug: String get() = URLEncoder.encode(target, "UTF-8").replace("+", "%20")
 
@@ -61,7 +65,7 @@ data class FeedRequest(
         return "/${kind.segment}/$targetPart$pagePart"
     }
 
-    val id: String get() = "${kind.name}|${target}|${sort.name}|$page" + if (language == GalleryLanguage.ALL) "" else "|${language.name}"
+    val id: String get() = "${kind.name}|${target}|${sort.name}|$page|${contentKind.name}|${includeTags.joinToString(",")}|${excludeTags.joinToString(",")}|$filter" + if (language == GalleryLanguage.ALL) "" else "|${language.name}"
 }
 
 data class Video(
@@ -104,7 +108,12 @@ data class GalleryDetail(
     val description: String = "",
     val groups: Map<String, List<Link>> = emptyMap(),
     val cached: Boolean = false,
-)
+    val downloadedPages: List<Int> = emptyList(),
+    val requestedPages: List<Int> = emptyList(),
+    val videoEntries: List<Video>? = emptyList(),
+) {
+    val embeddedVideos: List<Video> get() = videoEntries.orEmpty()
+}
 data class GalleryImage(val index: Int, val pageUrl: String, val imageUrl: String, val previousUrl: String?, val nextUrl: String?, val reloadUrl: String? = null)
 data class ReadingProgress(val entry: Video, val page: Int, val pages: Int, val pageUrl: String, val at: Long = System.currentTimeMillis(), val offset: Int = 0)
 

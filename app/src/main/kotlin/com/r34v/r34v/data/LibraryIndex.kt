@@ -37,7 +37,7 @@ data class LibraryRecord(
     /** Set from the scanned directory, never trusted from a sidecar supplied on disk. */
     @SerializedName("sourceRoot") val sourceRoot: String = "",
 ) {
-    val video get() = Video(id = id, title = title, url = url, thumb = thumb, duration = duration, site = site)
+    val video get() = Video(id = id, title = title, url = url, thumb = thumb, duration = duration, site = site, mediaKind = if (isComic) MediaKind.GALLERY else MediaKind.VIDEO)
     val isComic get() = kind == KIND_COMIC
 
     companion object {
