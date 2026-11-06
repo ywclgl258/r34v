@@ -92,8 +92,11 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         return
     }
     if (home && site.mediaKind == MediaKind.VIDEO) {
-        CinemaHome(videos, ranked, popularVideos, ratedVideos, continuing, saved, cached, busy, error,
-            next <= total, { if (state.restartRequired) refresh() else load() }, play, favorite, browse, scroll, state.list, state.emptyPages < 3, { load(true) })
+        val waitingRevision by app.library.personal.changes.collectAsState()
+        val waiting = remember(waitingRevision) { app.library.personal.shelves().first { it.id == PersonalLibrary.WATCH_LATER }.entries.map { it.video.entryKey }.toSet() }
+        CinemaHome(videos, ranked, popularVideos, ratedVideos, continuing, waiting, cached, busy, error,
+            next <= total, { if (state.restartRequired) refresh() else load() }, play, favorite, browse, scroll, state.list, state.emptyPages < 3, { load(true) },
+            toggleWaiting = { video -> if (app.library.personal.contains(video)) app.library.personal.remove(video) else app.library.personal.add(video) })
         return
     }
     val grid = state.grid
@@ -105,7 +108,18 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     }
     val nearEnd by remember { derivedStateOf { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= grid.layoutInfo.totalItemsCount - 7 } == true } }
     LaunchedEffect(nearEnd, next, busy) { if (nearEnd && loaded && next <= total && !busy && error == null) load(true) }
-    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(if (LocalConfiguration.current.screenWidthDp >= 600) 3 else 2), Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = grid, contentPadding = PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalItemSpacing = 10.dp) {
+    val columns = if (LocalConfiguration.current.fontScale > 1.5f && LocalConfiguration.current.screenWidthDp < 400) 1 else if (LocalConfiguration.current.screenWidthDp >= 840) 4 else if (LocalConfiguration.current.screenWidthDp >= 600) 3 else 2
+    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = grid, contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 132.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalItemSpacing = 14.dp) {
+        if (home && site.mediaKind == MediaKind.GALLERY && videos.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, key = "gallery-stage") {
+            val progress = app.library.readings(site.id).firstOrNull { it.page < it.pages && app.library.allowed(it.entry, site.id) }
+            val entry = progress?.entry ?: videos.first()
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Title(if (progress != null) "继续${site.category.verb}" else if (site.category == SiteCategory.PHOTO) "打开一组新视角" else "翻开下一本", large = true)
+                MediaResumeHero(entry, if (progress != null) "第 ${progress.page} / ${progress.pages} ${if (site.category == SiteCategory.PHOTO) "张" else "页"}" else site.name,
+                    if (progress != null) "继续${site.category.verb}" else "开始${site.category.verb}", play)
+                Spacer(Modifier.height(8.dp))
+            }
+        }
         item(span = StaggeredGridItemSpan.FullLine, key = "heading") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Title(if (home) { if (site.mediaKind == MediaKind.GALLERY) "最新${adapter.itemNoun}" else if (site.id == "r34v") "最新视频" else "最新上传" } else adapter.feedTitle(request))
@@ -149,7 +163,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     pair.forEach { section ->
                         val popular = section.feed?.kind == FeedKind.POPULAR
-                        Column(Modifier.weight(1f).cinemaGlass(16).clickable { feed(section.feed!!) }
+                        Column(Modifier.weight(1f).contentPanel(20).clickable { feed(section.feed!!) }
                             .then(if (popular) Modifier.background(BrandColor.copy(alpha = .12f)) else Modifier)
                             .padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -165,7 +179,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         }
         if (genres.isNotEmpty()) { Title(adapter.catalogueTitle); FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { genres.forEach { section -> Choice(section.title) { feed(section.feed!!) } } } }
         adapter.sections.filter { it.feed == null && adapter.sectionUrl(it.key) != null }.forEach { section ->
-            Row(Modifier.fillMaxWidth().cinemaGlass(14).clickable { browse(section.key) }.padding(horizontal = 14.dp, vertical = 10.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().contentPanel(20).clickable { browse(section.key) }.padding(horizontal = 14.dp, vertical = 10.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(section.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     if (section.subtitle.isNotBlank()) Copy(section.subtitle)

@@ -22,6 +22,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     companion object { const val SITE_SWITCH_TUTORIAL_SEEN = "site_switch_tutorial_seen" }
     val prefs: SharedPreferences = context.getSharedPreferences(name, Context.MODE_PRIVATE)
     val gson = Gson()
+    val personal by lazy { PersonalStore(this) }
     private val dataDir = File(context.applicationInfo.dataDir).canonicalFile
 
     /** The site whose data [history], [favorites] and friends currently resolve to. */
@@ -133,12 +134,12 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         prefs.edit().putString("active_site", site.id).apply()
     }
 
-    fun galleryLanguage(): GalleryLanguage = GalleryLanguage.entries.firstOrNull {
-        it.name == prefs.getString(k("gallery_language"), null)
+    fun galleryLanguage(siteId: String = this.siteId): GalleryLanguage = GalleryLanguage.entries.firstOrNull {
+        it.name == prefs.getString("$siteId:gallery_language", null)
     } ?: GalleryLanguage.ALL
 
-    fun setGalleryLanguage(value: GalleryLanguage) {
-        prefs.edit().putString(k("gallery_language"), value.name).apply()
+    fun setGalleryLanguage(value: GalleryLanguage, siteId: String = this.siteId) {
+        prefs.edit().putString("$siteId:gallery_language", value.name).apply()
     }
 
     @Synchronized private fun <T> list(key: String, type: Class<T>): List<T> = runCatching {

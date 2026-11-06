@@ -40,8 +40,8 @@ class GalleryUiTest : ComposeUiCase() {
         })
         ui.onNodeWithTag("reader-page-1").performTouchInput { doubleClick() }
         ui.onNodeWithTag("reader-page-1").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "缩放 1.0"))
-        ui.onNodeWithContentDescription("全屏阅读").performClick(); ui.onNodeWithContentDescription("全屏阅读").assertDoesNotExist(); f.shot("09-reader-fullscreen")
-        back(f); ui.onNodeWithContentDescription("全屏阅读").assertExists()
+        readerTool("全屏阅读"); ui.onNodeWithContentDescription("阅读工具").assertDoesNotExist(); f.shot("09-reader-fullscreen")
+        back(f); ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("阅读工具").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("comic-strip").performTouchInput { swipeUp() }; ui.onNodeWithTag("comic-strip").performTouchInput { swipeUp() }
         ui.waitUntil(10000) { (f.app.library.reading(f.video("ehentai").id)?.page ?: 0) >= 2 }
         ui.onNode(hasText(" / 8", substring = true)).performClick(); ui.onNode(hasSetTextAction()).performTextReplacement("6"); clickText("确定")
@@ -56,8 +56,14 @@ class GalleryUiTest : ComposeUiCase() {
         f.app.library.switchSite("ehentai"); f.brokenPage = 1; f.launchGallery(read = true); waitText("重试此页")
         f.brokenPage = 0; clickText("重试此页"); ui.waitUntil(15000) { f.app.library.reading(f.video("ehentai").id)?.page == 1 }
         back(f); f.app.library.switchSite("exhentai"); assertFalse(f.app.network.session.hasGallerySession(SiteRegistry.EXHENTAI))
-        f.launch(); f.shot("12-ex-login-gate"); waitText("ExHentai 必须登录")
+        f.launch(); openSourceHome(); f.shot("12-ex-login-gate"); waitText("ExHentai 必须登录")
         clickText("官方网页登录"); waitText("ExHentai 官方登录"); clickText("验证登录"); waitText("尚未取得登录会话，请先在官方页面完成登录。")
+        ui.runOnIdle {
+            val auth = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED).filterIsInstance<SiteAuthActivity>().single()
+            val web = SiteAuthActivity::class.java.getDeclaredField("browser").apply { isAccessible = true }.get(auth) as? android.webkit.WebView
+            if (android.os.Build.VERSION.SDK_INT >= 26 && web != null) web.webViewClient.onPageFinished(web, com.r34v.r34v.data.adapter.EhLogin.officialUrl)
+        }
+        ui.onNodeWithText("尚未取得登录会话，请先在官方页面完成登录。").assertExists()
         assertFalse(f.app.network.session.hasGallerySession(SiteRegistry.EXHENTAI))
     }
 }

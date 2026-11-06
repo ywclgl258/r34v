@@ -14,6 +14,10 @@
 - `data/HtmlParser`：Jsoup 离线解析站点 HTML，不运行页面脚本。列表、详情、分类和两类排行榜分别解析。
 - `data/Network` 和 `data/SystemProxySelector`：OkHttp、分站 Cookie、系统代理与系统 DNS。遵循系统按 URL 作出的代理/PAC 排除决定，未配置代理才直连；不尝试代理列表中的后续直连回退。移除 DoH、固定/手填 IP、IP 池、VPN 分支和应用内独立代理，旧配置在迁移时清除。系统代理变更广播使旧空闲连接失效，新请求采用新设置。页面请求可取消且有限时，视频连接不设整文件请求时限。
 - `data/LibraryStore`：原生私有 SharedPreferences，沿用旧 JSON 字段。对旧 Flutter 配置只做一次复制迁移，保留原件供回退。
+- `data/PersonalLibrary`：跨站稍后看/合集、完成状态、页码书签、分站阅读模式与订阅收件箱；以 `site:id` 保留来源身份，不改变原有分站收藏/历史。不可变快照按原始 JSON 缓存，写入仍通过 LibraryStore 的同一 preferences。
+- `ui/ComposeCrossSearch`：独立 ViewModel 管理分站搜索、最多三个并发、各站游标/错误及查询替换取消；语言和屏蔽规则变化使请求失效。跨站展示不切换全局站点或共用账号。
+- `downloads/BatchDownloads` 与 `DownloadPolicy`：多选作品逐项解析并加入原下载引擎，添加进度和失败分开记录；Media3 和图集共用系统计费条件，等待网络保持队列，手动暂停单独保留。
+- `data/LibraryBackup` 与 `ui/ComposeBackup`：类型明确的 schema 1 导出、用户密码认证加密、系统文件选择器、解密预览与一次 preferences 合并提交；会话、本机密钥、下载路径/索引与媒体文件不导出。
 - `playback/PlaybackStore`：应用级 Media3 DownloadManager、前台下载服务、持久下载索引。完整下载和播放临时缓存使用不同的 SimpleCache。
 - `downloads/GalleryDownloadStore` 与 `GalleryDownloadService`：漫画持久任务、按页断点续传、单本队列与前台通知。每页以临时文件加原子替换写入，按站点/作品保存；暂停/删除先取消并等待在途任务，后台时限到达时保存进度并暂停。服务重建或用户回到应用后恢复未完成队列。
 - `ui/ComposeDownloads`：统一下载中心，汇总全部站点的 Media3 视频任务、漫画任务和旧版离线视频；按站点和媒体类型筛选。共享展示不改变任务的源站身份、签名地址解析或文件隔离。原有视频索引和旧缓存文件原地沿用。任务事件与 750ms 进度更新只读取轻量状态，首次进入/恢复、任务状态或索引变化、存储权限变化和手动刷新才扫描磁盘；删除视频先等待 Media3 停写，再清理两处目录，期间同 ID 的重新下载等待清理完成。
@@ -25,7 +29,7 @@
 
 播放缓存上限 512 MiB，采用 LRU 回收。完整下载在应用私有文件目录持久保存，通过片库手动删除。下载支持暂停、继续、删除、前台通知、网络条件调度和进程重启恢复；失败后最多额外刷新一次源地址。Android 前台服务达到系统时限时暂停任务。
 
-播放器在退出或进入后台时保存进度并释放，在回到界面时重建。切换清晰度保留位置和暂停状态；全屏与自动全屏已应用状态随重建恢复。观看记录按视频所属站点写入，不受后台切站影响，JSON格式不变。完整缓存的离线播放禁止网络回源；旧版缓存文件经应用私有目录检查后仍可播放。列表网络失败时可读取本地快照，并显示离线缓存提示。Coil 封面共享24MiB内存及64MiB磁盘缓存，键包含站点，离开 Composition 时由 AsyncImage 管理请求取消，解码尺寸服从布局约束；漫画 ReaderBuffer 的预读缓存独立。首页可选榜单各最多再等600ms，不要求排行榜成功才显示最新内容。
+播放器在普通后台暂停，并在真正停止可见时保存进度和释放，返回时重建；2.3.0 画中画可见期间保留同一引擎继续播放，进入/退出小窗不重建 Activity。切换清晰度保留位置和暂停状态；全屏与自动全屏已应用状态随重建恢复。观看记录按视频所属站点写入，不受后台切站影响，JSON格式不变。完整缓存的离线播放禁止网络回源；旧版缓存文件经应用私有目录检查后仍可播放。列表网络失败时可读取本地快照，并显示离线缓存提示。Coil 封面共享24MiB内存及64MiB磁盘缓存，键包含站点，离开 Composition 时由 AsyncImage 管理请求取消，解码尺寸服从布局约束；漫画 ReaderBuffer 的预读缓存独立。首页可选榜单各最多再等600ms，不要求排行榜成功才显示最新内容。
 
 漫画阅读临时文件仍位于 `files/gallery-cache/<site>`，每站256MiB LRU；主动下载由 StorageRoot 选择应用内 `files/gallery-downloads/<site>/<作品ID哈希>` 或公共目录 `R34V/comics/<site>/<作品ID哈希>`，不参与阅读缓存淘汰。任务元数据保存在 `gallery_downloads_v1` SharedPreferences。只有全部页文件与页码目录保存后才写完成标记并将任务置为已下载。离线打开读取下载目录中的详情、页码映射及原始图页，缺失时明确报错，禁止回源；已下载的EX漫画可在无会话时本地阅读，联网加载和未下载的私有内容仍执行原有登录门禁。
 
@@ -33,7 +37,7 @@
 
 ## 数据迁移
 
-保持包名 `com.r34v.r34v`，当前本地交付候选为2.2.6 / 40。2.0.0 与1.18.0的签名来源不同，现已加入签名继承，支持覆盖升级并保留数据；详细平台边界见 [签名与升级](signing.md)。开发版使用 `com.r34v.r34v.debug` 并明确显示“开发版”，与发布版隔离。
+保持包名 `com.r34v.r34v`，当前本地交付候选为2.4.0 / 42。2.0.0 与1.18.0的签名来源不同，现已加入签名继承，支持覆盖升级并保留数据；详细平台边界见 [签名与升级](signing.md)。开发版使用 `com.r34v.r34v.debug` 并明确显示“开发版”，与发布版隔离。
 
 迁移包括观看历史、视频/角色/作者/标签收藏、设置、登录会话、搜索历史和旧缓存索引。搜索列表兼容旧 Java 列表格式和 JSON 格式，旧浮点倍速转换成原生配置。迁移幂等，重启不会再次覆盖新进度。原生版的持续播放缓存使用新目录，旧版未完成的临时传输文件不会当作完整视频导入。
 
@@ -49,3 +53,10 @@ $env:R34V_SIGNING_HOME = 'C:\Users\ywclg\.r34v\signing'
 JVM 测试覆盖页面样本、分页、懒加载图片、分组边界、播放地址转义、路由、JSON 兼容和版本比较。Android 测试使用合成测试视频，验证实际迁移、原生解码、跳转进度、倍速、播放器释放，以及后台下载暂停/继续和断网读取完整缓存。BrowseUiTest 以隔离的中性网络素材驱动实际界面，覆盖收藏读回/取消、搜索范围与返回状态、片库切换和原生播放器打开，并取得默认与200%字体截图；测试夹具不会进入发布包。真实站点的账户登录和更新安装需要对应账号或新发布版本才能最终验收。
 
 工程仅参考 Han1meViewer 的技术方向，未复制其应用源码。AGP 9 的 Kotlin 接入按 [Android 官方迁移说明](https://developer.android.com/build/migrate-to-built-in-kotlin)配置；下载服务使用 [Media3 官方下载架构](https://developer.android.com/media/media3/exoplayer/downloading-media)。
+
+## 2.4 新模块与控制材质
+
+- `data/LocalLibrary`：有界 ZIP/CBZ 与 SAF 目录导入、私有副本、自然排序、去重和本地图页；逻辑身份不加入网络站点列表。
+- `data/PersonalCatalog`、`PlaybackQueue`、`IncomingLink`：跨来源片库快照与智能规则、持久顺序会话、小体积媒体路由 Intent 和受支持分享链接识别。
+- `ui/ComposePersonalHome`、`ComposeLibraryHub`、`ComposeCollections`：个人继续入口、固定／智能片单、离线准备和宽屏列表详情。`ComposeThumbnails` 与 `ComposeLocalImport` 复用既有阅读器及系统选择器。
+- `ui/ComposeLiquid`：Backdrop 1.0.0 封装，控制与内容为兄弟图层；API 31 模糊、33 折射、旧版及减少透明效果使用实底并停止图层记录。`ComposeMediaStage` 根据视频／漫画／写真选择展示比例和动作词。正文、内容卡片和下载任务不使用采样材质；Media3 SurfaceView 不作为 Compose 背景采样。

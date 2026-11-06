@@ -21,14 +21,18 @@ import kotlinx.coroutines.*
 import androidx.media3.exoplayer.offline.Download
 
 class R34Application : Application() {
+    val localLibrary by lazy { com.r34v.r34v.data.LocalLibrary(this) }
+    val queue by lazy { com.r34v.r34v.data.PlaybackQueueStore(library) }
     val library by lazy { LibraryStore(this) }
     val network by lazy { Network(this, library) }
     val repository by lazy { Repository(network, library) }
     val storage by lazy { StorageRoot(this, library) }
     val index by lazy { LibraryIndex(this, storage, library.gson) }
     val galleries by lazy { GalleryRepository(this, network, storage) }
-    val galleryDownloads by lazy { com.r34v.r34v.downloads.GalleryDownloadStore(this, galleries, network, index) }
+    val galleryDownloads by lazy { com.r34v.r34v.downloads.GalleryDownloadStore(this, galleries, network, index) { downloadPolicy.allowed } }
     val playback by lazy { PlaybackStore(this, network, library, storage, index) }
+    val downloadPolicy by lazy { com.r34v.r34v.downloads.DownloadPolicy(this) }
+    val batchDownloads by lazy { com.r34v.r34v.downloads.BatchDownloads(this) }
     private val coverMemory by lazy { MemoryCache.Builder().maxSizeBytes(24L * 1024 * 1024).build() }
     private val coverDisk by lazy { DiskCache.Builder().directory(File(cacheDir, "coil-covers").toOkioPath()).maxSizeBytes(64L * 1024 * 1024).build() }
     private val coverLoaders = mutableMapOf<String, ImageLoader>()
@@ -49,6 +53,7 @@ class R34Application : Application() {
         storage.applyPendingOnStart()
         // Media3's manager is owned by the application main looper, including after service restarts.
         playback.manager
+        downloadPolicy.start()
         androidx.core.content.ContextCompat.registerReceiver(this, object : android.content.BroadcastReceiver() {
             override fun onReceive(context: android.content.Context, intent: android.content.Intent) { network.invalidate() }
         }, android.content.IntentFilter(android.net.Proxy.PROXY_CHANGE_ACTION), androidx.core.content.ContextCompat.RECEIVER_EXPORTED)

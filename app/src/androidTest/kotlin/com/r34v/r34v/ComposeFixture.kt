@@ -139,7 +139,7 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         .putExtra("link", "${SiteRegistry.EHENTAI.base}/tags/sample/")) as MainActivity
     fun shot(name: String) {
-        val dir = File(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir") ?: ins.targetContext.getExternalFilesDir(null)!!.absolutePath, "compose-shots").apply { mkdirs() }
+        val dir = File(ins.targetContext.cacheDir, "compose-shots").apply { check(isDirectory || mkdirs()) }
         ins.waitForIdleSync(); ins.uiAutomation.waitForIdle(250, 3000)
         val image = ins.uiAutomation.takeScreenshot() ?: error("No screenshot")
         File(dir, "$name.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }; image.recycle()
@@ -159,8 +159,11 @@ abstract class ComposeUiCase {
     @get:Rule val ui = createEmptyComposeRule()
     fun waitText(text: String) { ui.waitUntil(15000) { runCatching { ui.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }.getOrDefault(false) } }
     fun waitCovers() { ui.waitUntil(15000) { ui.onAllNodesWithTag("cover-ready", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }; ui.waitForIdle() }
-    fun waitHome() { ui.waitUntil(15000) { ui.onAllNodesWithTag("home-carousel").fetchSemanticsNodes().isNotEmpty() }; ui.waitForIdle() }
+    fun waitHome() { ui.waitUntil(15000) { listOf("personal-home", "home-carousel", "video-stage", "comic-stage", "photo-stage").any { ui.onAllNodesWithTag(it).fetchSemanticsNodes().isNotEmpty() } }; ui.waitForIdle() }
+    fun openSourceHome() { waitHome(); ui.onNodeWithTag("personal-home").performScrollToNode(hasText("浏览当前来源的最新内容")); clickText("浏览当前来源的最新内容") }
     fun clickText(text: String) { waitText(text); ui.onAllNodesWithText(text).onLast().performClick() }
     fun back(fixture: ComposeFixture) { ui.waitForIdle(); fixture.ins.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK); ui.waitForIdle() }
-    fun switchSite(name: String) { ui.onNode(hasContentDescription("切换站点，当前", substring = true)).performClick(); clickText(name) }
+    fun switchSite(name: String) { ui.onNode(hasContentDescription("切换站点，当前", substring = true)).performClick(); ui.onNodeWithContentDescription("站点列表").performScrollToNode(hasText(name)); clickText(name) }
+    fun readerTool(label: String) { ui.onNodeWithContentDescription("阅读工具").performClick(); clickText(label) }
+    fun openWatchLater() { ui.onNodeWithTag("library-hub").performScrollToNode(hasText("稍后看")); clickText("稍后看") }
 }

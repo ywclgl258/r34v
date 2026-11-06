@@ -41,9 +41,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(6.dp, RoundedCornerShape(radius.dp), clip = false)
-    .clip(RoundedCornerShape(radius.dp))
-    .background(Brush.verticalGradient(listOf(GlassTopColor, GlassBottomColor)))
+@Composable fun Modifier.cinemaGlass(radius: Int = 16): Modifier = liquidSurface(radius)
 
 @Composable fun BrandWordmark() {
     Text("R34V", color = BrandColor, fontSize = 20.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp)
@@ -59,24 +57,30 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(6.dp, RoundedCorne
 
 @Composable fun CinemaNavigation(selectedTab: String, choose: (String) -> Unit) {
     val landscape = LocalConfiguration.current.screenWidthDp > LocalConfiguration.current.screenHeightDp
+    val tabs = listOf(Triple("home", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore),
+        Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark))
+    val selectedIndex by animateFloatAsState(tabs.indexOfFirst { it.first == selectedTab }.coerceAtLeast(0).toFloat(), tween(220), label = "navigationIndicator")
+    val tabHeight = ((if (landscape) 52 else 60) + ((LocalDensity.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp
     Box(Modifier.fillMaxWidth().navigationBarsPadding(), contentAlignment = Alignment.Center) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp).widthIn(max = 620.dp).fillMaxWidth()
-            .height(if (landscape) 56.dp else 66.dp).cinemaGlass(23).padding(6.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-            listOf(Triple("home", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore),
-                Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark)).forEach { (key, name, icon) ->
+        BoxWithConstraints(Modifier.padding(horizontal = 16.dp, vertical = 10.dp).widthIn(max = 620.dp).fillMaxWidth()
+            .liquidSurface(34).padding(6.dp)) {
+            val tabWidth = maxWidth / 4
+            Box(Modifier.offset(x = tabWidth * selectedIndex).width(tabWidth).height(tabHeight).clip(RoundedCornerShape(28.dp)).background(Color.White.copy(alpha = .15f)))
+            Row(Modifier.fillMaxWidth().height(tabHeight)) {
+            tabs.forEach { (key, name, icon) ->
                 val selected = selectedTab == key
-                val background by animateColorAsState(if (selected) Color.White.copy(alpha = .13f) else Color.Transparent, label = "tab")
                 val content by animateColorAsState(if (selected) Color.White else MutedColor, label = "tabContent")
-                Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(17.dp)).background(background)
+                Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(28.dp))
                     .selectable(selected, role = Role.Tab) { choose(key) }) {
                     Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         CompositionLocalProvider(LocalContentColor provides content) {
-                            Glyph(icon, null, Modifier.size(19.dp))
-                            Text(name, color = content, fontSize = 10.sp, lineHeight = 13.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+                            Glyph(icon, null, Modifier.size(22.dp))
+                            Text(name, color = content, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -90,6 +94,7 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(6.dp, RoundedCorne
     list: LazyListState,
     automatic: Boolean,
     loadAutomatically: () -> Unit,
+    toggleWaiting: (Video) -> Unit,
 ) {
     LaunchedEffect(list) {
         var previous = 0
@@ -103,7 +108,13 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(6.dp, RoundedCorne
     LaunchedEffect(nearEnd, videos.size, busy, error, hasNext, automatic) { if (nearEnd && hasNext && automatic && !busy && error == null) loadAutomatically() }
     LazyColumn(Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = list,
         contentPadding = PaddingValues(bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
-        if (features.isNotEmpty()) item("hero") { CinemaHero(features, saved, play, favorite) }
+        if (continuing.isNotEmpty()) item("resume-hero") {
+            val watch = continuing.first()
+            Column(Modifier.padding(start = 18.dp, end = 18.dp, top = LocalSourceTopInset.current + 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Title("继续观看", large = true)
+                MediaResumeHero(watch.video(), "${watch.position / 60} 分钟处继续", "继续观看", play)
+            }
+        } else if (features.isNotEmpty()) item("hero") { CinemaHero(features, saved, play, toggleWaiting) }
         if (cached) item("cached") { Copy("当前显示离线列表缓存", Modifier.padding(horizontal = 16.dp)) }
         if (continuing.isNotEmpty()) item("continue") {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -165,7 +176,7 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(6.dp, RoundedCorne
                 Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).shadow(10.dp, RoundedCornerShape(14.dp), clip = false)
                     .clip(RoundedCornerShape(14.dp))) {
                     SiteImage(video.thumb, site, Modifier.fillMaxSize())
-                    if (ranked) GlassSurface(video.thumb, site, Modifier.align(Alignment.TopStart).padding(7.dp).size(30.dp), radius = 10) {
+                    if (ranked) GlassSurface(modifier = Modifier.align(Alignment.TopStart).padding(7.dp).size(30.dp), radius = 10, opaque = true) {
                         Text("${index + 1}", Modifier.align(Alignment.Center), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     if (video.duration.isNotBlank()) Text(video.duration, Modifier.align(Alignment.BottomEnd).padding(5.dp)
@@ -187,7 +198,7 @@ fun Modifier.cinemaGlass(radius: Int = 16): Modifier = shadow(6.dp, RoundedCorne
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
             SiteImage(watch.thumb, site, Modifier.fillMaxSize())
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .16f)))
-            GlassSurface(watch.thumb, site, Modifier.align(Alignment.Center).size(38.dp), radius = 19) {
+            GlassSurface(modifier = Modifier.align(Alignment.Center).size(38.dp), radius = 19, opaque = true) {
                 Glyph(R.drawable.ic_play, null, Modifier.align(Alignment.Center).size(18.dp))
             }
         }

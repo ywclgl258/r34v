@@ -10,7 +10,8 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class BrowseUiTest : ComposeUiCase() {
     @Test fun browseSearchLibraryAndSettings() = ComposeFixture().use { f ->
-        val activity = f.launch(); ui.waitUntil(10000) { ui.onAllNodesWithContentDescription("暂停轮播").fetchSemanticsNodes().isNotEmpty() }; waitCovers()
+        f.app.library.clearHistory()
+        val activity = f.launch(); openSourceHome(); ui.waitUntil(10000) { ui.onAllNodesWithContentDescription("暂停轮播").fetchSemanticsNodes().isNotEmpty() }; waitCovers()
         assertTrue("The hero must be visible on the initial viewport", ui.onNodeWithTag("home-carousel").fetchSemanticsNode().boundsInRoot.height > f.ins.targetContext.resources.displayMetrics.density * 200)
         f.shot("01-home")
         ui.onNodeWithContentDescription("暂停轮播").performClick(); ui.onNodeWithContentDescription("继续轮播").assertExists()

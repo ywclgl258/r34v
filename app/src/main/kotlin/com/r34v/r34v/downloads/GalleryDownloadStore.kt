@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /** Persistent task records; the foreground service owns execution, one book at a time. */
 class GalleryDownloadStore(private val context: Context, private val repository: GalleryRepository, private val network: Network,
-                           private val index: LibraryIndex) {
+                           private val index: LibraryIndex, private val networkAllowed: () -> Boolean = { true }) {
     /** Test and tooling constructor: records are then purely local to this store. */
     constructor(context: Context, repository: GalleryRepository, network: Network) :
         this(context, repository, network, LibraryIndex(context, StorageRoot(context, LibraryStore(context))))
@@ -55,20 +55,24 @@ class GalleryDownloadStore(private val context: Context, private val repository:
             else if (previous?.state == GalleryDownloadState.COMPLETED && repository.isDownloaded(entry)) previous
             else (previous ?: GalleryDownload(id, entry.copy(mediaKind = MediaKind.GALLERY))).copy(state = GalleryDownloadState.QUEUED, error = "").also(::write)
         }
-        if (value.state != GalleryDownloadState.COMPLETED) startService()
+        if (value.state != GalleryDownloadState.COMPLETED && networkAllowed()) startService()
         value
     }
-    private fun startService() {
+    private fun startService(keepQueued: Boolean = false) {
         try { ContextCompat.startForegroundService(context, Intent(context, GalleryDownloadService::class.java)) }
         catch (e: Exception) {
-            tasks().filter { it.state == GalleryDownloadState.QUEUED }.forEach { update(it.id) { task -> task.copy(state = GalleryDownloadState.PAUSED, error = "系统暂时限制后台下载，请回到下载中心点击继续") } }
+            tasks().filter { it.state == GalleryDownloadState.QUEUED }.forEach { update(it.id) { task -> task.copy(state = if (keepQueued) GalleryDownloadState.QUEUED else GalleryDownloadState.PAUSED, error = "系统暂时限制后台下载，请回到下载中心点击继续") } }
             throw e
         }
     }
     fun resumePending() {
         val removing = tasks().filter { it.state == GalleryDownloadState.REMOVING }
         if (removing.isNotEmpty()) maintenance.launch { removing.forEach { runCatching { remove(it.id) } } }
-        if (repository.downloadsAllowed && tasks().any { it.state == GalleryDownloadState.QUEUED || it.state == GalleryDownloadState.DOWNLOADING }) runCatching { startService() }
+        if (repository.downloadsAllowed && networkAllowed() && tasks().any { it.state == GalleryDownloadState.QUEUED || it.state == GalleryDownloadState.DOWNLOADING }) runCatching { startService(keepQueued = true) }
+    }
+    val canRun get() = repository.downloadsAllowed && networkAllowed()
+    suspend fun waitForNetwork() = withContext(Dispatchers.IO) {
+        if (!networkAllowed()) active.values.toList().forEach { it.cancelAndJoin() }
     }
     suspend fun pause(id: String) = withContext(Dispatchers.IO) {
         update(id) { if (it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING)) it.copy(state = GalleryDownloadState.PAUSED, error = "") else it }
@@ -101,7 +105,7 @@ class GalleryDownloadStore(private val context: Context, private val repository:
     fun hasPending() = tasks().any { it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING) }
 
     @Synchronized fun next(scope: CoroutineScope): Job? {
-        if (!repository.downloadsAllowed) return null
+        if (!canRun || active.isNotEmpty()) return null
         val record = tasks().lastOrNull { it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING) && !active.containsKey(it.id) } ?: return null
         write(record.copy(state = GalleryDownloadState.DOWNLOADING, error = ""))
         val job = scope.launch(start = CoroutineStart.LAZY) {

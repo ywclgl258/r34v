@@ -3,6 +3,8 @@
 package com.r34v.r34v.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -47,6 +49,10 @@ private data class DownloadSnapshot(
     var kind by rememberSaveable { mutableIntStateOf(0) }
     var siteFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var scanNote by remember { mutableStateOf<String?>(null) }
+    val policyRevision by app.downloadPolicy.revision.collectAsState()
+    val onlyUnmetered = remember(policyRevision) { app.downloadPolicy.unmeteredOnly }
+    val networkAllowed = remember(policyRevision) { app.downloadPolicy.allowed }
+    val batch by app.batchDownloads.progress.collectAsState()
     LaunchedEffect(resumed, refresh) {
         if (!resumed) return@LaunchedEffect
         var scanned: List<Any>? = null
@@ -116,6 +122,41 @@ private data class DownloadSnapshot(
                 }
             }
             Choices(listOf("全部内容", "视频", "图集"), kind) { kind = it }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Selector(if (onlyUnmetered) "仅非计费网络" else "任意网络") {
+                    dialogs.choose("下载网络条件", listOf("任意网络", "仅非计费网络"), if (onlyUnmetered) 1 else 0) { app.downloadPolicy.setUnmetered(it == 1) }
+                }
+                if (videos.isNotEmpty() || books.isNotEmpty()) TextAction({
+                    val choices = videos.filter { it.first.state != Download.STATE_COMPLETED }.map { "v:${it.first.request.id}" to it.second.video.title } +
+                        books.filter { it.state !in listOf(GalleryDownloadState.COMPLETED, GalleryDownloadState.REMOVING) }.map { "g:${it.id}" to it.entry.title }
+                    dialogs.content = {
+                        var selected by remember { mutableStateOf(choices.map { it.first }.toSet()) }
+                        AlertDialog(dialogs::dismiss, title = { Text("批量管理 · ${selected.size} 项") }, text = {
+                            Column(Modifier.verticalScroll(rememberScrollState())) {
+                                TextAction({ selected = if (selected.size == choices.size) emptySet() else choices.map { it.first }.toSet() }) { Text("全选 / 清空") }
+                                choices.forEach { (id, title) -> CheckRow(title, id in selected) { selected = if (it) selected + id else selected - id } }
+                            }
+                        }, confirmButton = {
+                            FlowRow {
+                                listOf(true to "暂停所选", false to "继续所选").forEach { (pause, label) -> TextAction({
+                                    dialogs.dismiss()
+                                    act("batch") { for (key in selected) {
+                                        if (key.startsWith("v:")) app.playback.pause(key.removePrefix("v:"), pause)
+                                        else if (pause) app.galleryDownloads.pause(key.removePrefix("g:"))
+                                        else snapshot.books.firstOrNull { it.id == key.removePrefix("g:") }?.let { app.galleryDownloads.add(it.entry) }
+                                    } }
+                                }, enabled = selected.isNotEmpty()) { Text(label) } }
+                            }
+                        }, dismissButton = { TextAction(dialogs::dismiss) { Text("取消") } })
+                    }
+                }) { Text("批量管理") }
+            }
+            if (!networkAllowed) Copy("正在等待${if (onlyUnmetered) "非计费网络" else "网络连接"}，手动暂停的任务会保持暂停。")
+            if (batch.total > 0) {
+                Copy("批量添加${if (batch.running) "中" else "已结束"}：${batch.processed} / ${batch.total}，已加入 ${batch.added} 项")
+                if (batch.running) TextAction(app.batchDownloads::cancel) { Text("停止添加剩余作品") }
+                if (batch.errors.isNotEmpty()) TextAction({ dialogs.message("${batch.errors.size} 项添加失败", batch.errors.joinToString("\n")) }) { Text("查看失败项") }
+            }
             if (count == 0 || diskComics.isNotEmpty() || diskVideos.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
                 Copy(snapshot.root, Modifier.weight(1f))
                 TextAction({ act("rescan") { scanNote = "已重新扫描：${rescan()} 项" } }, enabled = "rescan" !in busy) { Text("重新扫描") }
@@ -213,7 +254,7 @@ private data class DownloadSnapshot(
 
 @Composable private fun DownloadTile(id: String, entry: Video, type: String, status: String, progress: Float? = null,
     error: String = "", actions: @Composable FlowRowScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().testTag("download-$id").cinemaGlass(16).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxWidth().testTag("download-$id").contentPanel(20).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             SiteImage(entry.thumb, SiteRegistry.byIdOrDefault(entry.site), Modifier.size(62.dp, 84.dp).clip(RoundedCornerShape(10.dp)))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {

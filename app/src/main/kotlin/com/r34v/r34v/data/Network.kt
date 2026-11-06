@@ -268,12 +268,16 @@ class Repository(private val network: Network, private val library: LibraryStore
      */
     suspend fun subscriptions(site: SiteContext, order: SubscriptionOrder, tags: List<Subscription>): SubscriptionPage =
         withContext(Dispatchers.IO) {
+            val permits = kotlinx.coroutines.sync.Semaphore(3)
             val feeds = coroutineScope {
                 tags.map { entry ->
                     async {
                         runCatching {
+                            permits.acquire()
+                            try {
                             val page = feed(FeedRequest(FeedKind.TAG, entry.slug, Sort.NEWEST), site)
                             TagFeed(entry, page.videos.filter { library.allowed(it, site.id) }, null, page.cached)
+                            } finally { permits.release() }
                         }.getOrElse { error ->
                             if (error is CancellationException) throw error
                             TagFeed(entry, emptyList(), error.message ?: "这个标签暂时取不到内容")

@@ -15,10 +15,7 @@ class CinemaUiTest : ComposeUiCase() {
     @Test fun immersiveHeroPlaylistAndHorizontalShelves() = ComposeFixture(cinematic = true).use { f ->
         val video = f.video()
         f.app.library.clearHistory()
-        listOf(1, 2, 3).forEach { i -> val entry = f.video(index = i)
-            f.app.library.saveWatch(Watch(entry.id, entry.title, entry.thumb, entry.url, position = 600 + i * 120L, duration = 2520, site = entry.site))
-        }
-        f.launch(); waitCovers()
+        f.launch(); openSourceHome(); waitCovers()
         ui.onNodeWithContentDescription("暂停轮播").performClick()
         ui.onNodeWithTag("home-carousel").assertIsDisplayed()
         val density = f.ins.targetContext.resources.displayMetrics.density
@@ -27,11 +24,11 @@ class CinemaUiTest : ComposeUiCase() {
         f.shot("16-cinema-home")
         ui.onNodeWithContentDescription("加入我的片单 ${video.title}").performClick()
         ui.onNodeWithContentDescription("从我的片单移除 ${video.title}").assertExists()
-        ui.runOnIdle { assertTrue(f.app.library.isFavorite("video", video.id, video.site)) }
+        ui.runOnIdle { assertTrue(f.app.library.personal.contains(video)); assertFalse(f.app.library.isFavorite("video", video.id, video.site)) }
         f.shot("16-cinema-saved")
         ui.waitUntil(10000) { ui.onAllNodesWithText("已收藏").fetchSemanticsNodes().isEmpty() }
         ui.onNodeWithContentDescription("从我的片单移除 ${video.title}").performClick()
-        ui.runOnIdle { assertFalse(f.app.library.isFavorite("video", video.id, video.site)) }
+        ui.runOnIdle { assertFalse(f.app.library.personal.contains(video)) }
         ui.onNodeWithContentDescription("内容列表").performScrollToIndex(2)
         ui.onAllNodesWithTag("poster-${video.site}-${video.id}").onFirst().assertExists()
         f.shot("17-cinema-shelves")

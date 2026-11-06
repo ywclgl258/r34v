@@ -42,6 +42,9 @@ class StoragePermissionUiTest : ComposeUiCase() {
                 openLocation()
                 ui.onNodeWithText(migrate).performScrollTo().performClick()
                 ui.waitUntil(15000) { !resumed(f, running) }
+                // onPause precedes the system permission window becoming interactive.
+                ui.waitUntil(15000) { f.ins.uiAutomation.rootInActiveWindow?.packageName?.toString() == "com.android.settings" }
+                f.ins.uiAutomation.waitForIdle(300, 3000)
                 assertTrue(f.ins.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK))
                 ui.waitUntil(15000) { resumed(f, running) }
                 waitText(migrate)

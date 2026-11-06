@@ -4,6 +4,7 @@ package com.r34v.r34v
 
 import android.content.Intent
 import android.os.Bundle
+import android.net.Uri
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
@@ -32,6 +33,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.input.*
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,20 +46,28 @@ import androidx.media3.exoplayer.offline.Download
 import com.r34v.r34v.data.*
 import com.r34v.r34v.data.adapter.*
 import com.r34v.r34v.ui.*
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 class MainActivity : ComponentActivity() {
     private val feeds by viewModels<FeedStates>()
+    private val crossSearch by viewModels<CrossSearchState>()
     private val app get() = application as R34Application
     private val store get() = app.library
     private var siteId by mutableStateOf("")
     private var screen by mutableStateOf("home")
     private var request by mutableStateOf(FeedRequest())
-    private var libraryTab by mutableStateOf("记录")
+    private var libraryTab by mutableStateOf("片库")
     private var favoriteTab by mutableStateOf("视频")
     private var searchQuery by mutableStateOf("")
     private var searchScope by mutableIntStateOf(0)
+    private var multipleSources by mutableStateOf(false)
+    private var searchSites by mutableStateOf(listOf<String>())
+    private var searchCategory by mutableStateOf("")
+    private var searchLanguages by mutableStateOf<Map<String, String>>(emptyMap())
+    private var importingUri by mutableStateOf<Uri?>(null)
+    private var importingDirectory by mutableStateOf(false)
     private var navigationTab by mutableStateOf("home")
     private var revision by mutableIntStateOf(0)
     private var resumed by mutableStateOf(false)
@@ -65,6 +76,8 @@ class MainActivity : ComponentActivity() {
     private val backStack = ArrayDeque<Pair<String, FeedRequest>>()
     private fun showNotice(text: String) { notice = text }
     private val dialogs = ComposeDialogs()
+    private val archivePicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> uri?.let { importingDirectory = false; importingUri = it } }
+    private val directoryPicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { importingDirectory = true; importingUri = it } }
     private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) navigate("home", false)
     }
@@ -75,12 +88,18 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         siteId = store.siteId
+        searchSites = store.string("cross_search_sites").split(',').filter { SiteRegistry.byId(it) != null }.ifEmpty { listOf(siteId) }
         if (savedInstanceState != null) {
             screen = savedInstanceState.getString("screen") ?: "home"
             navigationTab = savedInstanceState.getString("navigationTab") ?: "home"
             request = runCatching { store.gson.fromJson(savedInstanceState.getString("request"), FeedRequest::class.java) }.getOrNull() ?: FeedRequest()
             searchQuery = savedInstanceState.getString("searchQuery").orEmpty(); searchScope = savedInstanceState.getInt("searchScope")
-            libraryTab = savedInstanceState.getString("libraryTab") ?: "记录"; favoriteTab = savedInstanceState.getString("favoriteTab") ?: "视频"
+            multipleSources = savedInstanceState.getBoolean("multipleSources")
+            searchSites = savedInstanceState.getStringArrayList("searchSites")?.filter { id -> SiteRegistry.all.any { it.id == id } }?.takeIf { it.isNotEmpty() } ?: searchSites
+            searchCategory = savedInstanceState.getString("searchCategory").orEmpty()
+            searchLanguages = runCatching { store.gson.fromJson(savedInstanceState.getString("searchLanguages"), object : com.google.gson.reflect.TypeToken<Map<String, String>>() {}.type) as Map<String,String> }.getOrDefault(emptyMap())
+            importingUri = savedInstanceState.getString("importingUri")?.let(Uri::parse); importingDirectory = savedInstanceState.getBoolean("importingDirectory")
+            libraryTab = savedInstanceState.getString("libraryTab") ?: "片库"; favoriteTab = savedInstanceState.getString("favoriteTab") ?: "视频"
             savedInstanceState.getStringArrayList("backScreens").orEmpty().zip(savedInstanceState.getStringArrayList("backRequests").orEmpty()).forEach { (route, json) ->
                 runCatching { store.gson.fromJson(json, FeedRequest::class.java) }.getOrNull()?.let { backStack.addLast(route to it) }
             }
@@ -96,12 +115,16 @@ class MainActivity : ComponentActivity() {
         }
         if (intent.getBooleanExtra("downloads", false)) { libraryTab = "下载"; navigate("library", false); intent.removeExtra("downloads") }
         setContent { R34Theme { AppContent() } }
+        openLocalImport(intent)
+        if (savedInstanceState == null && intent.action == Intent.ACTION_SEND) receiveShare(intent)
         if (!BuildConfig.DEBUG && store.bool("auto_update", true) && System.currentTimeMillis() - store.prefs.getLong("update_checked_at", 0) > 12 * 60 * 60 * 1000) {
             lifecycleScope.launch { UpdateController(this@MainActivity, app, dialogs).check(true) }
         }
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent); setIntent(intent)
+        if (intent.action == Intent.ACTION_SEND) receiveShare(intent)
+        openLocalImport(intent)
         if (intent.getBooleanExtra("downloads", false)) { libraryTab = "下载"; navigate("library"); intent.removeExtra("downloads") }
     }
     override fun onResume() { super.onResume(); resumed = true; revision++; app.galleryDownloads.resumePending() }
@@ -109,6 +132,10 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(out: Bundle) {
         out.putString("screen", screen); out.putString("navigationTab", navigationTab); out.putString("request", store.gson.toJson(request))
         out.putString("searchQuery", searchQuery); out.putInt("searchScope", searchScope); out.putString("libraryTab", libraryTab); out.putString("favoriteTab", favoriteTab)
+        out.putBoolean("multipleSources", multipleSources)
+        out.putStringArrayList("searchSites", ArrayList(searchSites))
+        out.putString("searchCategory", searchCategory); out.putString("searchLanguages", store.gson.toJson(searchLanguages))
+        out.putString("importingUri", importingUri?.toString()); out.putBoolean("importingDirectory", importingDirectory)
         out.putStringArrayList("backScreens", ArrayList(backStack.map { it.first })); out.putStringArrayList("backRequests", ArrayList(backStack.map { store.gson.toJson(it.second) }))
         super.onSaveInstanceState(out)
     }
@@ -117,6 +144,7 @@ class MainActivity : ComponentActivity() {
         if (push && screen != target) backStack.addLast(screen to request)
         screen = target
         if (target in listOf("home", "explore", "search", "library")) navigationTab = target
+        if (target == "siteHome") navigationTab = "explore"
     }
     private fun back() {
         if (backStack.isNotEmpty()) { val previous = backStack.removeLast(); request = previous.second; navigate(previous.first, false) }
@@ -126,7 +154,7 @@ class MainActivity : ComponentActivity() {
         if (site.id == siteId) return
         dialogs.dismiss(); tutorial = false; store.switchSite(site.id); siteId = site.id
         backStack.clear(); request = FeedRequest(); searchQuery = ""; searchScope = 0; libraryTab = "记录"; favoriteTab = if (site.mediaKind == MediaKind.GALLERY) site.category.itemNoun else "视频"
-        navigate("home", false); showNotice("已切换到 ${site.name}")
+        navigate("siteHome", false); showNotice("已切换到 ${site.name}")
     }
     private fun openFeed(value: FeedRequest) {
         backStack.addLast(screen to request)
@@ -136,6 +164,8 @@ class MainActivity : ComponentActivity() {
     }
     private fun browse(segment: String) { backStack.addLast(screen to request); request = FeedRequest(target = segment); navigate("index", false) }
     private fun play(video: Video, offlineId: String? = null, localPath: String? = null, read: Boolean = false, offline: Boolean = false, sourceRoot: String = "") {
+        if (video.site == SiteRegistry.LOCAL.id) { MediaRouter.open(this, video, read = true); return }
+        store.personal.markRead(video.site, setOf(video.entryKey))
         val gallery = video.mediaKind == MediaKind.GALLERY || SiteRegistry.byIdOrDefault(video.site).mediaKind == MediaKind.GALLERY
         startActivity(if (gallery) Intent(this, GalleryActivity::class.java).putExtra("gallery", store.gson.toJson(video.copy(mediaKind = MediaKind.GALLERY))).putExtra("read", read).putExtra("offline", offline).putExtra("root", sourceRoot)
         else Intent(this, PlayerActivity::class.java).putExtra("video", store.gson.toJson(video)).putExtra("download", offlineId).putExtra("local", localPath))
@@ -176,6 +206,60 @@ class MainActivity : ComponentActivity() {
         val kind = if (video.mediaKind == MediaKind.GALLERY || SiteRegistry.byIdOrDefault(video.site).mediaKind == MediaKind.GALLERY) "gallery" else "video"
         showNotice(if (store.toggleFavorite(Favorite(kind, video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site)) "已收藏" else "已取消收藏"); revision++
     }
+    private fun downloadBatch(videos: List<Video>) {
+        val downloadable = videos.filter { it.site != SiteRegistry.LOCAL.id }.distinctBy { it.entryKey }
+        if (downloadable.isEmpty()) { showNotice("所选内容已经在本地，无需下载"); return }
+        dialogs.confirm("下载 ${downloadable.size} 部作品？", "加入下载", "视频使用默认清晰度 ${store.string("quality", "720p")}，图集下载整本。") {
+            if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 42)
+            runCatching { app.batchDownloads.start(downloadable); libraryTab = "下载"; navigate("library"); showNotice("正在加入下载，可在下载中心查看进度") }
+                .onFailure { dialogs.message("无法开始批量下载", it.message.orEmpty()) }
+        }
+    }
+    private fun savedSearch(value: SavedSearch?) {
+        if (value == null) { navigate("search"); return }
+        searchQuery = value.query; searchSites = value.sources.filter { id -> SiteRegistry.all.any { it.id == id } }
+        searchCategory = value.category; searchLanguages = value.languages; multipleSources = true
+        if (searchSites.isEmpty()) { showNotice("搜索来源已不可用，请重新选择"); navigate("search") } else navigate("multiSearch")
+    }
+    private fun saveSearch() {
+        if (searchQuery.isBlank()) { showNotice("请输入关键词"); return }
+        dialogs.edit("保存搜索方案", searchQuery, validate = { if (it.isBlank() || it.length > 80) "名称需要 1–80 个字" else null }) { name ->
+            store.personal.saveSearch(SavedSearch(name = name, query = searchQuery.trim(), sources = searchSites, category = searchCategory,
+                languages = searchSites.associateWith { searchLanguages[it] ?: store.galleryLanguage(it).name }))
+            showNotice("已保存到常用搜索"); revision++
+        }
+    }
+    private fun importLocal() { dialogs.choose("导入本地漫画", listOf("选择 CBZ / ZIP 文件", "选择图片目录")) { index ->
+        if (index == 0) archivePicker.launch(arrayOf("application/zip", "application/x-cbz", "application/vnd.comicbook+zip", "application/octet-stream")) else directoryPicker.launch(null)
+    } }
+    private fun openLocalImport(value: Intent) {
+        if (!value.getBooleanExtra("import_local", false)) return
+        value.removeExtra("import_local"); backStack.clear(); libraryTab = "片库"; navigate("library", false); importLocal()
+    }
+    private fun receiveShare(value: Intent) {
+        val text = value.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty(); value.removeExtra(Intent.EXTRA_TEXT)
+        confirmLink(text)
+    }
+    private fun confirmLink(text: String) {
+        val link = runCatching { incomingLink(text) }.getOrElse { dialogs.message("无法识别作品链接", it.message.orEmpty()); return }
+        dialogs.confirm("在 R34V 中打开？", "识别并打开", "${link.site.name}\n${link.url}") { openIncoming(link) }
+    }
+    private fun pasteLink() { dialogs.edit("从链接打开作品", hint = "粘贴支持站点的完整链接", validate = { runCatching { incomingLink(it) }.exceptionOrNull()?.message }) { confirmLink(it) } }
+    private fun openIncoming(link: IncomingLink) {
+        val adapter = AdapterRegistry.adapter(link.site, app.network)
+        val target = adapter.linkRequest(link.url)
+        if (target != null) { store.switchSite(link.site.id); siteId = link.site.id; openFeed(target); return }
+        dialogs.content = {
+            var error by remember { mutableStateOf<String?>(null) }; var retry by remember { mutableIntStateOf(0) }
+            LaunchedEffect(link.url, retry) { error = null; try {
+                val video = withContext(Dispatchers.IO) { if (link.site.mediaKind == MediaKind.GALLERY) adapter.gallery(link.url).entry else adapter.detail(link.url).video }
+                dialogs.dismiss(); play(video.copy(site = link.site.id, mediaKind = link.site.mediaKind))
+            } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "作品识别失败" } }
+            AlertDialog({ dialogs.dismiss() }, title = { Text("打开 ${link.site.name} 作品") }, text = { if (error == null) Loading("正在识别作品…") else Text(error.orEmpty()) },
+                confirmButton = { if (error != null) TextAction({ retry++ }) { Text("重试") } }, dismissButton = { TextAction({ dialogs.dismiss() }) { Text("取消") } })
+        }
+    }
     @Composable private fun AppContent() {
         val site = SiteRegistry.byIdOrDefault(siteId)
         val adapter = remember(site) { AdapterRegistry.adapter(site, app.network) }
@@ -185,8 +269,12 @@ class MainActivity : ComponentActivity() {
         var scrollDistance by remember(site, screen) { mutableFloatStateOf(0f) }
         val holder = rememberSaveableStateHolder()
         val snackbar = remember { SnackbarHostState() }
-        val immersiveHome = screen == "home" && site.mediaKind == MediaKind.VIDEO
+        val backdrop = rememberLayerBackdrop()
+        val density = LocalDensity.current
+        var sourceTopInset by remember { mutableStateOf(132.dp) }
+        val immersiveHome = screen == "siteHome" && site.mediaKind == MediaKind.VIDEO
         val landscape = LocalConfiguration.current.screenWidthDp > LocalConfiguration.current.screenHeightDp
+        val compactHeader = LocalConfiguration.current.screenWidthDp < 360 || LocalConfiguration.current.fontScale > 1.3f
         val condensedTop = immersiveHome && !languageVisible
         LaunchedEffect(notice) { notice?.let { snackbar.showSnackbar(it); notice = null } }
         fun scroll(dy: Float, top: Boolean) {
@@ -199,9 +287,10 @@ class MainActivity : ComponentActivity() {
                 withFrameNanos { }; if (store.consumeSiteSwitchTutorial()) tutorial = true
             }
         }
+        CompositionLocalProvider(LocalLiquidBackdrop provides backdrop, LocalSourceTopInset provides sourceTopInset) {
         ModalNavigationDrawer(drawerState = drawer, drawerContent = {
             ModalDrawerSheet(Modifier.widthIn(max = 320.dp), drawerContainerColor = SurfaceColor) {
-                LazyColumn(Modifier.fillMaxSize().padding(12.dp)) {
+                LazyColumn(Modifier.fillMaxSize().padding(12.dp).then(Modifier.semantics { contentDescription = "站点列表" })) {
                     item { Title("切换站点", Modifier.padding(12.dp), true) }
                     // Grouped by what the site serves: one flat list of eight names said nothing
                     // about whether a tap leads to a video, a comic or a photo set.
@@ -230,16 +319,17 @@ class MainActivity : ComponentActivity() {
             val appTopBar: @Composable () -> Unit = {
                 Column(Modifier.fillMaxWidth().background(if (immersiveHome && !condensedTop)
                     Brush.verticalGradient(listOf(Color.Black.copy(alpha = .8f), Color.Black.copy(alpha = .5f), Color.Transparent))
-                    else Brush.verticalGradient(listOf(CanvasColor, CanvasColor))).statusBarsPadding()) {
+                    else Brush.verticalGradient(listOf(CanvasColor, CanvasColor))).onSizeChanged { sourceTopInset = with(density) { it.height.toDp() } }.statusBarsPadding()) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = if (condensedTop) 12.dp else 0.dp)
                         .then(if (condensedTop) Modifier.cinemaGlass(19) else Modifier)
                         .heightIn(min = 56.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (screen in listOf("settings", "feed", "index", "subscriptions")) IconAction(R.drawable.ic_back, "返回") { back() }
-                        if (screen == "home") { BrandWordmark(); Spacer(Modifier.width(6.dp)) }
-                        else Text(when (screen) { "search" -> "搜索"; "explore" -> "发现"; "library" -> "片库"; "settings" -> "设置"; "subscriptions" -> "订阅"; "feed" -> adapter.feedTitle(request); else -> "浏览索引" }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                        if (screen in listOf("settings", "feed", "index", "subscriptions", "multiSearch", "backup", "siteHome", "updates")) IconAction(R.drawable.ic_back, "返回") { back() }
+                        if (screen in listOf("home", "siteHome")) { BrandWordmark(); Spacer(Modifier.width(6.dp)) }
+                        else Text(when (screen) { "search" -> "搜索"; "multiSearch" -> "跨站搜索"; "backup" -> "备份与恢复"; "explore" -> "发现"; "library" -> "片库"; "settings" -> "设置"; "subscriptions" -> "订阅"; "feed" -> adapter.feedTitle(request); else -> "浏览索引" }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                         Box {
                             TextAction({ tutorial = false; scope.launch { drawer.open() } }, Modifier.heightIn(min = 48.dp).then(if (tutorial) Modifier.background(Color.White.copy(alpha = .16f), RoundedCornerShape(14.dp)) else Modifier).semantics { contentDescription = "切换站点，当前 ${site.name}" }) {
-                                Text(site.name, Modifier.widthIn(max = if (screen == "home") 112.dp else 100.dp), color = MutedColor, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp); Glyph(R.drawable.ic_chevron_down, null, Modifier.padding(start = 4.dp).size(12.dp))
+                                if (!compactHeader) Text(site.name, Modifier.widthIn(max = if (screen == "home") 112.dp else 100.dp), color = MutedColor, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
+                                Glyph(R.drawable.ic_chevron_down, null, Modifier.padding(start = if (compactHeader) 0.dp else 4.dp).size(if (compactHeader) 20.dp else 12.dp))
                             }
                             DropdownMenu(tutorial, { tutorial = false }, Modifier.widthIn(max = 320.dp)) {
                                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -248,18 +338,19 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        if (screen == "home") { Spacer(Modifier.weight(1f)); IconAction(R.drawable.ic_search, "搜索内容") { navigate("search") } }
+                        if (screen in listOf("home", "siteHome")) { Spacer(Modifier.weight(1f)); IconAction(R.drawable.ic_search, "搜索内容") { navigate("search") } }
                         if (screen == "library") IconAction(R.drawable.ic_bookmark, "订阅") { navigate("subscriptions") }
                         if (screen != "settings") ProfileAction { navigate("settings") }
                     }
+                    if (compactHeader) Copy("${site.category.title} · ${site.name}", Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
                     if (immersiveHome && !landscape) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Choice("为你推荐", selected = true) { navigate("home", false) }
+                        Choice("为你推荐", selected = true) { navigate("siteHome", false) }
                         Choice("热门榜") { openFeed(FeedRequest(FeedKind.POPULAR)) }
                         Choice("分类") { navigate("explore") }
                     }
                     // Translation language only exists on the manga sites; a photo archive has no
                     // translations, and showing the bar there would promise a filter that is absent.
-                    AnimatedVisibility(adapter.supportsLanguage && screen in listOf("home", "feed", "search", "explore") && languageVisible) {
+                    AnimatedVisibility(adapter.supportsLanguage && screen in listOf("siteHome", "feed", "search", "explore") && !(screen == "search" && multipleSources) && languageVisible) {
                         Box(Modifier.padding(horizontal = 16.dp)) { Choices(listOf("全部", "中文", "日文", "中＋日"), language.ordinal) { index -> language = GalleryLanguage.entries[index]; store.setGalleryLanguage(language); request = request.copy(language = language, page = 1, cursor = "") } }
                     }
                 }
@@ -267,41 +358,56 @@ class MainActivity : ComponentActivity() {
             Scaffold(containerColor = CanvasColor, contentWindowInsets = if (immersiveHome) WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal) else WindowInsets.safeDrawing,
                 snackbarHost = { SnackbarHost(snackbar) { data -> Snackbar(data, containerColor = RaisedColor, contentColor = Color.White, shape = RoundedCornerShape(16.dp)) } },
                 topBar = { if (!immersiveHome) appTopBar() }, bottomBar = {
-                    CinemaNavigation(navigationTab) { key -> backStack.clear(); navigate(key, false) }
+                    CinemaNavigation(navigationTab) { key -> backStack.clear(); if (key == "library") libraryTab = "片库"; navigate(key, false) }
                 }) { padding ->
-                Box(Modifier.padding(padding).fillMaxSize().imePadding()) {
+                val floatOverContent = screen in listOf("home", "siteHome", "feed")
+                Box(Modifier.fillMaxSize()) {
+                Box(Modifier.padding(start = padding.calculateLeftPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
+                    end = padding.calculateRightPadding(androidx.compose.ui.unit.LayoutDirection.Ltr), top = padding.calculateTopPadding(),
+                    bottom = if (floatOverContent) 0.dp else padding.calculateBottomPadding()).fillMaxSize().imePadding().liquidContent(backdrop)) {
                     // Revision is observable because the persisted store intentionally remains framework independent.
                     @Suppress("UNUSED_VARIABLE") val observedRevision = revision
                     val exGate = site.id == "exhentai" && !app.network.session.hasGallerySession(site)
-                    if (screen != "settings" && !(screen == "library" && libraryTab in listOf("下载", "缓存")) && exGate) LoginGate()
+                    if (screen !in listOf("home", "settings", "search", "multiSearch", "backup", "updates") && !(screen == "library" && libraryTab in listOf("下载", "缓存", "片单", "片库")) && exGate) LoginGate()
                     else key(site.id) { holder.SaveableStateProvider("${site.id}|$screen|${if (screen == "feed" || screen == "index") request.id else ""}") {
                         when (screen) {
-                            "home", "feed" -> {
-                                val effective = (if (screen == "home") adapter.homeRequest() else request).copy(language = language)
+                            "home" -> PersonalHomeScreen(app, rememberPersonalCatalog(app, revision, resumed), { MediaRouter.open(this@MainActivity, it) },
+                                waiting = { libraryTab = "片单"; navigate("library") }, updates = { navigate("updates") }, search = ::savedSearch, discover = { navigate("siteHome") })
+                            "siteHome", "feed" -> {
+                                val effective = (if (screen == "siteHome") adapter.homeRequest() else request).copy(language = language)
                                 val blocked = store.blockedTags(site.id)
-                                val feedState = remember(site.id, screen, effective, blocked) { feeds.page(site.id, screen == "home", effective, blocked) }
-                                key(feedState) { FeedScreen(app, site, effective, screen == "home", feedState, dialogs, { play(it) }, ::favorite, ::scroll,
+                                val feedState = remember(site.id, screen, effective, blocked) { feeds.page(site.id, screen == "siteHome", effective, blocked) }
+                                key(feedState) { FeedScreen(app, site, effective, screen == "siteHome", feedState, dialogs, { play(it) }, ::favorite, ::scroll,
                                 permissionDenied = { revision++ }, saved = store.favorites(site.id).filter { it.kind == "video" }.map { "${it.site}:${it.target}" }.toSet(),
                                 continuing = store.history(site.id).filter { it.resumable && store.allowed(it.video()) }.take(12), browse = ::openFeed,
                                 subscribe = { toggleSubscription(it) },
                                 subscribed = request.kind == FeedKind.TAG && store.isSubscribed(request.target, site.id),
                                 sort = { request = it }) }
                             }
-                            "explore" -> ExploreScreen(adapter, ::openFeed, ::browse)
+                            "explore" -> Column { Action("${site.name} · 最新内容", modifier = Modifier.fillMaxWidth().padding(16.dp)) { navigate("siteHome") }; Box(Modifier.weight(1f)) { ExploreScreen(adapter, ::openFeed, ::browse) } }
                             "index" -> IndexScreen(app, site, request.target, dialogs, ::openFeed, ::browse, ::toggleSubscription)
                             "search" -> SearchScreen(adapter)
+                            "multiSearch" -> CrossSearchScreen(app, crossSearch, searchQuery, searchSites, { play(it) }, ::favorite, revision, searchCategory, searchLanguages, { searchCategory = it }, ::saveSearch)
+                            "updates" -> GlobalInboxScreen(app, { play(it) }, dialogs)
                             "library" -> LibraryScreen(site)
                             "subscriptions" -> SubscriptionScreen(app, site, dialogs, { play(it) }, ::favorite,
                                 store.favorites(site.id).filter { it.kind in listOf("video", "gallery") }.map { "${it.site}:${it.target}" }.toSet(),
                                 openTag = { openTag(it) }, revision = { revision++ })
                             "settings" -> SettingsScreen(site)
+                            "backup" -> BackupScreen(app) {
+                                searchSites = store.string("cross_search_sites").split(',').filter { SiteRegistry.byId(it) != null }.ifEmpty { listOf(siteId) }
+                                revision++
+                            }
                         }
                     } }
-                    if (immersiveHome) appTopBar()
+                }
+                if (immersiveHome) appTopBar()
                 }
             }
         }
+        }
         dialogs.Host()
+        importingUri?.let { uri -> LocalImportDialog(app, uri, importingDirectory, { importingUri = null }) { video -> importingUri = null; revision++; libraryTab = "片库"; navigate("library"); play(video, read = true) } }
     }
     @Composable private fun LoginGate() {
         Column { EmptyState("ExHentai 必须登录", "未登录时原站可能只显示白屏。请通过官方论坛登录，并确认账号具备 ExHentai 访问权限。", "官方网页登录", ::loginOfficial)
@@ -314,9 +420,12 @@ class MainActivity : ComponentActivity() {
         val noun = adapter.itemNoun
         var error by remember { mutableStateOf(false) }; val keyboard = LocalSoftwareKeyboardController.current; val focus = remember { FocusRequester() }
         val focusManager = LocalFocusManager.current
-        fun submit() { val query = searchQuery.trim(); if (query.isBlank()) { error = true; focus.requestFocus(); return }; searchQuery = query; store.addSearch(query); focusManager.clearFocus(); keyboard?.hide(); openFeed(adapter.searchRequest(query, when (searchScope) { 1 -> FeedKind.TAG; 2 -> FeedKind.MODEL; else -> FeedKind.SEARCH })) }
+        fun submit() { val query = searchQuery.trim(); if (query.isBlank()) { error = true; focus.requestFocus(); return }; searchQuery = query; store.addSearch(query); focusManager.clearFocus(); keyboard?.hide();
+            if (multipleSources) navigate("multiSearch") else openFeed(adapter.searchRequest(query, when (searchScope) { 1 -> FeedKind.TAG; 2 -> FeedKind.MODEL; else -> FeedKind.SEARCH })) }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Copy("在 ${adapter.site.name} 中搜索${if (gallery) "，寻找想看的$noun" else ""}")
+            Choices(listOf("当前站点", "多个站点"), if (multipleSources) 1 else 0) { multipleSources = it == 1 }
+            if (multipleSources) TextAction({ dialogs.searchSources(app, searchSites) { searchSites = it; store.set("cross_search_sites", it.joinToString(",")) } }) { Text("选择来源 · ${searchSites.size} 个站点") }
+            else Copy("在 ${adapter.site.name} 中搜索${if (gallery) "，寻找想看的$noun" else ""}")
             TextField(searchQuery, { searchQuery = it; error = false }, Modifier.fillMaxWidth().focusRequester(focus), label = { Text("搜索关键词") }, singleLine = true, isError = error,
                 shape = RoundedCornerShape(16.dp), leadingIcon = { Glyph(R.drawable.ic_search, null) },
                 colors = filledFieldColors(),
@@ -325,29 +434,54 @@ class MainActivity : ComponentActivity() {
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { submit() }))
             // 4KHD only has a plain keyword search, so it gets one scope instead of three chips
             // that would all quietly do the same thing.
-            if (adapter.site.category == SiteCategory.PHOTO) Choices(listOf("关键词"), 0) {}
+            if (multipleSources || adapter.site.category == SiteCategory.PHOTO) Choices(listOf("关键词"), 0) {}
             else Choices(if (gallery) listOf(noun, "标签", adapter.creatorTitle) else listOf("视频", "标签", "作者"), searchScope) { searchScope = it }
+            if (multipleSources) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextAction({ dialogs.choose("漫画语言条件", GalleryLanguage.entries.map { it.title }) { selected -> searchLanguages = searchSites.filter { AdapterRegistry.adapter(SiteRegistry.byIdOrDefault(it), app.network).supportsLanguage }.associateWith { GalleryLanguage.entries[selected].name } } }) { Text("漫画语言") }
+                TextAction(::saveSearch, enabled = searchQuery.isNotBlank()) { Text("保存搜索方案") }
+            }
+            val personalRevision by store.personal.changes.collectAsState()
+            val saved = remember(personalRevision) { store.personal.snapshot().savedSearches }
+            if (saved.isNotEmpty()) {
+                Title("常用搜索")
+                saved.forEach { value -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextAction({ savedSearch(value) }, Modifier.weight(1f)) { Text(value.name) }
+                    IconAction(R.drawable.ic_more, "管理搜索 ${value.name}") { dialogs.choose(value.name, listOf("重命名", "删除搜索方案")) { action ->
+                        if (action == 0) dialogs.edit("重命名搜索方案", value.name, validate = { if (it.isBlank() || it.length > 80) "请输入 1–80 个字" else null }) { store.personal.saveSearch(value.copy(name = it)) }
+                        else dialogs.confirm("删除「${value.name}」？") { store.personal.removeSearch(value.id) }
+                    } }
+                } }
+            }
             Row(verticalAlignment = Alignment.CenterVertically) { Title("最近搜索", Modifier.weight(1f)); if (store.searches().isNotEmpty()) TextAction({ store.clearSearches(); revision++ }) { Text("清空") } }
             if (store.searches().isEmpty()) Copy("搜索过的关键词会保存在这里")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { store.searches().forEach { query -> Choice(query) { searchQuery = query; submit() } } }
         }
     }
     @Composable private fun LibraryScreen(site: SiteContext) {
+        val catalog = if (libraryTab in listOf("片库", "片单")) rememberPersonalCatalog(app, revision, resumed) else emptyList()
+        if (libraryTab == "片库") {
+            LibraryHubScreen(app, dialogs, catalog, { MediaRouter.open(this@MainActivity, it) }, task = { label ->
+                if (label == "更新") navigate("updates") else { favoriteTab = if (site.mediaKind == MediaKind.GALLERY) site.category.itemNoun else "视频"; libraryTab = if (label == "收藏") favoriteTab else label }
+            }, search = { navigate("search") }, importLocal = ::importLocal, openLink = ::pasteLink, download = ::downloadBatch)
+            return
+        }
         val reading = site.mediaKind == MediaKind.GALLERY
         val noun = site.category.itemNoun
         val verb = site.category.verb
-        val task = if (libraryTab == "记录") 0 else if (libraryTab in listOf("下载", "缓存")) 2 else 1
+        val task = if (libraryTab == "记录") 0 else if (libraryTab in listOf("下载", "缓存")) 2 else if (libraryTab == "片单") 3 else 1
         val creator = AdapterRegistry.adapter(site, app.network).creatorTitle
         val categories = if (reading) listOf(noun, creator, "标签") else listOf("视频", "角色", "作者", "标签")
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            TextAction({ libraryTab = "片库" }) { Text("返回我的片库") }
             if (task != 2) Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Glyph(R.drawable.ic_bookmark, null, Modifier.size(18.dp))
-                Text("我的片库", Modifier.padding(start = 8.dp), fontSize = 15.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
-                Copy(site.name, Modifier.padding(start = 8.dp))
+                Text(if (task == 3) "我的片单" else "我的片库", Modifier.padding(start = 8.dp), fontSize = 15.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                Copy(if (task == 3) "全部站点" else site.name, Modifier.padding(start = 8.dp))
             }
-            Choices(if (reading) listOf(verb, "收藏", "下载") else listOf("观看", "收藏", "下载"), task) { libraryTab = when (it) { 0 -> "记录"; 2 -> "下载"; else -> favoriteTab } }
+            Choices(if (reading) listOf(verb, "收藏", "下载", "片单") else listOf("观看", "收藏", "下载", "片单"), task) { libraryTab = when (it) { 0 -> "记录"; 2 -> "下载"; 3 -> "片单"; else -> favoriteTab } }
             if (task == 1) Choices(categories, categories.indexOf(favoriteTab)) { favoriteTab = categories[it]; libraryTab = favoriteTab }
-            if (task == 2) DownloadCenter(app, resumed, dialogs,
+            if (task == 3) ShelfScreen(app, dialogs, { MediaRouter.open(this@MainActivity, it) }, ::downloadBatch, catalog = catalog) { navigate("search") }
+            else if (task == 2) DownloadCenter(app, resumed, dialogs,
                 video = { entry, id, path -> play(entry, id, path) },
                 offline = { record -> playOffline(record) },
                 comic = { play(it, read = true, offline = true) },
@@ -379,7 +513,8 @@ class MainActivity : ComponentActivity() {
         @Suppress("UNUSED_VARIABLE") val observedRevision = revision
         val adapter = AdapterRegistry.adapter(site, app.network)
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Title("显示"); Toggle("标签优先显示中文词典", "translate_tags", true)
+            Title("显示"); Toggle("减少透明效果", "reduce_transparency"); Copy("使用深色实底控件，保持清晰对比。")
+            Toggle("标签优先显示中文词典", "translate_tags", true)
             Title("内容过滤"); Setting("屏蔽词", "${store.blockedTags().size} 个") { blockedTags() }
             Title("账户")
             if (Capability.SESSION_IMPORT in adapter.capabilities) {
@@ -397,6 +532,7 @@ class MainActivity : ComponentActivity() {
             Copy(runCatching { app.network.routeDescription() }.getOrDefault("系统代理设置暂不可用"))
             Setting("网络诊断") { lifecycleScope.launch { dialogs.message("网络诊断", "正在发起实时请求…"); val pending = dialogs.content; val report = app.network.diagnose(); if (dialogs.content === pending) dialogs.message("网络诊断", report) } }
             Title("本地数据"); Setting("清理播放临时数据") { dialogs.confirm("清理播放临时数据？", body = "已下载的视频和漫画会保留。") { lifecycleScope.launch { withContext(Dispatchers.IO) { app.playback.clearStreaming() }; showNotice("已清理") } } }
+            Setting("备份与恢复", "收藏、订阅、进度与片单") { navigate("backup") }
             if (site.mediaKind == MediaKind.GALLERY) Setting("清理本站阅读临时数据") { dialogs.confirm("清理阅读临时数据？", body = "整本下载、阅读记录和收藏会保留。") { lifecycleScope.launch { withContext(Dispatchers.IO) { app.galleries.clear(site) }; showNotice("已清理") } } }
             Title("下载位置")
             Setting("当前下载位置", app.storage.describe(), ::storageOptions)

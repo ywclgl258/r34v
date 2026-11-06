@@ -59,7 +59,7 @@ class GalleryEpicRoutingUiTest : ComposeUiCase() {
         ComposeFixture().use { f ->
             val indexes = installDirectoryFixture(f)
             f.app.library.switchSite("galleryepic")
-            f.launch(); waitText("最新写真集")
+            f.launch(); openSourceHome(); waitText("最新写真集")
             ui.onNodeWithContentDescription("搜索内容").performClick()
             ui.onNode(hasSetTextAction()).performTextInput("sample:model")
             ui.onNodeWithContentDescription("提交搜索").performClick()

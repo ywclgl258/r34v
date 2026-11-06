@@ -10,6 +10,7 @@ import androidx.compose.foundation.interaction.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -49,7 +50,7 @@ val ActiveControlColor = Color(0xff404040)
 val ControlFocusColor = Color(0xff686868)
 val SelectedControlColor = Color(0xfff2f2f2)
 val MutedColor = Color(0xffb8b8b8)
-val BrandColor = Color(0xffe50914)
+val BrandColor = Color(0xffef4954)
 val MatchColor = Color(0xff46d369)
 val GlassTopColor = Color(0xee202020)
 val GlassBottomColor = Color(0xf0121212)
@@ -68,13 +69,13 @@ val GlassBottomColor = Color(0xf0121212)
         headlineMedium = base.headlineMedium.copy(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold),
         titleLarge = base.titleLarge.copy(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold),
         titleMedium = base.titleMedium.copy(fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold),
-        titleSmall = base.titleSmall.copy(fontSize = 13.sp, lineHeight = 18.sp),
-        bodyLarge = base.bodyLarge.copy(fontSize = 13.sp, lineHeight = 19.sp),
-        bodyMedium = base.bodyMedium.copy(fontSize = 12.sp, lineHeight = 18.sp),
-        bodySmall = base.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
-        labelLarge = base.labelLarge.copy(fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.SemiBold),
-        labelMedium = base.labelMedium.copy(fontSize = 11.sp, lineHeight = 15.sp),
-        labelSmall = base.labelSmall.copy(fontSize = 10.sp, lineHeight = 14.sp),
+        titleSmall = base.titleSmall.copy(fontSize = 14.sp, lineHeight = 20.sp),
+        bodyLarge = base.bodyLarge.copy(fontSize = 16.sp, lineHeight = 24.sp),
+        bodyMedium = base.bodyMedium.copy(fontSize = 14.sp, lineHeight = 21.sp),
+        bodySmall = base.bodySmall.copy(fontSize = 12.sp, lineHeight = 18.sp),
+        labelLarge = base.labelLarge.copy(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
+        labelMedium = base.labelMedium.copy(fontSize = 12.sp, lineHeight = 17.sp),
+        labelSmall = base.labelSmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
     )
     MaterialTheme(typography = typography, colorScheme = darkColorScheme(primary = BrandColor, onPrimary = Color.White,
         secondary = Color.White, background = CanvasColor, surface = SurfaceColor,
@@ -84,14 +85,17 @@ val GlassBottomColor = Color(0xf0121212)
         surfaceContainer = SurfaceColor, surfaceContainerLow = SurfaceColor, surfaceContainerHigh = RaisedColor,
         surfaceContainerHighest = ControlColor, surfaceContainerLowest = CanvasColor,
         outline = Color(0xff747474), error = Color(0xffff6670))) {
-        Surface(Modifier.fillMaxSize(), color = CanvasColor, contentColor = Color.White, content = content)
+        CompositionLocalProvider(LocalReduceTransparency provides rememberReducedTransparency()) {
+            Surface(Modifier.fillMaxSize(), color = CanvasColor, contentColor = Color.White, content = content)
+        }
     }
 }
-@Composable fun Title(text: String, modifier: Modifier = Modifier, large: Boolean = false) {
+@Composable fun Title(text: String, modifier: Modifier = Modifier, large: Boolean = false, maxLines: Int = Int.MAX_VALUE) {
     Text(text, modifier.semantics { heading() }, color = MaterialTheme.colorScheme.onSurface,
-        fontSize = (if (large) 18 else 15).sp, lineHeight = (if (large) 24 else 21).sp, fontWeight = FontWeight.SemiBold)
+        fontSize = (if (large) 24 else 18).sp, lineHeight = (if (large) 30 else 25).sp, fontWeight = FontWeight.SemiBold,
+        maxLines = maxLines, overflow = TextOverflow.Ellipsis)
 }
-@Composable fun Copy(text: String, modifier: Modifier = Modifier) { Text(text, modifier, color = MutedColor, fontSize = 12.sp, lineHeight = 18.sp) }
+@Composable fun Copy(text: String, modifier: Modifier = Modifier) { Text(text, modifier, color = MutedColor, fontSize = 14.sp, lineHeight = 21.sp) }
 @Composable fun Glyph(@DrawableRes icon: Int, description: String?, modifier: Modifier = Modifier) {
     Icon(painterResource(icon), description, modifier.size(20.dp))
 }
@@ -107,15 +111,15 @@ val GlassBottomColor = Color(0xf0121212)
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     Button(click, modifier.heightIn(min = 48.dp).semantics { this.selected = selected }, enabled,
-        shape = RoundedCornerShape(16.dp), interactionSource = interaction, elevation = null,
+        shape = RoundedCornerShape(24.dp), interactionSource = interaction, elevation = null,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (focused) ControlFocusColor else if (primary) BrandColor else if (selected) ActiveControlColor else ControlColor,
-            contentColor = Color.White,
+            containerColor = if (focused) ControlFocusColor else if (primary) SelectedControlColor else if (selected) ActiveControlColor else ControlColor,
+            contentColor = if (primary && !focused) Color.Black else Color.White,
             disabledContainerColor = ControlColor.copy(alpha = .55f), disabledContentColor = MutedColor.copy(alpha = .65f))) {
         val glyph = icon ?: R.drawable.ic_check.takeIf { selected }
         if (glyph != null) { Glyph(glyph, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)) }
-        Text(text, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
+        Text(text, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
     }
 }
 @Composable fun Choice(text: String, selected: Boolean = false, click: () -> Unit) {
@@ -129,9 +133,16 @@ val GlassBottomColor = Color(0xf0121212)
         Row(Modifier.heightIn(min = 34.dp).clip(RoundedCornerShape(50)).background(container).padding(horizontal = horizontalPadding, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically) {
             if (selected) { CompositionLocalProvider(LocalContentColor provides content) { Glyph(R.drawable.ic_check, null, Modifier.size(14.dp)) }; Spacer(Modifier.width(6.dp)) }
-            Text(text, color = content, fontSize = 12.sp,
-                lineHeight = 15.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+            Text(text, color = content, fontSize = 14.sp,
+                lineHeight = 20.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
         }
+    }
+}
+@Composable fun CheckRow(label: String, checked: Boolean, change: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(checked, role = Role.Checkbox, onValueChange = change)
+        .padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked, null)
+        Text(label, Modifier.weight(1f).padding(end = 8.dp))
     }
 }
 @Composable fun Selector(text: String, enabled: Boolean = true, modifier: Modifier = Modifier, click: () -> Unit) {
@@ -196,37 +207,37 @@ val GlassBottomColor = Color(0xf0121212)
             })
     }
 }
-@Composable fun GlassSurface(url: String? = null, site: SiteContext? = null, modifier: Modifier = Modifier, radius: Int = 22, opaque: Boolean = false, content: @Composable BoxScope.() -> Unit) {
-    val shape = RoundedCornerShape(radius.dp)
-    Box(modifier.shadow(8.dp, shape, clip = false).clip(shape)) {
-        if (url != null && site != null) {
-            val blur = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Modifier.blur(28.dp, BlurredEdgeTreatment(shape)) else Modifier
-            SiteImage(url, site, Modifier.matchParentSize().then(blur))
-        }
-        Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-            if (opaque) listOf(RaisedColor, SurfaceColor) else listOf(GlassTopColor, GlassBottomColor))))
-        content()
-    }
+@Composable fun GlassSurface(modifier: Modifier = Modifier, radius: Int = 22, opaque: Boolean = false, content: @Composable BoxScope.() -> Unit) {
+    Box(modifier.then(if (opaque) Modifier.contentPanel(radius) else Modifier.liquidSurface(radius)), content = content)
 }
 @Composable fun MediaCard(video: Video, modifier: Modifier = Modifier, menu: List<Pair<String, () -> Unit>> = emptyList(), progress: Float? = null, click: () -> Unit) {
     val site = SiteRegistry.byIdOrDefault(video.site)
+    val personal = (LocalContext.current.applicationContext as R34Application).library.personal
+    val personalRevision by personal.changes.collectAsState()
+    val waiting = remember(personalRevision, video.entryKey) { personal.contains(video) }
+    val shelfDialogs = remember { ComposeDialogs() }
+    val actions = menu + listOf(
+        (if (waiting) "移出稍后看" else "加入稍后看") to { if (waiting) personal.remove(video) else personal.add(video) },
+        "加入合集" to { shelfDialogs.addToShelf(personal, video) },
+    )
     val gallery = site.mediaKind == MediaKind.GALLERY || video.mediaKind == MediaKind.GALLERY
     var ratio by remember(video.site, video.id) { mutableFloatStateOf(if (gallery) video.thumbAspectRatio else 16f / 9f) }
     var expanded by remember { mutableStateOf(false) }
-    Column(modifier.testTag("media-${video.site}-${video.id}").combinedClickable(onClick = click, onLongClick = { if (menu.isNotEmpty()) expanded = true }).padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+    Column(modifier.testTag("media-${video.site}-${video.id}").combinedClickable(onClick = click, onLongClick = { expanded = true }).padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Box(Modifier.clip(RoundedCornerShape(14.dp))) {
             SiteImage(video.thumb, site, Modifier.fillMaxWidth().aspectRatio(ratio.coerceIn(.45f, 1.8f)), gallery) { if (gallery && !video.hasThumbDimensions) ratio = it }
-            if (menu.isNotEmpty()) Box(Modifier.align(Alignment.TopEnd)) {
+            Box(Modifier.align(Alignment.TopEnd)) {
                 IconAction(R.drawable.ic_more, "${video.title} 的更多操作", Modifier.background(Color.Black.copy(alpha = .65f), androidx.compose.foundation.shape.CircleShape)) { expanded = true }
-                DropdownMenu(expanded, { expanded = false }) { menu.forEach { (label, action) -> DropdownMenuItem({ Text(label) }, { expanded = false; action() }) } }
+                DropdownMenu(expanded, { expanded = false }) { actions.forEach { (label, action) -> DropdownMenuItem({ Text(label) }, { expanded = false; action() }) } }
             }
         }
-        Text(video.title, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        val metadata = listOf(video.duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
-        if (metadata.isNotBlank()) Text(metadata, color = MutedColor, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(video.title, fontSize = 14.sp, lineHeight = 20.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        val metadata = listOf(mediaCountOrDuration(video), video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
+        if (metadata.isNotBlank()) Text(metadata, color = MutedColor, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (progress != null) LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(2.dp),
             color = BrandColor, trackColor = Color.White.copy(alpha = .15f), gapSize = 0.dp, drawStopIndicator = {})
     }
+    shelfDialogs.Host()
 }
 
 /** A single Compose dialog host shared by screens and update/download workflows. */

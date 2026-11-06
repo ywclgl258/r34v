@@ -62,7 +62,7 @@ class SubscriptionUiTest : ComposeUiCase() {
             val video = f.video("ehentai").let { it.copy(id = "alpha-${it.id}", title = "alpha 作品 0") }
             f.app.library.toggleFavorite(Favorite("gallery", video.id, video.title, video.url, site = "ehentai"), "ehentai")
             f.app.library.switchSite("ehentai")
-            f.launch(); waitText("最新漫画"); openSubscriptions(); waitText(video.title)
+            f.launch(); openSourceHome(); waitText("最新漫画"); openSubscriptions(); waitText(video.title)
             ui.onNodeWithContentDescription("${video.title} 的更多操作").performClick()
             ui.onNodeWithText("已收藏 / 取消收藏").performClick()
             assertFalse(f.app.library.isFavorite("gallery", video.id, "ehentai"))

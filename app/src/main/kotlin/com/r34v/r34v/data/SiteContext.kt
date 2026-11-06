@@ -61,6 +61,9 @@ data class SiteContext(
 
 /** Every site the app knows about. Order is the order shown in the switcher. */
 object SiteRegistry {
+    /** Local books have an identity but never participate in network site discovery. */
+    val LOCAL = SiteContext(id = "local", name = "本地导入", base = "", host = "", mediaKind = MediaKind.GALLERY, category = SiteCategory.COMIC)
+    val librarySources get() = all + LOCAL
     val R34V = SiteContext(
         id = "r34v",
         name = "Rule34Video",
@@ -175,7 +178,7 @@ object SiteRegistry {
     @Volatile
     var current: SiteContext = R34V
 
-    fun byId(id: String): SiteContext? = all.firstOrNull { it.id == id }
+    fun byId(id: String): SiteContext? = if (id == LOCAL.id) LOCAL else all.firstOrNull { it.id == id }
 
     fun byIdOrDefault(id: String): SiteContext = byId(id) ?: R34V
 

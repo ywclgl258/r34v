@@ -114,6 +114,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    // Android branch: compatible with our Kotlin 2.2 / Compose 1.9 toolchain.
+    implementation("io.github.kyant0:backdrop:1.0.0")
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
     debugImplementation("androidx.compose.ui:ui-tooling")

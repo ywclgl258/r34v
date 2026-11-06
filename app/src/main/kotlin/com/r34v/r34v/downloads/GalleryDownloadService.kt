@@ -54,7 +54,7 @@ class GalleryDownloadService : Service() {
             }
             withContext(Dispatchers.Main) {
                 worker = null
-                if (app.galleryDownloads.hasPending()) pump() else { stopForeground(STOP_FOREGROUND_REMOVE); stopSelfResult(lastStart) }
+                if (app.galleryDownloads.hasPending() && app.galleryDownloads.canRun) pump() else { stopForeground(STOP_FOREGROUND_REMOVE); stopSelfResult(lastStart) }
             }
         }
     }

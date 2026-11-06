@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,11 +45,15 @@ import kotlinx.coroutines.*
     var busy by remember(site.id) { mutableStateOf(false) }
     var error by remember(site.id) { mutableStateOf<String?>(null) }
     var reload by remember(site.id) { mutableIntStateOf(0) }
+    var inboxMode by rememberSaveable(site.id) { mutableIntStateOf(0) }
+    var unreadOnly by rememberSaveable(site.id) { mutableStateOf(true) }
+    val inboxRevision by store.personal.changes.collectAsState()
+    val inbox = remember(inboxRevision, site.id) { store.personal.inbox(site.id) }
 
     LaunchedEffect(site.id, order, tags.map { it.slug }, reload) {
         if (tags.isEmpty()) { page = null; return@LaunchedEffect }
         busy = true; error = null
-        try { page = app.repository.subscriptions(site, order, tags) }
+        try { page = app.repository.subscriptions(site, order, tags).also { store.personal.refreshInbox(site.id, it.tags) } }
         catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "订阅内容加载失败" }
         finally { busy = false }
     }
@@ -97,6 +102,7 @@ import kotlinx.coroutines.*
                     if (tags.isNotEmpty()) TextAction({ reload++ }, enabled = !busy) { Text(if (busy) "刷新中" else "刷新") }
                 }
                 if (tags.isNotEmpty()) {
+                    Choices(listOf("订阅内容", "更新收件箱"), inboxMode) { inboxMode = it }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Selector(order.title) { dialogs.choose("排序方式", SubscriptionOrder.entries.map { "${it.title} · ${it.hint}" }, order.ordinal) {
                             order = SubscriptionOrder.entries[it]; store.setSubscriptionOrder(order, site.id); revision()
@@ -112,6 +118,26 @@ import kotlinx.coroutines.*
             item("empty") { EmptyState("还没有订阅任何标签",
                 "在标签索引或任意标签页点“订阅”，这个页面就只会显示你关注标签下的作品。每个站点的订阅互相独立。",
                 "浏览标签") { openTag(Subscription(slug = "", site = site.id)) }
+            }
+        } else if (inboxMode == 1) {
+            val entries = inbox.entries.filter { (!unreadOnly || !it.read) && store.allowed(it.video, site.id) }
+            item("inbox-controls") {
+                Choices(listOf("未读 ${inbox.entries.count { !it.read }}", "全部更新"), if (unreadOnly) 0 else 1) { unreadOnly = it == 0 }
+                TextAction({ store.personal.markRead(site.id, inbox.entries.map { it.video.entryKey }.toSet()) }) { Text("全部标记已读") }
+                Copy("首次刷新建立基线，后续刷新标出新出现的作品。")
+                if (entries.isEmpty()) Copy("暂时没有${if (unreadOnly) "未读" else ""}更新")
+            }
+            items(entries.chunked(2), key = { "inbox:${it.first().video.entryKey}" }) { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    row.forEach { entry -> Column(Modifier.weight(1f)) {
+                        Copy(if (entry.read) "已读" else "未读")
+                        MediaCard(entry.video, menu = listOf("标记已读" to { store.personal.markRead(site.id, setOf(entry.video.entryKey)) },
+                            "收藏 / 取消收藏" to { favorite(entry.video) })) {
+                            store.personal.markRead(site.id, setOf(entry.video.entryKey)); play(entry.video)
+                        }
+                    } }
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
             }
         } else {
             if (busy && page == null) item("loading") { Loading("正在整理订阅内容") }

@@ -36,6 +36,7 @@ class SiteAuthActivity : ComponentActivity() {
     private var cookies: CookieManager? = null
     private var openedTarget = false
     private var verifying = false
+    private var verificationMessage = false
 
     @SuppressLint("SetJavaScriptEnabled") // Required by the official login and browser challenge; no JS bridge is exposed.
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,7 +51,7 @@ class SiteAuthActivity : ComponentActivity() {
                 Copy(status, Modifier.padding(horizontal = 16.dp))
                 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
                 FlowRow { TextAction({ completeLogin() }) { Text("验证登录") }
-                    TextAction({ openedTarget = false; cookies?.removeAllCookies { browser?.loadUrl(EhLogin.officialUrl) } }) { Text("重新登录") }
+                    TextAction({ openedTarget = false; verificationMessage = false; cookies?.removeAllCookies { browser?.loadUrl(EhLogin.officialUrl) } }) { Text("重新登录") }
                     TextAction({ runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(EhLogin.officialUrl))) }.onFailure { toast("没有可用浏览器，请更新系统 WebView 或导入 Cookie") } }) { Text("用浏览器打开") }
                 }
                 AndroidView(factory = { context -> FrameLayout(context).apply { createBrowser()?.let { addView(it, FrameLayout.LayoutParams(-1, -1)) } } }, modifier = Modifier.fillMaxWidth().weight(1f), onRelease = { releaseBrowser() })
@@ -75,16 +76,16 @@ class SiteAuthActivity : ComponentActivity() {
                         if (!EhLogin.allowed(url)) return
                         if (EhLogin.hasIdentity(collected()) && (!openedTarget || Uri.parse(url).host == site.host)) completeLogin()
                         // A late forum callback must not replace a permission error or verification status.
-                        else if (!openedTarget && !status.contains("HTTP")) status = "请在官方页面登录，然后点击“验证登录”"
+                        else if (!openedTarget && !verificationMessage && !status.contains("HTTP")) status = "请在官方页面登录，然后点击“验证登录”"
                     }
                     override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
-                        if (request.isForMainFrame) status = "官方页面返回 HTTP ${response.statusCode}。可重试，或用浏览器登录后在站点设置中导入 Cookie。"
+                        if (request.isForMainFrame && !verificationMessage) status = "官方页面返回 HTTP ${response.statusCode}。可重试，或用浏览器登录后在站点设置中导入 Cookie。"
                     }
                     override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                        if (request.isForMainFrame) status = "官方页面暂时无法加载，请检查系统代理或用浏览器打开。"
+                        if (request.isForMainFrame && !verificationMessage) status = "官方页面暂时无法加载，请检查系统代理或用浏览器打开。"
                     }
                     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
-                        handler.cancel(); status = "官方页面证书验证失败，已停止连接。"
+                        handler.cancel(); if (!verificationMessage) status = "官方页面证书验证失败，已停止连接。"
                     }
                 }
             }
@@ -100,7 +101,8 @@ class SiteAuthActivity : ComponentActivity() {
     private fun completeLogin() {
         if (verifying || isFinishing || isDestroyed) return
         val values = collected()
-        if (!EhLogin.hasIdentity(values)) { status = "尚未取得登录会话，请先在官方页面完成登录。"; return }
+        if (!EhLogin.hasIdentity(values)) { verificationMessage = true; status = "尚未取得登录会话，请先在官方页面完成登录。"; return }
+        verificationMessage = false
         if (!openedTarget) {
             openedTarget = true
             status = "正在检查 ${site.name} 访问权限…"
