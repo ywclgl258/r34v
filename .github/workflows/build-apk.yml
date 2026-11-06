@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      test_classes:
+        description: 'Android 测试类（逗号分隔，留空使用默认回归）'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -92,12 +98,14 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - uses: reactivecircus/android-emulator-runner@v2
+        env:
+          TEST_CLASSES: ${{ inputs.test_classes || 'com.r34v.r34v.OptimizationUiTest,com.r34v.r34v.OptimizationIoTest,com.r34v.r34v.SiteSessionTest,com.r34v.r34v.VideoRemovalTest,com.r34v.r34v.SubscriptionUiTest,com.r34v.r34v.StorageLifecycleTest,com.r34v.r34v.DownloadCacheTest,com.r34v.r34v.GalleryUiTest,com.r34v.r34v.UnifiedDownloadsTest' }}
         with:
           api-level: ${{ matrix.api }}
           target: google_apis
           arch: x86_64
           disable-animations: true
-          script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.r34v.r34v.OptimizationUiTest,com.r34v.r34v.OptimizationIoTest,com.r34v.r34v.SiteSessionTest,com.r34v.r34v.VideoRemovalTest,com.r34v.r34v.SubscriptionUiTest,com.r34v.r34v.StorageLifecycleTest,com.r34v.r34v.DownloadCacheTest,com.r34v.r34v.GalleryUiTest,com.r34v.r34v.UnifiedDownloadsTest --no-daemon
+          script: ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=$TEST_CLASSES --no-daemon
       - uses: actions/upload-artifact@v4
         if: always()
         with:
