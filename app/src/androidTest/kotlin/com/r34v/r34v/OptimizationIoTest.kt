@@ -21,6 +21,7 @@ class OptimizationIoTest : ComposeUiCase() {
         runBlocking { f.app.galleryDownloads.add(f.video("ehentai")) }
         ui.waitUntil(20000) { f.app.galleryDownloads.task(f.video("ehentai"))?.state == GalleryDownloadState.COMPLETED }
         f.launchDownloads()
+        ui.onNodeWithTag("download-center").performScrollToNode(hasText("已下载 · 可离线打开", substring = true))
         ui.waitUntil(15000) { ui.onAllNodesWithText("已下载 · 可离线打开", substring = true).fetchSemanticsNodes().isNotEmpty() }
         runBlocking { delay(1200) }
         val id = MessageDigest.getInstance("SHA-256").digest(f.video("ehentai").id.toByteArray()).joinToString("") { "%02x".format(it) }

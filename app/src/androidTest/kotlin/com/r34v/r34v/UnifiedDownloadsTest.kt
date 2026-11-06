@@ -194,6 +194,7 @@ class UnifiedDownloadsTest : ComposeUiCase() {
                 f.app.library.prefs.edit().putString("$site:video_cache_v1", f.app.library.gson.toJson(listOf(LocalVideo("shared-legacy-id", "$site 旧版下载", file.absolutePath, site = site)))).commit()
             }
             f.launchDownloads(); waitText("下载中心")
+            ui.onNodeWithTag("download-center").performScrollToNode(hasTestTag("download-legacy:r34v:shared-legacy-id"))
             ui.waitUntil(15000) { ui.onAllNodesWithTag("download-legacy:r34v:shared-legacy-id").fetchSemanticsNodes().isNotEmpty() }
             ui.onNodeWithTag("download-center").performScrollToNode(hasTestTag("download-legacy:hanime1:shared-legacy-id"))
             ui.onNodeWithTag("download-legacy:hanime1:shared-legacy-id").assertExists()

@@ -58,18 +58,14 @@ private data class DownloadSnapshot(
     val networkAllowed = remember(policyRevision) { app.downloadPolicy.allowed }
     val batch by app.batchDownloads.progress.collectAsState()
     LaunchedEffect(resumed, refresh) {
-        if (com.r34v.r34v.BuildConfig.DEBUG) android.util.Log.i("R34VDownloadCenter", "effect resumed=$resumed")
         if (!resumed) return@LaunchedEffect
         var scanned: List<Any>? = null
         var disk = emptyList<LibraryRecord>()
         val ticks = flow { while (currentCoroutineContext().isActive) { emit(Unit); delay(750) } }
         merge(ticks, app.galleryDownloads.changes.map { Unit }, app.index.revision.map { Unit }).conflate().collect {
             try {
-                if (com.r34v.r34v.BuildConfig.DEBUG) android.util.Log.i("R34VDownloadCenter", "collect")
                 snapshot = withContext(Dispatchers.IO) {
-                    if (com.r34v.r34v.BuildConfig.DEBUG) android.util.Log.i("R34VDownloadCenter", "read media tasks")
                     val tasks = app.playback.downloads().mapNotNull { task -> app.playback.metadata(task)?.let { task to it } }
-                    if (com.r34v.r34v.BuildConfig.DEBUG) android.util.Log.i("R34VDownloadCenter", "read gallery tasks")
                     val books = app.galleryDownloads.tasks()
                     val root = app.storage.describe()
                     fun signature() = listOf(app.index.revision.value, root, app.storage.granted(),
@@ -82,7 +78,6 @@ private data class DownloadSnapshot(
                                 duration = meta.video.duration, bytes = task.bytesDownloaded, at = task.startTimeMs,
                                 state = if (task.state == Download.STATE_COMPLETED) LibraryRecord.STATE_COMPLETED else LibraryRecord.STATE_PARTIAL)
                         }
-                        if (com.r34v.r34v.BuildConfig.DEBUG) android.util.Log.i("R34VDownloadCenter", "index scan")
                         disk = app.index.scan(app.playback::cached, known)
                         // An invalidation during the scan must still be observed on the next event.
                         scanned = before
@@ -92,7 +87,6 @@ private data class DownloadSnapshot(
                             task.copy(state = GalleryDownloadState.FAILED, error = "下载图页不完整，请重新下载") else task
                     }
                     val legacy = SiteRegistry.all.flatMap { owner -> app.library.localVideos(owner.id).map { it.copy(site = owner.id) } }
-                    if (com.r34v.r34v.BuildConfig.DEBUG) android.util.Log.i("R34VDownloadCenter", "snapshot books=${books.size} legacy=${legacy.size}")
                     DownloadSnapshot(tasks, checked, legacy, disk, root)
                 }
                 ready = true; message = null
