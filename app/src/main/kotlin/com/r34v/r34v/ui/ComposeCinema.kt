@@ -48,12 +48,7 @@ import kotlinx.coroutines.launch
 }
 
 @Composable fun ProfileAction(click: () -> Unit) {
-    val compact = LocalUiDensity.current.compact
-    IconButton(click, Modifier.minimumInteractiveComponentSize().size(if (compact) 40.dp else 48.dp).semantics { contentDescription = "设置" }) {
-        Box(Modifier.size(if (compact) 30.dp else 34.dp).cinemaGlass(17), contentAlignment = Alignment.Center) {
-            Glyph(R.drawable.ic_profile, null, Modifier.size(if (compact) 17.dp else 19.dp))
-        }
-    }
+    IconAction(R.drawable.ic_settings, "设置", click = click)
 }
 
 @Composable fun CinemaNavigation(selectedTab: String, choose: (String) -> Unit) {
@@ -62,17 +57,16 @@ import kotlinx.coroutines.launch
     val tabs = listOf(Triple("home", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore),
         Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark))
     val selectedIndex by animateFloatAsState(tabs.indexOfFirst { it.first == selectedTab }.coerceAtLeast(0).toFloat(), tween(220), label = "navigationIndicator")
-    val tabHeight = ((if (compact) 48 else if (landscape) 52 else 60) + ((LocalDensity.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp
-    Box(Modifier.fillMaxWidth().navigationBarsPadding(), contentAlignment = Alignment.Center) {
-        BoxWithConstraints(Modifier.padding(horizontal = 16.dp, vertical = if (compact) 8.dp else 10.dp).widthIn(max = if (compact) 520.dp else 620.dp).fillMaxWidth()
-            .liquidSurface(34).padding(if (compact) 5.dp else 6.dp)) {
+    val tabHeight = ((if (compact || landscape) 52 else 64) + ((LocalDensity.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp
+    Box(Modifier.fillMaxWidth().background(CanvasColor).navigationBarsPadding(), contentAlignment = Alignment.Center) {
+        BoxWithConstraints(Modifier.widthIn(max = 620.dp).fillMaxWidth()) {
             val tabWidth = maxWidth / 4
-            Box(Modifier.offset(x = tabWidth * selectedIndex).width(tabWidth).height(tabHeight).clip(RoundedCornerShape(28.dp)).background(Color.White.copy(alpha = .15f)))
+            Box(Modifier.offset(x = tabWidth * selectedIndex + (tabWidth - 20.dp) / 2).width(20.dp).height(2.dp).background(BrandColor))
             Row(Modifier.fillMaxWidth().height(tabHeight)) {
             tabs.forEach { (key, name, icon) ->
                 val selected = selectedTab == key
                 val content by animateColorAsState(if (selected) Color.White else MutedColor, label = "tabContent")
-                Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(28.dp))
+                Box(Modifier.weight(1f).fillMaxHeight()
                     .selectable(selected, role = Role.Tab) { choose(key) }) {
                     Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 3.dp)) {
@@ -176,8 +170,7 @@ import kotlinx.coroutines.launch
                 .testTag("poster-${video.site}-${video.id}")
                 .combinedClickable(onClickLabel = "播放 ${video.title}", onLongClickLabel = "收藏或取消收藏 ${video.title}",
                     onClick = { play(video) }, onLongClick = { favorite(video) }), verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)) {
-                Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).shadow(if (compact) 6.dp else 10.dp, RoundedCornerShape(if (compact) 10.dp else 14.dp), clip = false)
-                    .clip(RoundedCornerShape(if (compact) 10.dp else 14.dp))) {
+                Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(8.dp))) {
                     SiteImage(video.thumb, site, Modifier.fillMaxSize())
                     if (ranked) GlassSurface(modifier = Modifier.align(Alignment.TopStart).padding(if (compact) 5.dp else 7.dp).size(if (compact) 26.dp else 30.dp), radius = 10, opaque = true) {
                         Text("${index + 1}", Modifier.align(Alignment.Center), color = Color.White, fontSize = if (compact) 12.sp else 13.sp, fontWeight = FontWeight.Bold)
@@ -220,7 +213,7 @@ import kotlinx.coroutines.launch
     val light = primary && !focused
     val compact = LocalUiDensity.current.compact
     Button(click, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight).semantics { this.selected = selected },
-        shape = RoundedCornerShape(if (compact) 12.dp else 16.dp), interactionSource = interaction, elevation = null,
+        shape = RoundedCornerShape(8.dp), interactionSource = interaction, elevation = null,
         contentPadding = PaddingValues(horizontal = if (compact) 14.dp else 18.dp, vertical = if (compact) 9.dp else 12.dp),
         colors = ButtonDefaults.buttonColors(containerColor = if (focused) ControlFocusColor else if (light) SelectedControlColor else if (selected) ActiveControlColor else ControlColor,
             contentColor = if (light && !focused) Color.Black else Color.White)) {
@@ -268,13 +261,13 @@ import kotlinx.coroutines.launch
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Box(Modifier.size(3.dp, 10.dp).background(BrandColor, CircleShape))
-                        Text("今日推荐", fontSize = 10.sp, color = Color.White, letterSpacing = 2.sp)
+                        Text("站点精选", fontSize = 10.sp, color = Color.White, letterSpacing = 2.sp)
                     }
                     Text(video.title, fontSize = 26.sp, lineHeight = 32.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
                         maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.headlineLarge.copy(shadow = androidx.compose.ui.graphics.Shadow(Color.Black, blurRadius = 16f)))
                     Text(listOf(video.type, ranking).filter(String::isNotBlank).joinToString("  •  "), fontSize = 12.sp, lineHeight = 18.sp, color = MutedColor,
                         textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    if (video.rating.isNotBlank()) Text(video.rating, color = MatchColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    if (video.rating.isNotBlank()) Text(video.rating, color = MutedColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     val isSaved = "${video.site}:${video.id}" in saved
                     Box(Modifier.padding(top = 4.dp).widthIn(max = 350.dp)) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {

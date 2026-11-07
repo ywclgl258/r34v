@@ -9,7 +9,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class LiquidMediaUiTest : ComposeUiCase() {
-    @Test fun sourceStagesKeepAllThreeMediaAndNavigationReachable() = ComposeFixture(cinematic = true).use { f ->
+    @Test fun sourceStagesKeepAllThreeMediaAndNavigationReachable() = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
         f.app.library.prefs.edit().putString(PersonalStore.KEY, f.app.library.gson.toJson(PersonalLibrary())).commit()
         f.app.library.prefs.edit().apply { SiteRegistry.all.forEach { remove("${it.id}:watch_history_v1"); remove("${it.id}:reading_history_v1") } }.commit()
         val activity = f.launch(); waitHome()

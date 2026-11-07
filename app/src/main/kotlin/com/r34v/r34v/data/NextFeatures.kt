@@ -91,7 +91,26 @@ data class ReadingBehavior(
     val autoPageSeconds: Int = 0,
     val slideshowSeconds: Int = 0,
     val slideshowRandom: Boolean = false,
+    val showClock: Boolean = false,
+    val showBattery: Boolean = false,
+    val showPage: Boolean = true,
+    val showProgress: Boolean = false,
+    val brightnessPercent: Int = -1,
+    val keepAwake: Boolean = false,
 )
+
+/** A pending start survives seeks; an active range is inclusive at A and exclusive at B. */
+data class VideoLoopRange(val startMs: Long = -1, val endMs: Long = -1) {
+    val active: Boolean get() = startMs >= 0 && endMs - startMs >= 1000
+    fun start(positionMs: Long) = VideoLoopRange(positionMs.coerceAtLeast(0))
+    fun end(positionMs: Long): VideoLoopRange {
+        require(startMs >= 0 && positionMs - startMs >= 1000) { "B 点需要比 A 点至少晚 1 秒" }
+        return copy(endMs = positionMs)
+    }
+    fun validFor(durationMs: Long) = startMs < 0 || (durationMs > startMs && (endMs < 0 || active && endMs <= durationMs))
+    fun contains(positionMs: Long) = !active || positionMs in startMs until endMs
+    fun shouldRepeat(positionMs: Long, playing: Boolean) = active && playing && positionMs >= endMs
+}
 
 data class ImageFavorite(
     val video: Video,

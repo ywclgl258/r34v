@@ -91,6 +91,31 @@ class NewFeaturesUiTest : ComposeUiCase() {
         ui.onNodeWithTag("reader-page-1").assertIsDisplayed(); ui.onNodeWithTag("reader-page-2").assertIsDisplayed()
         f.shot("features-reader-spread")
     }
+    @Test fun spreadRotationKeepsThePageReachedBySwiping(): Unit = ComposeFixture().use { f ->
+        val activity = f.launchGallery(read = true)
+        fun rotate(orientation: Int, landscape: Boolean) {
+            ui.runOnIdle { activity.requestedOrientation = orientation }
+            ui.waitUntil(10000) { (activity.resources.configuration.screenWidthDp > activity.resources.configuration.screenHeightDp) == landscape }
+            ui.waitForIdle()
+        }
+        try {
+            rotate(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, false)
+            readerTool("阅读模式"); clickText("横屏双页")
+            repeat(3) { ui.onNodeWithTag("paged-reader").performTouchInput { swipeLeft() }; ui.waitForIdle() }
+            ui.waitUntil(15000) { f.app.library.reading(f.video("ehentai").id, "ehentai")?.page == 4 }
+            rotate(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE, true)
+            ui.onNodeWithTag("reader-page-4").assertIsDisplayed()
+            rotate(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, false)
+            ui.onNodeWithTag("reader-page-4").assertIsDisplayed()
+            ui.runOnIdle { activity.recreate() }
+            ui.waitUntil(15000) { ui.onAllNodesWithTag("reader-page-4").fetchSemanticsNodes().isNotEmpty() }
+            assertEquals(4, f.app.library.reading(f.video("ehentai").id, "ehentai")!!.page)
+            ui.onNodeWithText("4 / 8").performClick()
+            ui.onNode(hasSetTextAction()).performTextReplacement("6"); clickText("确定")
+            ui.waitUntil(15000) { f.app.library.reading(f.video("ehentai").id, "ehentai")?.page == 6 }
+            ui.onNodeWithTag("reader-page-6").assertIsDisplayed()
+        } finally { f.ins.runOnMainSync { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED } }
+    }
     @Test fun playerLockBlocksGesturesAndTheTimerActuallyPausesPlayback() = ComposeFixture().use { f ->
         val activity = f.launchPlayer(); ready(f, activity)
         ui.runOnIdle { engine(activity)!!.apply { pause(); seekTo(2000) } }

@@ -29,6 +29,7 @@ data class PersonalLibrary(
     val readerModes: Map<String, String> = emptyMap(),
     val inboxes: Map<String, SubscriptionInbox> = emptyMap(),
     val savedSearches: List<SavedSearch> = emptyList(),
+    val searchUpdates: Map<String, SavedSearchInbox> = emptyMap(),
     val smartShelves: List<SmartShelf> = emptyList(),
     val timeBookmarks: List<TimeBookmark> = emptyList(),
     val playbackPreferences: Map<String, PlaybackPreferences> = emptyMap(),
@@ -89,9 +90,23 @@ class PersonalStore(private val library: LibraryStore) {
         require(value.name.trim().length in 1..80 && value.query.length <= 2048 && !value.condition.isEmpty)
         value.filter.validate()
         require(value.sources.isNotEmpty() && value.sources.all { id -> SiteRegistry.all.any { it.id == id } })
-        change { it.copy(savedSearches = it.savedSearches.filterNot { p -> p.id == value.id } + value.copy(name = value.name.trim(), query = value.query.trim(), sources = value.sources.distinct())) }
+        val normalized = value.copy(name = value.name.trim(), query = value.query.trim(), sources = value.sources.distinct())
+        change { it.copy(savedSearches = it.savedSearches.filterNot { p -> p.id == value.id } + normalized,
+            searchUpdates = if (it.searchUpdates[value.id]?.conditionKey == normalized.conditionKey) it.searchUpdates else it.searchUpdates - value.id) }
     }
-    fun removeSearch(id: String) = change { it.copy(savedSearches = it.savedSearches.filterNot { p -> p.id == id }) }
+    fun removeSearch(id: String) = change { it.copy(savedSearches = it.savedSearches.filterNot { p -> p.id == id }, searchUpdates = it.searchUpdates - id) }
+    fun refreshSearch(search: SavedSearch, site: String, page: FeedPage?, error: String = "") = change { data ->
+        val current = data.savedSearches.firstOrNull { it.id == search.id }
+        if (current == null || current.conditionKey != search.conditionKey || site !in current.sources) data
+        else {
+            val box = data.searchUpdates[search.id]?.takeIf { it.conditionKey == current.conditionKey } ?: SavedSearchInbox(current.conditionKey)
+            data.copy(searchUpdates = data.searchUpdates + (search.id to box.refreshed(site, page, error)))
+        }
+    }
+    fun markSearchRead(id: String, keys: Set<String>) = change { data ->
+        val box = data.searchUpdates[id]
+        if (box == null) data else data.copy(searchUpdates = data.searchUpdates + (id to box.copy(entries = box.entries.map { if (it.video.entryKey in keys) it.copy(read = true) else it })))
+    }
     fun saveSmart(value: SmartShelf) {
         require(value.name.trim().length in 1..80 && (value.source.isBlank() || SiteRegistry.byId(value.source) != null))
         change { it.copy(smartShelves = it.smartShelves.filterNot { p -> p.id == value.id } + value.copy(name = value.name.trim())) }
@@ -146,8 +161,8 @@ class PersonalStore(private val library: LibraryStore) {
     fun refreshInbox(site: String, feeds: List<TagFeed>) = change { it.copy(inboxes = it.inboxes + (site to inbox(site).refreshed(feeds))) }
     fun markRead(site: String, keys: Set<String>) = change { data ->
         val box = data.inboxes[site]
-        if (box == null || box.entries.none { !it.read && it.video.entryKey in keys }) data
-        else data.copy(inboxes = data.inboxes + (site to box.copy(entries = box.entries.map { if (it.video.entryKey in keys) it.copy(read = true) else it })))
+        data.copy(inboxes = if (box == null) data.inboxes else data.inboxes + (site to box.copy(entries = box.entries.map { if (it.video.entryKey in keys) it.copy(read = true) else it })),
+            searchUpdates = data.searchUpdates.mapValues { (_, value) -> value.copy(entries = value.entries.map { if (it.video.site == site && it.video.entryKey in keys) it.copy(read = true) else it }) })
     }
     fun timeBookmarks(video: Video) = snapshot().timeBookmarks.filter { it.video.entryKey == video.entryKey }.sortedBy { it.positionMs }
     fun saveTimeBookmark(value: TimeBookmark) {
@@ -168,7 +183,7 @@ class PersonalStore(private val library: LibraryStore) {
     fun clearReaderPreferences(video: Video) = change { it.copy(readerPreferences = it.readerPreferences - video.entryKey) }
     fun readingBehavior(site: String) = snapshot().readingBehaviors[site] ?: ReadingBehavior()
     fun setReadingBehavior(site: String, value: ReadingBehavior) {
-        require(SiteRegistry.byId(site) != null && value.autoPageSeconds in 0..300 && value.slideshowSeconds in 0..300)
+        require(SiteRegistry.byId(site) != null && value.autoPageSeconds in 0..300 && value.slideshowSeconds in 0..300 && value.brightnessPercent in -1..100)
         change { it.copy(readingBehaviors = it.readingBehaviors + (site to value)) }
     }
     fun imageFavorites() = snapshot().imageFavorites.sortedByDescending { it.at }

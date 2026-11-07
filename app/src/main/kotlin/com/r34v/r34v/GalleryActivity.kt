@@ -4,6 +4,7 @@ package com.r34v.r34v
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
@@ -57,6 +58,13 @@ class GalleryActivity : ComponentActivity() {
     private var pageJob: Job? = null
     private val images = mutableStateMapOf<Int, GalleryImage>()
     private val dialogs = ComposeDialogs()
+    private val exports: GalleryExportModel by viewModels()
+    private val exportDocument = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
+        exports.save(if (it.resultCode == RESULT_OK) it.data?.data else null, tree = false)
+    }
+    private val exportDirectory = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()) {
+        exports.save(it, tree = true)
+    }
     private val progressSaver by lazy { ReadingProgressSaver(lifecycleScope, store::saveReading) }
     private fun saveProgress() {
         saveReader?.invoke()
@@ -109,8 +117,16 @@ class GalleryActivity : ComponentActivity() {
         if (reading && !controlsVisible) bars.hide(WindowInsetsCompat.Type.systemBars()) else bars.show(WindowInsetsCompat.Type.systemBars())
     }
     @Composable private fun Content() {
+        ExportHost()
         BackHandler { when { reading && !controlsVisible -> controlsVisible = true; reading -> { saveProgress(); reading = false; controlsVisible = true }; else -> finish() } }
-        SideEffect { applyBars() }
+        val screenBrightness = if (reading && readingBehavior.brightnessPercent >= 0) (readingBehavior.brightnessPercent / 100f).coerceAtLeast(.02f) else -1f
+        val keepScreenOn = reading && readingBehavior.keepAwake
+        SideEffect {
+            applyBars()
+            window.attributes = window.attributes.apply { this.screenBrightness = screenBrightness }
+            if (keepScreenOn) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
         if (reading && detail != null && !gate && error == null) {
             ReaderScene()
             dialogs.Host()
@@ -181,11 +197,11 @@ class GalleryActivity : ComponentActivity() {
                     if (readerMode == ReaderMode.STRIP) ComicReader(gallery.pageCount, jump, ::loadStripPage,
                         { autoPageRunning = false; slideshowRunning = false; controlsVisible = !controlsVisible }, positionChanged, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent)
                     else PagedComicReader(gallery.pageCount, jump, readerMode, ::loadStripPage,
-                        { autoPageRunning = false; slideshowRunning = false; controlsVisible = !controlsVisible }, positionChanged, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent, readerPreferences.doubleCover)
+                        { autoPageRunning = false; slideshowRunning = false; controlsVisible = !controlsVisible }, positionChanged, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent, readerPreferences.doubleCover, currentPage = page)
                 }
                 androidx.compose.animation.AnimatedVisibility(controlsVisible, Modifier.align(Alignment.TopCenter).statusBarsPadding(),
                     enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
-                    Row(Modifier.padding(12.dp).widthIn(max = 760.dp).fillMaxWidth().liquidSurface(28), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.padding(12.dp).widthIn(max = 760.dp).fillMaxWidth().liquidSurface(14), verticalAlignment = Alignment.CenterVertically) {
                         IconAction(R.drawable.ic_back, "返回") { saveProgress(); reading = false; controlsVisible = true }
                         Text(entry.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (app.queue.session(intent.getStringExtra("queue_session"), entry) != null)
@@ -195,9 +211,10 @@ class GalleryActivity : ComponentActivity() {
                         IconAction(R.drawable.ic_more, "阅读工具") { readerTools() }
                     }
                 }
+                if (!controlsVisible) ReaderStatusBar(readingBehavior, page, gallery.pageCount, Modifier.align(Alignment.BottomEnd))
                 androidx.compose.animation.AnimatedVisibility(controlsVisible, Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
                     enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
-                    Column(Modifier.padding(12.dp).widthIn(max = 760.dp).fillMaxWidth().liquidSurface(28).padding(8.dp)) {
+                    Column(Modifier.padding(12.dp).widthIn(max = 760.dp).fillMaxWidth().liquidSurface(14).padding(8.dp)) {
                         if (autoPageRunning || slideshowRunning) TextAction({ autoPageRunning = false; slideshowRunning = false }, Modifier.fillMaxWidth()) {
                             Text(if (slideshowRunning) "幻灯片播放中 · 点击暂停" else "自动翻页中 · 点击暂停")
                         }
@@ -224,7 +241,7 @@ class GalleryActivity : ComponentActivity() {
     private fun readerTools() {
         val hasQueue = app.queue.session(intent.getStringExtra("queue_session"), entry) != null
         val imageSaved = store.personal.isImageFavorite(entry, page)
-        dialogs.choose("阅读工具", listOf("页面缩略图总览", "页码书签", if (imageSaved) "取消收藏当前图片" else "收藏当前图片", "图集幻灯片", "阅读模式", "阅读行为", "本书显示设置", "全屏${actionVerb}") + if (hasQueue) listOf("片单接续") else emptyList()) { index ->
+        dialogs.choose("阅读工具", listOf("页面缩略图总览", "页码书签", if (imageSaved) "取消收藏当前图片" else "收藏当前图片", "图集幻灯片", "阅读模式", "阅读行为", "本书显示设置", "全屏${actionVerb}", "阅读状态栏与屏幕", "图片保存、分享与 CBZ") + if (hasQueue) listOf("片单接续") else emptyList()) { index ->
             when (index) {
                 0 -> { dialogs.dismiss(); thumbnails = true }
                 1 -> bookmarks()
@@ -234,7 +251,9 @@ class GalleryActivity : ComponentActivity() {
                 5 -> readingBehaviorOptions()
                 6 -> readerDisplayOptions()
                 7 -> { dialogs.dismiss(); controlsVisible = false }
-                8 -> queueTools()
+                8 -> readerStatusOptions(dialogs, readingBehavior) { readingBehavior = it; store.personal.setReadingBehavior(site.id, it) }
+                9 -> exportOptions()
+                10 -> queueTools()
             }
         }
     }
@@ -364,6 +383,7 @@ class GalleryActivity : ComponentActivity() {
             SaveForLater(entry, app, dialogs)
             QueueNextAction(this@GalleryActivity, entry, intent.getStringExtra("queue_session"), dialogs)
             Action("页面缩略图总览") { thumbnails = true }
+            Action("图片保存、分享与 CBZ", click = ::exportOptions)
             if (entry.site != SiteRegistry.LOCAL.id) {
             Action(when (download?.state) {
                 GalleryDownloadState.COMPLETED -> if (download.partial) "继续保存所选页" else "离线$verb"
@@ -406,6 +426,56 @@ class GalleryActivity : ComponentActivity() {
         val url = cached ?: images[target]?.pageUrl ?: images[target - 1]?.nextUrl ?: images[target + 1]?.previousUrl ?: remembered
             ?: if (offlineOnly) error("下载图页目录缺失，请重新下载") else AdapterRegistry.adapter(site, app.network).galleryPageLink(gallery, target)
         return app.galleries.page(site, url, force, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly, sourceRoot = sourceRoot).also { images[target] = it.image }
+    }
+    @Composable private fun ExportHost() {
+        LaunchedEffect(exports.message) {
+            if (exports.message.isNotBlank()) { toast(exports.message); exports.dismissMessage() }
+        }
+        LaunchedEffect(exports.prepared, exports.busy) {
+            val batch = exports.prepared ?: return@LaunchedEffect
+            if (exports.delivering || exports.busy) return@LaunchedEffect
+            exports.beginDelivery()
+            try {
+                if (batch.mode == ExportMode.SHARE_IMAGES) {
+                    val uris = ArrayList(batch.files.map { androidx.core.content.FileProvider.getUriForFile(this@GalleryActivity, "$packageName.fileprovider", it.file) })
+                    val share = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
+                        type = batch.files.map { it.mime }.distinct().singleOrNull() ?: "image/*"
+                        if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris.first()) else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                        clipData = android.content.ClipData.newUri(contentResolver, "图片", uris.first()).apply { uris.drop(1).forEach { addItem(android.content.ClipData.Item(it)) } }
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(Intent.createChooser(share, "分享图片")); exports.shared()
+                } else if (batch.files.size > 1) exportDirectory.launch(null)
+                else exportDocument.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE); type = batch.files.first().mime
+                    putExtra(Intent.EXTRA_TITLE, batch.files.first().file.name)
+                })
+            } catch (error: Exception) { exports.cancel(); toast("无法打开保存或分享：${error.message}") }
+        }
+        if (exports.busy) AlertDialog({ exports.cancel() }, title = { Text("导出图集") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(exports.progress) }
+        }, confirmButton = { TextAction({ exports.cancel() }) { Text("取消导出") } })
+    }
+    private fun exportOptions() {
+        val gallery = detail ?: return
+        if (exports.busy || exports.prepared != null) { toast("已有导出任务，请先完成或取消"); return }
+        val current = page
+        fun start(pages: List<Int>, mode: ExportMode) { exports.start(entry, gallery, pages, mode, offlineOnly, sourceRoot) }
+        fun selection(mode: ExportMode) {
+            dialogs.edit("选择导出页码", current.toString(), "例如 1,3,5-8，共 ${gallery.pageCount} 页；未缓存的图片需要联网", validate = {
+                runCatching { parsePageSelection(it, gallery.pageCount) }.exceptionOrNull()?.message
+            }) { start(parsePageSelection(it, gallery.pageCount), mode) }
+        }
+        dialogs.choose("图片保存、分享与 CBZ", listOf("保存当前原图 · 第 $current 页", "分享当前原图", "选择图片保存", "选择图片分享", "导出完整 CBZ · ${gallery.pageCount} 页", "选择页码导出 CBZ")) { index ->
+            when (index) {
+                0 -> start(listOf(current), ExportMode.SAVE_IMAGES)
+                1 -> start(listOf(current), ExportMode.SHARE_IMAGES)
+                2 -> selection(ExportMode.SAVE_IMAGES)
+                3 -> selection(ExportMode.SHARE_IMAGES)
+                4 -> start((1..gallery.pageCount).toList(), ExportMode.CBZ)
+                5 -> selection(ExportMode.CBZ)
+            }
+        }
     }
     private fun selectPages() {
         val count = detail?.pageCount ?: return

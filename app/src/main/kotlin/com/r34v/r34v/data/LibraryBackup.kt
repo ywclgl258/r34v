@@ -102,6 +102,14 @@ fun validateBackup(value: LibraryBackup) {
     }
     require(personal.savedSearches.size <= 1000 && personal.smartShelves.size <= 1000)
     personal.savedSearches.forEach(::validSearch)
+    require(personal.searchUpdates.size <= personal.savedSearches.size)
+    personal.searchUpdates.forEach { (id, box) ->
+        val search = personal.savedSearches.first { it.id == id }
+        require(box.conditionKey == search.conditionKey && box.entries.size <= 1000 && box.known.size <= search.sources.size)
+        box.entries.forEach { video(it.video); require(it.video.site in search.sources) }
+        box.known.forEach { (site, keys) -> require(site in search.sources && keys.size <= 1000 && keys.all { it.startsWith("$site:") && it.length <= 2048 }) }
+        box.checks.forEach { (site, check) -> require(site in search.sources && check.checkedAt >= 0 && check.successAt >= 0 && check.error.length <= 2000) }
+    }
     personal.smartShelves.forEach { shelf -> require(shelf.id.isNotBlank() && shelf.name.length in 1..80 && shelf.rule in SmartRule.entries); if (shelf.source.isNotBlank()) source(shelf.source); require(shelf.category.isBlank() || SiteCategory.entries.any { it.name == shelf.category }) }
     require(personal.timeBookmarks.size <= 5000 && personal.timeBookmarks.map { it.id }.distinct().size == personal.timeBookmarks.size)
     personal.timeBookmarks.forEach { video(it.video); require(it.positionMs >= 0 && it.note.length <= 500 && it.group.length <= 80 && it.id.isNotBlank()) }
@@ -110,10 +118,13 @@ fun validateBackup(value: LibraryBackup) {
         require(key.contains(':') && SiteRegistry.byId(key.substringBefore(':')) != null)
         require(prefs.cropPercent in 0..20 && (prefs.mode.isBlank() || ReaderMode.entries.any { it.name == prefs.mode }))
     }
-    personal.readingBehaviors.forEach { (site, behavior) -> source(site); require(behavior.autoPageSeconds in 0..300 && behavior.slideshowSeconds in 0..300) }
+    personal.readingBehaviors.forEach { (site, behavior) -> source(site); require(behavior.autoPageSeconds in 0..300 && behavior.slideshowSeconds in 0..300 && behavior.brightnessPercent in -1..100) }
     require(personal.imageFavorites.size <= 20000 && personal.imageFavorites.map { it.key }.distinct().size == personal.imageFavorites.size)
     personal.imageFavorites.forEach { favorite ->
-        video(favorite.video); require(favorite.page in 1..100000); location(favorite.pageUrl, favorite.video.site)
+        video(favorite.video); require(favorite.page in 1..100000)
+        if (favorite.video.site == SiteRegistry.LOCAL.id) {
+            require(favorite.video.url == "r34local://${favorite.video.id}" && favorite.pageUrl == "${favorite.video.url}/${favorite.page}")
+        } else location(favorite.pageUrl, favorite.video.site)
         require(favorite.imageUrl.length <= 16384 && (favorite.imageUrl.isBlank() || favorite.imageUrl.toHttpUrlOrNull()?.isHttps == true))
     }
     require(personal.channels.size <= 100 && personal.channels.map { it.id }.distinct().size == personal.channels.size)
@@ -160,6 +171,11 @@ fun mergeBackups(local: LibraryBackup, incoming: LibraryBackup): LibraryBackup {
         readerModes = a.readerModes + b.readerModes,
         inboxes = boxes,
         savedSearches = (b.savedSearches + a.savedSearches).distinctBy { it.id },
+        searchUpdates = (b.savedSearches + a.savedSearches).distinctBy { it.id }.mapNotNull { search ->
+            val first = a.searchUpdates[search.id]?.takeIf { it.conditionKey == search.conditionKey }
+            val second = b.searchUpdates[search.id]?.takeIf { it.conditionKey == search.conditionKey }
+            (if (first != null && second != null) first.merge(second) else first ?: second)?.let { search.id to it }
+        }.toMap(),
         smartShelves = (b.smartShelves + a.smartShelves).distinctBy { it.id },
         timeBookmarks = (b.timeBookmarks + a.timeBookmarks).sortedByDescending { it.at }.distinctBy { it.id },
         playbackPreferences = a.playbackPreferences + b.playbackPreferences,
@@ -176,7 +192,12 @@ fun LibraryStore.backupSnapshot(): LibraryBackup = synchronized(this) {
         SiteBackup(id, favorites(id), history(id), readings(id), subscriptions(id), blockedTags(id),
             runCatching { gson.fromJson(prefs.getString("$id:native_search_history", "[]"), Array<String>::class.java).toList() }.getOrDefault(emptyList()),
             galleryLanguage(id), subscriptionOrder(id))
-    }, personal = personal.snapshot(), settings = buildMap {
+    }, personal = personal.snapshot().let { data ->
+        data.copy(imageFavorites = data.imageFavorites.map { favorite ->
+            // Rebuild local thumbnails from this device's imported book after restore.
+            if (favorite.video.site == SiteRegistry.LOCAL.id) favorite.copy(video = favorite.video.copy(thumb = ""), imageUrl = "") else favorite
+        })
+    }, settings = buildMap {
         backupBooleans.forEach { put(it, bool(it, it in setOf("translate_tags", "auto_update")).toString()) }
         backupStrings.forEach { key -> put(key, string(key, when (key) { "quality" -> "720p"; "native_speed" -> "1.0"; else -> "" })) }
     })

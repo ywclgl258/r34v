@@ -96,4 +96,35 @@ class NextFeatureStorageTest {
             assertTrue(value.completed); assertEquals(old, value.addedAt); assertTrue(value.at > old)
         } finally { store.prefs.edit().clear().commit() }
     }
+    @Test fun localImageFavoriteBackupRestoresWithoutDeviceFilePaths() = runBlocking {
+        val store = LibraryStore(context, "local-favorite-${System.nanoTime()}", "no-legacy-${System.nanoTime()}")
+        val local = LocalLibrary(context)
+        val (file, uri) = archive("local-favorite-backup", shadeOffset = 140)
+        var video: Video? = null
+        try {
+            val imported = local.importArchive(uri); video = imported
+            val rendered = local.page(imported.id, 2)
+            store.personal.toggleImageFavorite(imported, 2, rendered.image.pageUrl, rendered.image.imageUrl)
+            rendered.bitmap.recycle()
+            val snapshot = store.backupSnapshot()
+            assertFalse(store.gson.toJson(snapshot.personal.imageFavorites).contains("file:"))
+            assertEquals(rendered.image.imageUrl, store.personal.imageFavorites().single().imageUrl)
+            val password = "local-backup-pass".toCharArray()
+            val restored = BackupCodec.decode(BackupCodec.encode(snapshot, password), password)
+            store.restoreBackup(restored)
+            val favorite = store.personal.imageFavorites().single()
+            assertEquals(imported.id, favorite.video.id); assertEquals(2, favorite.page)
+            assertEquals("r34local://${imported.id}/2", favorite.pageUrl)
+            assertEquals("", favorite.imageUrl)
+            assertEquals(rendered.image.imageUrl, local.imageUri(favorite.video.id, favorite.page))
+            assertTrue(local.ownsImageUri(rendered.image.imageUrl))
+            assertFalse(local.ownsImageUri(Uri.fromFile(file).toString()))
+            assertFalse(local.ownsImageUri("https://example.com/page.image"))
+            assertFalse(local.ownsImageUri(Uri.fromFile(File(context.filesDir, "local-library/${imported.id}/../../outside.image")).toString()))
+            local.remove(imported.id)
+            assertNull(local.imageUri(favorite.video.id, favorite.page))
+            local.importArchive(uri)
+            assertEquals(rendered.image.imageUrl, local.imageUri(favorite.video.id, favorite.page))
+        } finally { video?.let { local.remove(it.id) }; file.delete(); store.prefs.edit().clear().commit() }
+    }
 }

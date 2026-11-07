@@ -46,12 +46,12 @@ import coil3.request.ImageRequest
 val CanvasColor = Color.Black
 val SurfaceColor = Color(0xff141414)
 val RaisedColor = Color(0xff202020)
-val ControlColor = Color(0xff2b2b2b)
+val ControlColor = Color(0xff272727)
 val ActiveControlColor = Color(0xff404040)
 val ControlFocusColor = Color(0xff686868)
 val SelectedControlColor = Color(0xfff2f2f2)
 val MutedColor = Color(0xffb8b8b8)
-val BrandColor = Color(0xffef4954)
+val BrandColor = Color(0xffff3547)
 val MatchColor = Color(0xff46d369)
 val GlassTopColor = Color(0xee202020)
 val GlassBottomColor = Color(0xf0121212)
@@ -128,7 +128,7 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
     val focused by interaction.collectIsFocusedAsState()
     val compact = LocalUiDensity.current.compact
     Button(click, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight).semantics { this.selected = selected }, enabled,
-        shape = RoundedCornerShape(if (compact) 20.dp else 24.dp), interactionSource = interaction, elevation = null,
+        shape = RoundedCornerShape(8.dp), interactionSource = interaction, elevation = null,
         contentPadding = PaddingValues(horizontal = if (compact) 14.dp else 16.dp, vertical = if (compact) 9.dp else 12.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = if (focused) ControlFocusColor else if (primary) SelectedControlColor else if (selected) ActiveControlColor else ControlColor,
@@ -168,7 +168,7 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
     val focused by interaction.collectIsFocusedAsState()
     val compact = LocalUiDensity.current.compact
     FilledTonalButton(click, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight), enabled,
-        shape = RoundedCornerShape(if (compact) 12.dp else 16.dp), interactionSource = interaction,
+        shape = RoundedCornerShape(10.dp), interactionSource = interaction,
         contentPadding = PaddingValues(horizontal = if (compact) 12.dp else 16.dp, vertical = if (compact) 9.dp else 12.dp),
         colors = ButtonDefaults.filledTonalButtonColors(containerColor = if (focused) ControlFocusColor else ControlColor, contentColor = Color.White)) {
         Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = if (compact) 12.sp else 13.sp); Spacer(Modifier.width(if (compact) 6.dp else 8.dp)); Icon(painterResource(R.drawable.ic_chevron_down), null, Modifier.size(if (compact) 14.dp else 16.dp))
@@ -213,7 +213,8 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
     val onRatio by rememberUpdatedState(ratio)
     var ready by remember(url, site.id) { mutableStateOf(false) }
     val request = remember(context, url, site.id) {
-        val allowed = url.startsWith("https://") || com.r34v.r34v.BuildConfig.DEBUG && url.startsWith("http://")
+        val allowed = url.startsWith("https://") || com.r34v.r34v.BuildConfig.DEBUG && url.startsWith("http://") ||
+            site.id == SiteRegistry.LOCAL.id && app.localLibrary.ownsImageUri(url)
         ImageRequest.Builder(context).data(url.takeIf { allowed }).memoryCacheKey("${site.id}|$url").diskCacheKey("${site.id}|$url").build()
     }
     Box(modifier.background(Brush.verticalGradient(listOf(Color(0xff242424), SurfaceColor)))) {
@@ -245,7 +246,7 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
     var expanded by remember { mutableStateOf(false) }
     val compact = LocalUiDensity.current.compact
     Column(modifier.testTag("media-${video.site}-${video.id}").combinedClickable(onClick = click, onLongClick = { expanded = true }).padding(bottom = if (compact) 8.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 5.dp)) {
-        Box(Modifier.clip(RoundedCornerShape(if (compact) 10.dp else 14.dp))) {
+        Box(Modifier.clip(RoundedCornerShape(8.dp))) {
             SiteImage(video.thumb, site, Modifier.fillMaxWidth().aspectRatio(ratio.coerceIn(.45f, 1.8f)), gallery) { if (gallery && !video.hasThumbDimensions) ratio = it }
             Box(Modifier.align(Alignment.TopEnd)) {
                 IconAction(R.drawable.ic_more, "${video.title} 的更多操作", Modifier.background(Color.Black.copy(alpha = .65f), androidx.compose.foundation.shape.CircleShape)) { expanded = true }

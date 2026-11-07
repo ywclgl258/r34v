@@ -39,4 +39,15 @@ class BackupCodecTest {
     @Test fun weakPasswordIsRejectedAtExport() {
         assertThrows(IllegalArgumentException::class.java) { BackupCodec.encode(document(), "short".toCharArray()) }
     }
+    @Test fun localImageFavoritesRoundTripByBookAndPage() {
+        val id = "a".repeat(64)
+        val video = Video(id, "本地漫画", "r34local://$id", site = "local", mediaKind = MediaKind.GALLERY)
+        val favorite = ImageFavorite(video, 2, "${video.url}/2")
+        val backup = LibraryBackup(personal = PersonalLibrary(imageFavorites = listOf(favorite)))
+        assertEquals(backup, BackupCodec.decode(BackupCodec.encode(backup, password), password))
+        for (invalid in listOf(favorite.copy(pageUrl = "${video.url}/3"), favorite.copy(pageUrl = "r34local://${"b".repeat(64)}/2"),
+            favorite.copy(imageUrl = "file:///private/image.png"))) {
+            assertThrows(IllegalArgumentException::class.java) { validateBackup(backup.copy(personal = backup.personal.copy(imageFavorites = listOf(invalid)))) }
+        }
+    }
 }

@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ConcurrentHashMap
 
 /** Neutral media and real repository/cache/player paths; no production test switches. */
-class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
+class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi: () -> Unit = {}) : Closeable {
     val ins = InstrumentationRegistry.getInstrumentation()
     val app = ins.targetContext.applicationContext as R34Application
     private val prefs = app.library.prefs.all.toMap()
@@ -100,7 +100,7 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
         val site = SiteRegistry.byIdOrDefault(siteId)
         if (cinematic && site.mediaKind == MediaKind.VIDEO) return Video("compose-$nonce-$page-$index", cinemaTitles[index % cinemaTitles.size],
             "${site.base}/compose-$nonce/content-$page-$index/", "${site.base}/compose-cover-$nonce-$index.jpg", "${42 + index}:00",
-            rating = "${98 - index % 9}% 匹配", type = if (index % 3 == 0) "悬疑 • 科幻 • 剧情" else "剧情 • 惊悚 • 口碑佳作", site = site.id)
+            rating = "评分 ${(98 - index % 9) / 10.0}", type = if (index % 3 == 0) "悬疑 • 科幻 • 剧情" else "剧情 • 惊悚 • 口碑佳作", site = site.id)
         return Video("compose-$nonce-$page-$index", "${site.name} 示例 $page-$index", "${site.base}/compose-$nonce/content-$page-$index/", "${site.base}/compose-cover-$nonce-$index.png", "0:10", site = site.id, mediaKind = site.mediaKind, thumbWidth = if (site.mediaKind == MediaKind.GALLERY) 600 else 1600, thumbHeight = if (site.mediaKind == MediaKind.GALLERY) if (index % 2 == 0) 900 else 600 else 900)
     }
     private val cinemaTitles = listOf("怪奇物语", "黑暗荣耀", "爱，死亡和机器人", "暗黑", "星期三", "后翼弃兵")
@@ -127,7 +127,9 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
             if (offline) throw IOException("Fixture offline")
             kotlinx.coroutines.delay(detailDelayMillis)
             detailHook?.invoke()
-            return Detail(video(site.id), listOf(Stream("720p", server.url("/clip.mp4?quality=720").toString()), Stream("480p", server.url("/clip.mp4?quality=480").toString())), mapOf("标签" to listOf(Link("sample", "示例标签", "${site.base}/tags/sample/"))), "用于验证原生播放的中性测试片段。", listOf(video(site.id, 1, 1)), listOf(Comment("测试作者", "中性测试评论", "2026")), emptyList())
+            val identity = Regex("content-(\\d+)-(\\d+)$").find(url.trimEnd('/'))
+            val entry = video(site.id, identity?.groupValues?.get(1)?.toIntOrNull() ?: 1, identity?.groupValues?.get(2)?.toIntOrNull() ?: 0)
+            return Detail(entry, listOf(Stream("720p", server.url("/clip.mp4?quality=720").toString()), Stream("480p", server.url("/clip.mp4?quality=480").toString())), mapOf("标签" to listOf(Link("sample", "示例标签", "${site.base}/tags/sample/"))), "用于验证原生播放的中性测试片段。", listOf(video(site.id, 1, 1)), listOf(Comment("测试作者", "中性测试评论", "2026")), emptyList())
         }
         override suspend fun index(section: String) = listOf(Link("sample", "示例索引", "${site.base}/tags/sample/"))
         override fun sectionUrl(key: String): String? = if (key == "catalog") "${site.base}/catalog/" else null
@@ -153,6 +155,7 @@ class ComposeFixture(private val cinematic: Boolean = false) : Closeable {
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         .putExtra("link", "${SiteRegistry.EHENTAI.base}/tags/sample/")) as MainActivity
     fun shot(name: String) {
+        awaitUi()
         val dir = File(ins.targetContext.cacheDir, "compose-shots").apply { check(isDirectory || mkdirs()) }
         ins.waitForIdleSync(); ins.uiAutomation.waitForIdle(250, 3000)
         val image = ins.uiAutomation.takeScreenshot() ?: error("No screenshot")

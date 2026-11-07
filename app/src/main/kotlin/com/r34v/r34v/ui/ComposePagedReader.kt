@@ -27,25 +27,27 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 @Composable fun PagedComicReader(count: Int, jump: ReaderJump, mode: ReaderMode,
     load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage, toggle: () -> Unit,
     position: (Int, GalleryImage?, Int) -> Unit, attachSave: ((() -> Unit)?) -> Unit,
-    fit: ReaderFit = ReaderFit.WIDTH, cropPercent: Int = 0, combineCover: Boolean = true) {
+    fit: ReaderFit = ReaderFit.WIDTH, cropPercent: Int = 0, combineCover: Boolean = true, currentPage: Int = jump.page) {
     val config = LocalConfiguration.current
+    val readingPage by rememberUpdatedState(currentPage)
     val spread = if (mode == ReaderMode.SPREAD && config.screenWidthDp > config.screenHeightDp) 2 else 1
     key(spread, mode, combineCover) {
         val scope = rememberCoroutineScope()
         val buffer = remember { ReaderBuffer(count, scope, load) }
         val sheets = remember(count, spread, combineCover) { readerSheets(count, spread, combineCover) }
-        val initial = sheets.indexOfFirst { jump.page in it }.coerceAtLeast(0)
+        val initial = sheets.indexOfFirst { readingPage in it }.coerceAtLeast(0)
         val pager = rememberPagerState(initialPage = initial) { sheets.size }
         var pending by remember { mutableStateOf<ReaderJump?>(jump) }
         val currentPosition by rememberUpdatedState(position)
         fun logicalPage(): Int {
             val sheet = sheets[pager.settledPage.coerceIn(0, sheets.lastIndex)]
-            return if (jump.page in sheet) jump.page else sheet.first()
+            return if (readingPage in sheet) readingPage else sheet.first()
         }
         fun save() { if (pending == null) { val page = logicalPage(); currentPosition(page, buffer.pages[page]?.image, 0) } }
         DisposableEffect(buffer) { attachSave(::save); onDispose { save(); attachSave(null); buffer.close() } }
         LaunchedEffect(jump) {
-            pending = jump; pager.scrollToPage(sheets.indexOfFirst { jump.page in it }.coerceAtLeast(0))
+            // Layout changes recreate this effect; resume the latest logical page, not the old jump.
+            pending = jump; pager.scrollToPage(sheets.indexOfFirst { readingPage in it }.coerceAtLeast(0))
             withFrameNanos { }; pending = null
         }
         LaunchedEffect(pager, jump) {

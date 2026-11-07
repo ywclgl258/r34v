@@ -47,6 +47,14 @@ class LocalLibrary(private val context: Context) {
         value.takeIf { it.id == id && it.files.size in 1..MAX_PAGES && it.files.all { f -> Regex("\\d+\\.image").matches(f) && File(folder(id), f).isFile } }
     }.getOrNull()
     fun books(): List<LocalBook> = root.listFiles().orEmpty().filter { it.isDirectory && !it.name.startsWith("incoming-") }.mapNotNull { book(it.name) }.sortedByDescending { it.at }
+    fun imageUri(id: String, page: Int): String? = book(id)?.files?.getOrNull(page - 1)?.let { filename ->
+        Uri.fromFile(File(folder(id), filename)).toString()
+    }
+    fun ownsImageUri(uri: String): Boolean = runCatching {
+        val file = File(java.net.URI(uri)).canonicalFile
+        file.isFile && file.parentFile?.parentFile == root.canonicalFile &&
+            Regex("[a-f0-9]{64}").matches(file.parentFile!!.name) && Regex("\\d+\\.image").matches(file.name)
+    }.getOrDefault(false)
     fun video(book: LocalBook) = Video(book.id, book.title, "r34local://${book.id}", Uri.fromFile(File(folder(book.id), book.files.first())).toString(), "${book.files.size} 页", site = SiteRegistry.LOCAL.id, mediaKind = MediaKind.GALLERY)
     fun detail(video: Video): GalleryDetail {
         val book = book(video.id) ?: error("本地文件不存在，请重新导入同一文件或目录")

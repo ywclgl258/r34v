@@ -99,7 +99,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - uses: reactivecircus/android-emulator-runner@v2
         env:
-          TEST_CLASSES: ${{ inputs.test_classes || 'com.r34v.r34v.OptimizationUiTest,com.r34v.r34v.OptimizationIoTest,com.r34v.r34v.SiteSessionTest,com.r34v.r34v.VideoRemovalTest,com.r34v.r34v.SubscriptionUiTest,com.r34v.r34v.StorageLifecycleTest,com.r34v.r34v.DownloadCacheTest,com.r34v.r34v.GalleryUiTest,com.r34v.r34v.UnifiedDownloadsTest' }}
+          TEST_CLASSES: ${{ inputs.test_classes || 'com.r34v.r34v.OptimizationUiTest,com.r34v.r34v.OptimizationIoTest,com.r34v.r34v.SiteSessionTest,com.r34v.r34v.VideoRemovalTest,com.r34v.r34v.SubscriptionUiTest,com.r34v.r34v.StorageLifecycleTest,com.r34v.r34v.DownloadCacheTest,com.r34v.r34v.GalleryUiTest,com.r34v.r34v.UnifiedDownloadsTest,com.r34v.r34v.FeatureBatchUiTest,com.r34v.r34v.ModernUiTest,com.r34v.r34v.GalleryExportTest,com.r34v.r34v.SavedSearchStorageTest' }}
         with:
           api-level: ${{ matrix.api }}
           target: google_apis

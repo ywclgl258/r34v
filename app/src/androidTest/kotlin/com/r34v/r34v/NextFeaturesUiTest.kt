@@ -20,9 +20,11 @@ class NextFeaturesUiTest : ComposeUiCase() {
         val video = f.video()
         f.app.library.saveWatch(Watch(video.id, video.title, video.thumb, video.url, 42, 600, site = video.site))
     }
-    @Test fun personalHomeAggregatesResumeAndSavedSearchSurvivesRecreation() = ComposeFixture(cinematic = true).use { f ->
+    @Test fun personalHomeAggregatesResumeAndSavedSearchSurvivesRecreation() = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
         seed(f); f.app.library.personal.add(f.video("ehentai"))
-        val activity = f.launch(); home(); waitText("怪奇物语"); waitCovers(); f.shot("next-personal-home")
+        val activity = f.launch(); home(); waitText("怪奇物语")
+        ui.waitUntil(15000) { ui.onAllNodesWithTag("video-stage").fetchSemanticsNodes().isNotEmpty() }
+        waitCovers(); f.shot("next-personal-home")
         clickText("搜索"); clickText("多个站点")
         ui.onNode(hasSetTextAction()).performTextInput("space")
         closeKeyboard(f)

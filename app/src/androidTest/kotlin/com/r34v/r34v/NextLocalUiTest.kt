@@ -21,6 +21,27 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NextLocalUiTest : ComposeUiCase() {
+    @Test fun restoredLocalImageFavoriteShowsItsPageThumbnailAndOpensThatPage() = ComposeFixture().use { f ->
+        val (file, uri) = NextFeatureStorageTest().archive("local-favorite-ui", shadeOffset = 150)
+        val video = runBlocking { f.app.localLibrary.importArchive(uri) }
+        try {
+            val rendered = runBlocking { f.app.localLibrary.page(video.id, 2) }
+            f.app.library.personal.toggleImageFavorite(video, 2, rendered.image.pageUrl, rendered.image.imageUrl)
+            rendered.bitmap.recycle()
+            val password = "local-ui-backup-pass".toCharArray()
+            val restored = BackupCodec.decode(BackupCodec.encode(f.app.library.backupSnapshot(), password), password)
+            f.app.library.restoreBackup(restored)
+            assertEquals("", f.app.library.personal.imageFavorites().first { it.video.id == video.id }.imageUrl)
+            f.launch(); waitHome(); clickText("片库")
+            ui.onNodeWithTag("library-hub").performScrollToNode(hasText("单图收藏 ·", substring = true))
+            ui.onNode(hasText("单图收藏 ·", substring = true)).performClick()
+            waitText("本地导入 · 第 2 页"); waitCovers()
+            clickText(video.title)
+            ui.waitUntil(15000) { ui.onAllNodesWithTag("reader-page-2").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithText("2 / 3").assertIsDisplayed()
+            assertTrue(f.galleryCalls.isEmpty())
+        } finally { runBlocking { f.app.localLibrary.remove(video.id) }; file.delete() }
+    }
     @Test fun missingLocalFilesCanBeReimportedWithoutLosingProgressOrBookmarks() = ComposeFixture().use { f ->
         val (file, uri) = NextFeatureStorageTest().archive("local-recovery", shadeOffset = 70)
         val video = runBlocking { f.app.localLibrary.importArchive(uri) }

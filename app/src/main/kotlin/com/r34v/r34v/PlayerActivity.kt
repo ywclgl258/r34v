@@ -84,6 +84,7 @@ class PlayerActivity : ComponentActivity() {
     private var enteringPip = false
     private var pauseAt = 0L
     private var timerRemaining by mutableLongStateOf(0)
+    private var loop by mutableStateOf(VideoLoopRange())
     private val dialogs = ComposeDialogs()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -103,6 +104,7 @@ class PlayerActivity : ComponentActivity() {
         pipMode = Build.VERSION.SDK_INT >= 26 && isInPictureInPictureMode
         locked = savedInstanceState?.getBoolean("locked") ?: false
         pauseAt = savedInstanceState?.getLong("pauseAt") ?: 0L
+        loop = VideoLoopRange(savedInstanceState?.getLong("loopA", -1) ?: -1, savedInstanceState?.getLong("loopB", -1) ?: -1)
         if (pauseAt > 0 && pauseAt <= SystemClock.elapsedRealtime()) { pauseAt = 0; resumePlay = false }
         store.personal.markRead(video.site, setOf(video.entryKey))
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -112,7 +114,8 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch { while (isActive) {
             timerRemaining = if (pauseAt > 0) (pauseAt - SystemClock.elapsedRealtime()).coerceAtLeast(0) else 0
             if (pauseAt > 0 && timerRemaining == 0L) { pauseAt = 0; resumePlay = false; player?.pause(); savePosition(); hint = "定时暂停已生效"; controls = true }
-            delay(500)
+            player?.let { if (loop.shouldRepeat(it.currentPosition, it.isPlaying)) it.seekTo(loop.startMs) }
+            delay(if (loop.active) 100 else 500)
         } }
     }
     private fun load() {
@@ -159,12 +162,21 @@ class PlayerActivity : ComponentActivity() {
                         playerView?.keepScreenOn = exo.isPlaying || state == Player.STATE_BUFFERING
                         when (state) {
                             Player.STATE_BUFFERING -> phase = if (presented) "正在缓冲" else "正在校准画面"
-                            Player.STATE_READY -> { phase = null; presented = true; if (!autoFullscreenApplied && store.bool("auto_fullscreen")) { autoFullscreenApplied = true; fullscreen = true } }
-                            Player.STATE_ENDED -> { phase = null; controls = true; locked = false; savePosition() }
+                            Player.STATE_READY -> { phase = null; presented = true
+                                if (exo.duration > 0 && !loop.validFor(exo.duration)) { loop = VideoLoopRange(); gestureHint("片源时长已变更，循环区间已清除") }
+                                if (!autoFullscreenApplied && store.bool("auto_fullscreen")) { autoFullscreenApplied = true; fullscreen = true } }
+                            Player.STATE_ENDED -> { phase = null
+                                if (loop.active && exo.playWhenReady) { exo.seekTo(loop.startMs); exo.play() }
+                                else { controls = true; locked = false; savePosition() } }
                         }
                     }
                     override fun onIsPlayingChanged(playing: Boolean) { playerView?.keepScreenOn = playing; revision++; if (exo.playbackState == Player.STATE_READY) status = "${stream?.label} · ${if (playing) { if (offline) "离线播放" else "正在播放" } else "已暂停"}" }
                     override fun onVideoSizeChanged(videoSize: VideoSize) { if (fullscreen) applyFullscreen() }
+                    override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                        if (reason == Player.DISCONTINUITY_REASON_SEEK && !loop.contains(newPosition.positionMs)) {
+                            loop = VideoLoopRange(); gestureHint("已跳出循环区间，循环已清除")
+                        }
+                    }
                     override fun onPlayerError(error: PlaybackException) {
                         savePosition()
                         if (!offline && !refreshed) { refreshed = true; phase = "正在刷新播放地址"; lifecycleScope.launch { try {
@@ -198,6 +210,10 @@ class PlayerActivity : ComponentActivity() {
                 if (!pipMode) {
                     if (locked) Action("解锁画面", modifier = Modifier.align(Alignment.CenterStart).padding(12.dp)) { locked = false; controls = true }
                     else if (controls || failureVisible) VideoControls(engine)
+                    if (loop.startMs >= 0 && !controls && !locked) TextAction(::loopOptions,
+                        Modifier.align(Alignment.BottomEnd).padding(12.dp).background(Color.Black.copy(alpha = .7f), RoundedCornerShape(12.dp))) {
+                        Text(loopLabel(), Modifier.testTag("video-loop-range"))
+                    }
                 }
             }
             if (!fullscreen && !pipMode) Details()
@@ -223,6 +239,8 @@ class PlayerActivity : ComponentActivity() {
             }
             if (failureVisible) Action("重试", true, modifier = Modifier.align(Alignment.CenterHorizontally), click = ::restart)
             GlassSurface(modifier = Modifier.fillMaxWidth().padding(8.dp), radius = 18) {
+                Column {
+                if (loop.startMs >= 0) TextAction(::loopOptions, Modifier.align(Alignment.End).padding(horizontal = 8.dp)) { Text(loopLabel(), Modifier.testTag("video-loop-range")) }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconAction(if (engine?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play, if (engine?.isPlaying == true) "暂停" else "播放") { engine?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); if (it.isPlaying) it.pause() else it.play() } }
                     Text(timeText(current), style = MaterialTheme.typography.labelSmall)
@@ -233,6 +251,7 @@ class PlayerActivity : ComponentActivity() {
                             Box(Modifier.fillMaxWidth(if (duration > 0) (state.value / duration.toFloat()).coerceIn(0f, 1f) else 0f).height(3.dp).background(BrandColor, CircleShape))
                         } })
                     Text(timeText(duration), style = MaterialTheme.typography.labelSmall)
+                }
                 }
             }
         }
@@ -299,9 +318,23 @@ class PlayerActivity : ComponentActivity() {
     private fun speed() { val rates = listOf(.25f, .5f, .75f, 1f, 1.25f, 1.5f, 2f, 3f); dialogs.choose("播放速度", rates.map { "${it}×" }, rates.indexOf(userRate)) { userRate = rates[it]; store.set("native_speed", userRate.toString()); player?.setPlaybackSpeed(userRate) } }
     private fun playbackOptions() {
         val pip = Build.VERSION.SDK_INT >= 26 && packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
-        val choices = listOf("重新播放", "锁定画面，防止误触", "定时暂停", "清晰度", "播放速度", "时间书签与片段", "播放偏好") + if (pip) listOf("进入画中画") else emptyList()
+        val choices = listOf("重新播放", "锁定画面，防止误触", "定时暂停", "清晰度", "播放速度", "时间书签与片段", "播放偏好", "A–B 区间循环") + if (pip) listOf("进入画中画") else emptyList()
         dialogs.choose("播放操作", choices) {
-            when (it) { 0 -> restart(); 1 -> { locked = true; controls = false }; 2 -> sleepTimer(); 3 -> quality(); 4 -> speed(); 5 -> timeBookmarks(); 6 -> playbackPreferenceOptions(); 7 -> pictureInPicture() }
+            when (it) { 0 -> restart(); 1 -> { locked = true; controls = false }; 2 -> sleepTimer(); 3 -> quality(); 4 -> speed(); 5 -> timeBookmarks(); 6 -> playbackPreferenceOptions(); 7 -> loopOptions(); 8 -> pictureInPicture() }
+        }
+    }
+    private fun loopLabel() = if (loop.active) "循环 ${timeText(loop.startMs)} – ${timeText(loop.endMs)}" else "A ${timeText(loop.startMs)} · 待设置 B"
+    private fun loopOptions() {
+        val engine = player ?: return
+        if (engine.duration <= 0 || !engine.isCurrentMediaItemSeekable) { toast("等待可定位的片源加载完成"); return }
+        dialogs.choose("A–B 区间循环", listOf("将当前位置设为 A 点", "将当前位置设为 B 点并循环", "清除循环区间")) { index ->
+            when (index) {
+                0 -> { loop = loop.start(engine.currentPosition); gestureHint(loopLabel()) }
+                1 -> runCatching { loop.end(engine.currentPosition.coerceAtMost(engine.duration)) }
+                    .onSuccess { loop = it; engine.seekTo(it.startMs); gestureHint(loopLabel()) }
+                    .onFailure { toast(it.message.orEmpty()) }
+                2 -> { loop = VideoLoopRange(); gestureHint("循环已清除") }
+            }
         }
     }
     private fun seekTimestamp(target: Long) {
@@ -414,7 +447,7 @@ class PlayerActivity : ComponentActivity() {
     private fun savePosition() { val exo = player ?: return; position = exo.currentPosition.coerceAtLeast(0); val duration = exo.duration.takeIf { it > 0 } ?: durationSeconds(video.duration) * 1000
         store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000, quality = stream?.label.orEmpty(), site = video.site))
     }
-    override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); outState.putBoolean("fullscreen", fullscreen); outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied); outState.putBoolean("resumePlay", player?.playWhenReady ?: resumePlay); outState.putBoolean("locked", locked); outState.putLong("pauseAt", pauseAt); super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); outState.putBoolean("fullscreen", fullscreen); outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied); outState.putBoolean("resumePlay", player?.playWhenReady ?: resumePlay); outState.putBoolean("locked", locked); outState.putLong("pauseAt", pauseAt); outState.putLong("loopA", loop.startMs); outState.putLong("loopB", loop.endMs); super.onSaveInstanceState(outState) }
     override fun onResume() { super.onResume(); window.decorView.post { if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && player == null && stream != null) open(stream!!, position, resumePlay) } }
     override fun onPause() { resumePlay = player?.playWhenReady ?: resumePlay; savePosition(); if (!pipMode && !enteringPip) player?.pause(); super.onPause() }
     override fun onStop() { savePosition(); playerView?.player = null; player?.release(); player = null; engineRevision++; super.onStop() }

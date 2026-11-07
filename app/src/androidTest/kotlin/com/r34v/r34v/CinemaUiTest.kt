@@ -12,7 +12,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class CinemaUiTest : ComposeUiCase() {
-    @Test fun immersiveHeroPlaylistAndHorizontalShelves() = ComposeFixture(cinematic = true).use { f ->
+    @Test fun immersiveHeroPlaylistAndHorizontalShelves() = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
         val video = f.video()
         f.app.library.clearHistory()
         f.launch(); openSourceHome(); waitCovers()

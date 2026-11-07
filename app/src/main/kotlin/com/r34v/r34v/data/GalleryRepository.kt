@@ -24,6 +24,7 @@ class GalleryRepository(private val context: Context, private val network: Netwo
     constructor(context: Context, network: Network) : this(context, network, StorageRoot(context, LibraryStore(context)))
 
     data class RenderedPage(val image: GalleryImage, val bitmap: Bitmap, val cached: Boolean)
+    data class OriginalPage(val image: GalleryImage, val bytes: ByteArray, val cached: Boolean)
     data class DownloadSelection(val selected: List<Int> = emptyList(), val completed: List<Int> = emptyList())
     data class GalleryAudit(val total: Int, val validPages: List<Int>, val missingPages: List<Int>, val corruptPages: List<Int>, val bytes: Long) {
         val complete: Boolean get() = total > 0 && validPages.size == total
@@ -207,6 +208,10 @@ class GalleryRepository(private val context: Context, private val network: Netwo
     }
 
     suspend fun page(site: SiteContext, pageUrl: String, force: Boolean = false, galleryUrl: String? = null, entry: Video? = null, offlineOnly: Boolean = false, sourceRoot: String = ""): RenderedPage = withContext(Dispatchers.IO) {
+        val original = originalPage(site, pageUrl, force, galleryUrl, entry, offlineOnly, sourceRoot)
+        RenderedPage(original.image, decode(original.bytes), original.cached)
+    }
+    suspend fun originalPage(site: SiteContext, pageUrl: String, force: Boolean = false, galleryUrl: String? = null, entry: Video? = null, offlineOnly: Boolean = false, sourceRoot: String = ""): OriginalPage = withContext(Dispatchers.IO) {
         if (entry != null) {
             require(entry.site == site.id)
             val folder = bookDirectory(entry, sourceRoot)
@@ -214,7 +219,9 @@ class GalleryRepository(private val context: Context, private val network: Netwo
             val image = read(File(folder, "$id.page.json"), GalleryImage::class.java)
             val file = File(folder, "$id.image")
             if ((offlineOnly || !force) && image != null && file.isFile) {
-                return@withContext RenderedPage(image, decode(file.readBytes()), true)
+                val bytes = file.readBytes()
+                check(validImage(bytes)) { "下载图页已损坏，请在下载中心检查并修复" }
+                return@withContext OriginalPage(image, bytes, true)
             }
         }
         check(!offlineOnly) { "下载图页缺失，请在下载中心重新下载；离线阅读不会连接网络" }
@@ -224,21 +231,21 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         val imageFile = File(folder, "$id.image")
         val previous = read(metadataFile, GalleryImage::class.java)
         if (!force && previous != null && imageFile.isFile) {
-            runCatching { decode(imageFile.readBytes()) }.getOrNull()?.let {
+            runCatching { imageFile.readBytes().takeIf(::validImage) }.getOrNull()?.let {
                 imageFile.setLastModified(System.currentTimeMillis())
                 rememberPage(site, galleryUrl, previous)
-                return@withContext RenderedPage(previous, it, true)
+                return@withContext OriginalPage(previous, it, true)
             }
         }
         val requestUrl = if (force) previous?.reloadUrl ?: pageUrl else pageUrl
         val image = AdapterRegistry.adapter(site, network).galleryImage(requestUrl)
         write(metadataFile, gson.toJson(image.copy(pageUrl = pageUrl)).toByteArray())
         val bytes = imageBytes(site, image)
-        val bitmap = decode(bytes)
+        check(validImage(bytes)) { "图源未返回可识别的图片，请重试此页" }
         write(imageFile, bytes)
         rememberPage(site, galleryUrl, image.copy(pageUrl = pageUrl))
         trim(folder)
-        RenderedPage(image.copy(pageUrl = pageUrl), bitmap, false)
+        OriginalPage(image.copy(pageUrl = pageUrl), bytes, false)
     }
     private suspend fun imageBytes(site: SiteContext, image: GalleryImage): ByteArray {
         val request = Request.Builder().url(image.imageUrl).tag(SiteContext::class.java, site)

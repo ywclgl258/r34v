@@ -10,7 +10,8 @@ import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
 import kotlinx.coroutines.*
 
-@Composable fun GlobalInboxScreen(app: R34Application, play: (Video) -> Unit, dialogs: ComposeDialogs, manageSubscriptions: () -> Unit) {
+@Composable fun GlobalInboxScreen(app: R34Application, play: (Video) -> Unit, dialogs: ComposeDialogs, manageSubscriptions: () -> Unit, initialSearch: Boolean = false) {
+    var searchUpdates by rememberSaveable(initialSearch) { mutableStateOf(initialSearch) }
     val personal by app.library.personal.changes.collectAsState()
     var unread by rememberSaveable { mutableStateOf(true) }
     var busy by remember { mutableStateOf(false) }
@@ -19,6 +20,8 @@ import kotlinx.coroutines.*
     val entries = remember(personal, unread) { app.library.personal.snapshot().inboxes.values.flatMap { it.entries }.filter { !unread || !it.read }.distinctBy { it.video.entryKey }.sortedByDescending { it.at } }
     Column(Modifier.fillMaxSize().padding(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Title("订阅更新", large = true)
+        Choices(listOf("标签更新", "保存搜索"), if (searchUpdates) 1 else 0) { searchUpdates = it == 1 }
+        if (searchUpdates) { SavedSearchUpdatesScreen(app, play, dialogs, Modifier.weight(1f)); return@Column }
         Choices(listOf("未读", "全部"), if (unread) 0 else 1) { unread = it == 0 }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Action(if (busy) "正在检查订阅…" else "检查全部来源", enabled = !busy, modifier = Modifier.weight(1f)) {

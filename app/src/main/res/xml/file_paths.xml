@@ -2,8 +2,9 @@
 <!--
   应用内更新：把下载到私有目录的 APK 通过 content:// 交给系统安装器。
 
-  只开放 cache/updates 暂存目录；只向系统安装器临时授予文件读取权限。
+  更新与主动导出的独立暂存目录；通过 content URI 临时授予读取权限。
 -->
 <paths>
     <cache-path name="updates" path="updates/" />
+    <cache-path name="exports" path="exports/" />
 </paths>

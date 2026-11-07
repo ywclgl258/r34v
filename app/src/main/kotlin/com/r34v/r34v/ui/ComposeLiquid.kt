@@ -41,21 +41,19 @@ val LocalSourceTopInset = staticCompositionLocalOf { 132.dp }
 }
 
 /** Regular dark glass: tint guarantees label contrast even over a white page. */
-@Composable fun Modifier.liquidSurface(radius: Int = 28): Modifier {
+@Composable fun Modifier.liquidSurface(radius: Int = 16): Modifier {
     val shape = RoundedCornerShape(radius.dp)
     val backdrop = LocalLiquidBackdrop.current
     val reduced = LocalReduceTransparency.current
-    val base = shadow(10.dp, shape, clip = false)
+    val base = this
     return if (!reduced && Build.VERSION.SDK_INT >= 31 && backdrop != null) base.drawBackdrop(
         backdrop = backdrop, shape = { shape }, effects = {
             blur(18.dp.toPx())
-            if (Build.VERSION.SDK_INT >= 33) lens(5.dp.toPx(), 9.dp.toPx())
         }, highlight = null, shadow = null,
         onDrawBehind = { drawRect(CanvasColor) },
         onDrawSurface = { drawRect(Color(0xff111215).copy(alpha = .76f)) }
-    ).border(1.dp, Color.White.copy(alpha = .15f), shape).clip(shape)
+    ).clip(shape)
     else base.clip(shape).background(if (reduced || Build.VERSION.SDK_INT < 31) Color(0xff202124) else Color(0xf0242528))
-        .border(1.dp, Color.White.copy(alpha = .12f), shape)
 }
 
 /** Stable content surfaces never refract covers, descriptions, or task information. */
