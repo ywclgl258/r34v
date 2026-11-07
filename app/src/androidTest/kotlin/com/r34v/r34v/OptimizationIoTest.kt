@@ -50,10 +50,25 @@ class OptimizationIoTest : ComposeUiCase() {
         f.app.library.prefs.registerOnSharedPreferenceChangeListener(listener)
         try {
             repeat(3) { ui.onNodeWithTag("comic-strip").performTouchInput { swipeUp(durationMillis = 300) } }
+            f.shot("optimization-reader-before-back")
             back(f)
+            ui.waitUntil(5000) { f.app.library.reading(f.video("ehentai").id, "ehentai") != null }
+            f.shot("optimization-reader-after-back")
+            println("Optimization I/O: reading after exit=${f.app.library.reading(f.video("ehentai").id, "ehentai")}")
             assertTrue(f.app.library.reading(f.video("ehentai").id, "ehentai")!!.page >= 2)
             assertTrue("Scrolling must not write history once per frame", writes.get() <= 8)
             println("Optimization I/O: three reader gestures plus exit writes=${writes.get()}")
         } finally { f.app.library.prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
+    @Test fun backBeforeFirstPageDecodeFlushesPendingPosition() = ComposeFixture().use { f ->
+        f.imageDelayMillis = 5000
+        f.app.library.switchSite("ehentai"); f.launchGallery(read = true)
+        ui.waitUntil(15000) { f.imageCalls.contains(1) }
+        back(f)
+        try { ui.waitUntil(5000) { f.app.library.reading(f.video("ehentai").id, "ehentai") != null } }
+        catch (e: Throwable) { f.shot("pending-progress-timeout"); throw e }
+        assertNotNull("Exit must save the current position before the first bitmap arrives",
+            f.app.library.reading(f.video("ehentai").id, "ehentai"))
     }
 }

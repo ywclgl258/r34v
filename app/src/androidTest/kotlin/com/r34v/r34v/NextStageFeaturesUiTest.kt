@@ -21,10 +21,11 @@ class NextStageFeaturesUiTest : ComposeUiCase() {
         readerTool("收藏当前图片")
         assertTrue(f.app.library.personal.isImageFavorite(video, 1))
         readerTool("图集幻灯片"); clickText("开始幻灯片")
-        ui.waitUntil(10000) { f.app.library.reading(video.id, "iwara")?.page == 2 }
+        try { ui.waitUntil(10000) { (f.app.library.reading(video.id, "iwara")?.page ?: 1) > 1 } }
+        catch (e: Throwable) { println("Iwara slideshow progress: ${f.app.library.reading(video.id, "iwara")}"); f.shot("iwara-slideshow-timeout"); throw e }
         waitText("幻灯片播放中 · 点击暂停"); f.shot("next-stage-iwara-gallery")
 
-        f.launch(); clickText("片库"); waitText("单图收藏 · 1 张"); clickText("单图收藏 · 1 张")
+        f.launch(); clickText("片库"); ui.onNodeWithTag("library-hub").performScrollToNode(hasText("单图收藏 · 1 张")); clickText("单图收藏 · 1 张")
         waitText("取消收藏"); ui.onNodeWithText("取消收藏").assertIsDisplayed()
         f.ins.uiAutomation.waitForIdle(1000, 5000); android.os.SystemClock.sleep(2000); f.shot("next-stage-image-wall")
         clickText(video.title)

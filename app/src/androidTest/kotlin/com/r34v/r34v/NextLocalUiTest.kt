@@ -51,7 +51,8 @@ class NextLocalUiTest : ComposeUiCase() {
             Instrumentation.ActivityResult(Activity.RESULT_OK, Intent().setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)), true)
         try {
             f.launch(); ui.waitUntil(15000) { ui.onAllNodesWithTag("personal-home").fetchSemanticsNodes().isNotEmpty() }
-            clickText("片库"); ui.onNodeWithText("导入 CBZ / ZIP / 图片目录").performScrollTo().performClick(); clickText("选择 CBZ / ZIP 文件")
+            clickText("片库"); ui.onNodeWithTag("library-hub").performScrollToNode(hasText("导入 CBZ / ZIP / 图片目录"))
+            clickText("导入 CBZ / ZIP / 图片目录"); clickText("选择 CBZ / ZIP 文件")
             // A repeated import intentionally reopens the existing copy and saved page.
             ui.waitUntil(20000) { ui.onAllNodesWithContentDescription("阅读工具").fetchSemanticsNodes().isNotEmpty() }
             assertTrue(f.galleryCalls.isEmpty()); assertTrue(f.app.localLibrary.books().count { it.id !in before } in 0..1)

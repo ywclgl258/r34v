@@ -89,7 +89,8 @@ import kotlinx.coroutines.*
         }
     }
 
-    LazyColumn(Modifier.fillMaxSize().testTag("subscriptions"), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+    val columns = if (LocalUiDensity.current.compact) 4 else 2
+    LazyColumn(Modifier.fillMaxSize().testTag("subscriptions"), contentPadding = PaddingValues(start = LocalUiDensity.current.pagePadding, end = LocalUiDensity.current.pagePadding, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item("header") {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -127,8 +128,8 @@ import kotlinx.coroutines.*
                 Copy("首次刷新建立基线，后续刷新标出新出现的作品。")
                 if (entries.isEmpty()) Copy("暂时没有${if (unreadOnly) "未读" else ""}更新")
             }
-            items(entries.chunked(2), key = { "inbox:${it.first().video.entryKey}" }) { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(entries.chunked(columns), key = { "inbox:${it.first().video.entryKey}" }) { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap)) {
                     row.forEach { entry -> Column(Modifier.weight(1f)) {
                         Copy(if (entry.read) "已读" else "未读")
                         MediaCard(entry.video, menu = listOf("标记已读" to { store.personal.markRead(site.id, setOf(entry.video.entryKey)) },
@@ -136,7 +137,7 @@ import kotlinx.coroutines.*
                             store.personal.markRead(site.id, setOf(entry.video.entryKey)); play(entry.video)
                         }
                     } }
-                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
         } else {
@@ -157,10 +158,10 @@ import kotlinx.coroutines.*
                                 TextAction({ openTag(entry) }) { Text("查看标签") }
                             }
                         }
-                        items(videos.chunked(2), key = { row -> "row:${entry.slug}:${row.joinToString("|") { it.id }}" }) { row -> SubscriptionRow(row, saved, play, favorite) }
+                        items(videos.chunked(columns), key = { row -> "row:${entry.slug}:${row.joinToString("|") { it.id }}" }) { row -> SubscriptionRow(row, saved, play, favorite) }
                     }
                 } else {
-                    items(data.videos.chunked(2), key = { row -> "row:${row.joinToString("|") { "${it.site}:${it.id}" }}" }) { row -> SubscriptionRow(row, saved, play, favorite) }
+                    items(data.videos.chunked(columns), key = { row -> "row:${row.joinToString("|") { "${it.site}:${it.id}" }}" }) { row -> SubscriptionRow(row, saved, play, favorite) }
                 }
             }
         }
@@ -169,22 +170,24 @@ import kotlinx.coroutines.*
 
 /** The one-line control placed on tag pages, so following never needs a second screen. */
 @Composable fun SubscribeAction(label: String, subscribed: Boolean, click: () -> Unit) {
-    FilledTonalButton(click, Modifier.heightIn(min = 48.dp), shape = RoundedCornerShape(8.dp),
+    val compact = LocalUiDensity.current.compact
+    FilledTonalButton(click, Modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight),
+        shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = if (compact) 12.dp else 16.dp, vertical = if (compact) 9.dp else 12.dp),
         colors = ButtonDefaults.filledTonalButtonColors(
             containerColor = if (subscribed) BrandColor else Color.White.copy(alpha = .12f), contentColor = Color.White)) {
-        Glyph(if (subscribed) R.drawable.ic_check else R.drawable.ic_add, null, Modifier.size(18.dp))
+        Glyph(if (subscribed) R.drawable.ic_check else R.drawable.ic_add, null, Modifier.size(if (compact) 16.dp else 18.dp))
         Spacer(Modifier.width(6.dp))
         Text(label)
     }
 }
 
-/** Two-up poster row shared by the grouped and mixed layouts. */
 @Composable private fun SubscriptionRow(row: List<Video>, saved: Set<String>, play: (Video) -> Unit, favorite: (Video) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    val columns = if (LocalUiDensity.current.compact) 4 else 2
+    Row(horizontalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap)) {
         row.forEach { video ->
             MediaCard(video, Modifier.weight(1f),
                 menu = listOf((if ("${video.site}:${video.id}" in saved) "已收藏 / 取消收藏" else "收藏") to { favorite(video) })) { play(video) }
         }
-        if (row.size == 1) Spacer(Modifier.weight(1f))
+        repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
     }
 }

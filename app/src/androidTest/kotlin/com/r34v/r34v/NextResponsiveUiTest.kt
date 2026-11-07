@@ -23,12 +23,25 @@ class NextResponsiveUiTest : ComposeUiCase() {
         ui.onNodeWithText("继续观看", substring = false).performScrollTo().assertIsDisplayed()
         f.shot("next-responsive-home-$tag")
         clickText("片库"); waitText("我的片库"); f.shot("next-responsive-library-$tag")
+        val action = ui.onNodeWithText("记录").fetchSemanticsNode().touchBoundsInRoot
+        val touchTarget = 48 * activity.resources.displayMetrics.density
+        assertTrue("Compact controls must retain a 48dp touch target: $action", action.height >= touchTarget && action.width >= touchTarget)
         openWatchLater(); waitText("按顺序观看 / 阅读")
         val short = activity.resources.configuration.screenHeightDp < 500
         if (short) ui.onNodeWithText("按顺序观看 / 阅读").performScrollTo()
         ui.onNodeWithText("按顺序观看 / 阅读").assertIsDisplayed()
         if (width >= 840) {
-            clickText(video.title); waitText("打开播放器")
+            if (short) {
+                ui.onNodeWithText("按顺序观看 / 阅读").performTouchInput { swipeUp() }
+                ui.onNodeWithText(video.title).assertIsDisplayed()
+            }
+            if (short) ui.onNode(hasText(video.title) and hasClickAction()).performClick() else clickText(video.title)
+            f.shot("density-selection-$tag"); waitText("打开播放器")
+            if (short) {
+                repeat(2) { ui.onNodeWithText("按顺序观看 / 阅读").performTouchInput { swipeUp() } }
+                ui.onNodeWithTag("catalog-detail").performTouchInput { swipeUp() }
+                f.shot("density-detail-scroll-$tag")
+            } else if (scale > 1.3f) ui.onNodeWithText("打开播放器").performScrollTo()
             ui.onNodeWithText("打开播放器").assertIsDisplayed()
             ui.runOnIdle { activity.recreate() }; waitText("打开播放器")
         }

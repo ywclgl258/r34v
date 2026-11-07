@@ -337,9 +337,10 @@ private data class DownloadSnapshot(
 
 @Composable private fun DownloadTile(id: String, entry: Video, type: String, status: String, progress: Float? = null,
     error: String = "", details: @Composable ColumnScope.() -> Unit = {}, actions: @Composable FlowRowScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().testTag("download-$id").contentPanel(20).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            SiteImage(entry.thumb, SiteRegistry.byIdOrDefault(entry.site), Modifier.size(62.dp, 84.dp).clip(RoundedCornerShape(10.dp)))
+    val compact = LocalUiDensity.current.compact
+    Column(Modifier.fillMaxWidth().testTag("download-$id").contentPanel(20).padding(if (compact) 12.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp)) {
+            SiteImage(entry.thumb, SiteRegistry.byIdOrDefault(entry.site), Modifier.size(if (compact) 54.dp else 62.dp, if (compact) 74.dp else 84.dp).clip(RoundedCornerShape(10.dp)))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text(entry.title.ifBlank { "未命名内容" }, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text("${SiteRegistry.byIdOrDefault(entry.site).name} · $type", fontSize = 11.sp, color = MutedColor)

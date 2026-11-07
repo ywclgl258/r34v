@@ -44,26 +44,28 @@ import kotlinx.coroutines.launch
 @Composable fun Modifier.cinemaGlass(radius: Int = 16): Modifier = liquidSurface(radius)
 
 @Composable fun BrandWordmark() {
-    Text("R34V", color = BrandColor, fontSize = 20.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp)
+    Text("R34V", color = BrandColor, fontSize = if (LocalUiDensity.current.compact) 18.sp else 20.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp)
 }
 
 @Composable fun ProfileAction(click: () -> Unit) {
-    IconButton(click, Modifier.size(48.dp).semantics { contentDescription = "设置" }) {
-        Box(Modifier.size(34.dp).cinemaGlass(17), contentAlignment = Alignment.Center) {
-            Glyph(R.drawable.ic_profile, null, Modifier.size(19.dp))
+    val compact = LocalUiDensity.current.compact
+    IconButton(click, Modifier.minimumInteractiveComponentSize().size(if (compact) 40.dp else 48.dp).semantics { contentDescription = "设置" }) {
+        Box(Modifier.size(if (compact) 30.dp else 34.dp).cinemaGlass(17), contentAlignment = Alignment.Center) {
+            Glyph(R.drawable.ic_profile, null, Modifier.size(if (compact) 17.dp else 19.dp))
         }
     }
 }
 
 @Composable fun CinemaNavigation(selectedTab: String, choose: (String) -> Unit) {
     val landscape = LocalConfiguration.current.screenWidthDp > LocalConfiguration.current.screenHeightDp
+    val compact = LocalUiDensity.current.compact
     val tabs = listOf(Triple("home", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore),
         Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark))
     val selectedIndex by animateFloatAsState(tabs.indexOfFirst { it.first == selectedTab }.coerceAtLeast(0).toFloat(), tween(220), label = "navigationIndicator")
-    val tabHeight = ((if (landscape) 52 else 60) + ((LocalDensity.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp
+    val tabHeight = ((if (compact) 48 else if (landscape) 52 else 60) + ((LocalDensity.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp
     Box(Modifier.fillMaxWidth().navigationBarsPadding(), contentAlignment = Alignment.Center) {
-        BoxWithConstraints(Modifier.padding(horizontal = 16.dp, vertical = 10.dp).widthIn(max = 620.dp).fillMaxWidth()
-            .liquidSurface(34).padding(6.dp)) {
+        BoxWithConstraints(Modifier.padding(horizontal = 16.dp, vertical = if (compact) 8.dp else 10.dp).widthIn(max = if (compact) 520.dp else 620.dp).fillMaxWidth()
+            .liquidSurface(34).padding(if (compact) 5.dp else 6.dp)) {
             val tabWidth = maxWidth / 4
             Box(Modifier.offset(x = tabWidth * selectedIndex).width(tabWidth).height(tabHeight).clip(RoundedCornerShape(28.dp)).background(Color.White.copy(alpha = .15f)))
             Row(Modifier.fillMaxWidth().height(tabHeight)) {
@@ -73,10 +75,10 @@ import kotlinx.coroutines.launch
                 Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(28.dp))
                     .selectable(selected, role = Role.Tab) { choose(key) }) {
                     Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 3.dp)) {
                         CompositionLocalProvider(LocalContentColor provides content) {
-                            Glyph(icon, null, Modifier.size(22.dp))
-                            Text(name, color = content, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+                            Glyph(icon, null, Modifier.size(if (compact) 19.dp else 22.dp))
+                            Text(name, color = content, fontSize = if (compact) 11.sp else 12.sp, lineHeight = if (compact) 14.sp else 16.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
                         }
                     }
                 }
@@ -107,7 +109,7 @@ import kotlinx.coroutines.launch
     } }
     LaunchedEffect(nearEnd, videos.size, busy, error, hasNext, automatic) { if (nearEnd && hasNext && automatic && !busy && error == null) loadAutomatically() }
     LazyColumn(Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = list,
-        contentPadding = PaddingValues(bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+        contentPadding = PaddingValues(bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(LocalUiDensity.current.sectionGap)) {
         if (continuing.isNotEmpty()) item("resume-hero") {
             val watch = continuing.first()
             Column(Modifier.padding(start = 18.dp, end = 18.dp, top = LocalSourceTopInset.current + 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -166,25 +168,26 @@ import kotlinx.coroutines.launch
 }
 
 @Composable private fun PosterRow(videos: List<Video>, ranked: Boolean, play: (Video) -> Unit, favorite: (Video) -> Unit) {
-    LazyRow(contentPadding = PaddingValues(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    val compact = LocalUiDensity.current.compact
+    LazyRow(contentPadding = PaddingValues(horizontal = if (compact) 16.dp else 18.dp), horizontalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp)) {
         itemsIndexed(videos, key = { _, video -> "${video.site}:${video.id}" }) { index, video ->
             val site = SiteRegistry.byIdOrDefault(video.site)
-            Column(Modifier.width(110.dp)
+            Column(Modifier.width(if (compact) 96.dp else 110.dp)
                 .testTag("poster-${video.site}-${video.id}")
                 .combinedClickable(onClickLabel = "播放 ${video.title}", onLongClickLabel = "收藏或取消收藏 ${video.title}",
-                    onClick = { play(video) }, onLongClick = { favorite(video) }), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).shadow(10.dp, RoundedCornerShape(14.dp), clip = false)
-                    .clip(RoundedCornerShape(14.dp))) {
+                    onClick = { play(video) }, onLongClick = { favorite(video) }), verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)) {
+                Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).shadow(if (compact) 6.dp else 10.dp, RoundedCornerShape(if (compact) 10.dp else 14.dp), clip = false)
+                    .clip(RoundedCornerShape(if (compact) 10.dp else 14.dp))) {
                     SiteImage(video.thumb, site, Modifier.fillMaxSize())
-                    if (ranked) GlassSurface(modifier = Modifier.align(Alignment.TopStart).padding(7.dp).size(30.dp), radius = 10, opaque = true) {
-                        Text("${index + 1}", Modifier.align(Alignment.Center), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    if (ranked) GlassSurface(modifier = Modifier.align(Alignment.TopStart).padding(if (compact) 5.dp else 7.dp).size(if (compact) 26.dp else 30.dp), radius = 10, opaque = true) {
+                        Text("${index + 1}", Modifier.align(Alignment.Center), color = Color.White, fontSize = if (compact) 12.sp else 13.sp, fontWeight = FontWeight.Bold)
                     }
                     if (video.duration.isNotBlank()) Text(video.duration, Modifier.align(Alignment.BottomEnd).padding(5.dp)
                         .background(Color.Black.copy(alpha = .72f), RoundedCornerShape(5.dp)).padding(horizontal = 5.dp, vertical = 2.dp),
                         fontSize = 10.sp, color = Color.White)
                 }
-                Text(video.title, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (video.rating.isNotBlank()) Text(video.rating, fontSize = 11.sp, color = MatchColor, maxLines = 1)
+                Text(video.title, fontSize = if (compact) 11.sp else 12.sp, lineHeight = if (compact) 16.sp else 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (video.rating.isNotBlank()) Text(video.rating, fontSize = if (compact) 10.sp else 11.sp, color = MatchColor, maxLines = 1)
             }
         }
     }
@@ -215,13 +218,14 @@ import kotlinx.coroutines.launch
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val light = primary && !focused
-    Button(click, modifier.heightIn(min = 48.dp).semantics { this.selected = selected },
-        shape = RoundedCornerShape(16.dp), interactionSource = interaction, elevation = null,
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
+    val compact = LocalUiDensity.current.compact
+    Button(click, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight).semantics { this.selected = selected },
+        shape = RoundedCornerShape(if (compact) 12.dp else 16.dp), interactionSource = interaction, elevation = null,
+        contentPadding = PaddingValues(horizontal = if (compact) 14.dp else 18.dp, vertical = if (compact) 9.dp else 12.dp),
         colors = ButtonDefaults.buttonColors(containerColor = if (focused) ControlFocusColor else if (light) SelectedControlColor else if (selected) ActiveControlColor else ControlColor,
             contentColor = if (light && !focused) Color.Black else Color.White)) {
-        Glyph(icon, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp))
-        Text(text, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
+        Glyph(icon, null, Modifier.size(if (compact) 16.dp else 18.dp)); Spacer(Modifier.width(if (compact) 6.dp else 8.dp))
+        Text(text, fontSize = if (compact) 12.sp else 13.sp, lineHeight = if (compact) 17.sp else 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
     }
 }
 
@@ -248,8 +252,9 @@ import kotlinx.coroutines.launch
     }
     val configuration = LocalConfiguration.current
     val fontScale = LocalDensity.current.fontScale
+    val compact = LocalUiDensity.current.compact
     val landscape = configuration.screenWidthDp > configuration.screenHeightDp
-    val heroHeight = if (landscape && fontScale <= 1.3f) (configuration.screenHeightDp - 100).dp.coerceAtLeast(280.dp)
+    val heroHeight = if (landscape && fontScale <= 1.3f) (configuration.screenHeightDp - if (compact) 156 else 100).dp.coerceAtLeast(280.dp)
         else (configuration.screenHeightDp * .59f).dp.coerceAtLeast(if (fontScale > 1.3f) 620.dp else 420.dp)
     Column(Modifier.testTag("home-carousel")) {
         HorizontalPager(pager, Modifier.fillMaxWidth().semantics { contentDescription = "首页精选轮播" },

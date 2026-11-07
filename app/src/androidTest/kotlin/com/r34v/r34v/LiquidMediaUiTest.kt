@@ -20,6 +20,9 @@ class LiquidMediaUiTest : ComposeUiCase() {
         f.shot("liquid-video-$suffix")
         switchSite(SiteRegistry.EHENTAI.name)
         ui.waitUntil(15000) { ui.onAllNodesWithTag("comic-stage").fetchSemanticsNodes().isNotEmpty() }; waitCovers()
+        val overflow = ui.onNodeWithContentDescription("${f.video("ehentai").title} 的更多操作").fetchSemanticsNode().touchBoundsInRoot
+        val touchTarget = 48 * activity.resources.displayMetrics.density
+        assertTrue("Compact overflow icons must retain a 48dp touch target: $overflow", overflow.width >= touchTarget && overflow.height >= touchTarget)
         f.shot("liquid-comic-$suffix")
         ui.onNodeWithContentDescription("内容列表").performScrollToNode(hasText("开始阅读"))
         ui.onNodeWithText("开始阅读").assertIsDisplayed()

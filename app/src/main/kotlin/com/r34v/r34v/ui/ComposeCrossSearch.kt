@@ -75,18 +75,25 @@ class CrossSearchState : ViewModel() {
     }
 }
 
+fun searchableSiteIds(network: Network): List<String> =
+    SiteRegistry.all.filter { Capability.SEARCH in AdapterRegistry.adapter(it, network).capabilities }.map { it.id }
+
 fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, action: (List<String>) -> Unit) {
-    val sites = SiteRegistry.all.filter { Capability.SEARCH in AdapterRegistry.adapter(it, app.network).capabilities }
+    val sites = searchableSiteIds(app.network).mapNotNull(SiteRegistry::byId)
     content = {
-        var checked by remember { mutableStateOf(selected.toSet()) }
+        var checked by remember { mutableStateOf(selected.toSet().ifEmpty { sites.map { it.id }.toSet() }) }
         AlertDialog(::dismiss, title = { Text("搜索来源") }, text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 sites.forEach { site -> CheckRow("${site.name} · ${site.category.title}", site.id in checked) {
                     checked = if (it) checked + site.id else checked - site.id
                 } }
             }
-        }, confirmButton = { TextAction({ dismiss(); action(sites.filter { it.id in checked }.map { it.id }) }, enabled = checked.isNotEmpty()) { Text("确定") } },
-            dismissButton = { TextAction(::dismiss) { Text("取消") } })
+        }, confirmButton = {
+            Row {
+                TextAction({ checked = sites.map { it.id }.toSet() }) { Text("全选") }
+                TextAction({ dismiss(); action(sites.filter { it.id in checked }.map { it.id }) }, enabled = checked.isNotEmpty()) { Text("确定") }
+            }
+        }, dismissButton = { TextAction(::dismiss) { Text("取消") } })
     }
 }
 
@@ -95,7 +102,12 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
     categoryChanged: (String) -> Unit = {}, save: (() -> Unit)? = null, condition: SearchCondition? = null) {
     var category by rememberSaveable(initialCategory) { mutableIntStateOf(SiteCategory.entries.indexOfFirst { it.name == initialCategory } + 1) }
     LaunchedEffect(query, sites, rulesVersion, languages, condition) { state.search(app, query, sites, languageOverrides = languages, condition = condition) }
-    LazyColumn(Modifier.fillMaxSize().testTag("cross-search-results"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val columns = when {
+        androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 1280 -> 4
+        androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840 -> 3
+        else -> 2
+    }
+    LazyColumn(Modifier.fillMaxSize().testTag("cross-search-results"), contentPadding = PaddingValues(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap)) {
         item {
             Title(if (query.isBlank()) "高级条件搜索" else "搜索：$query")
             if (condition != null && !condition.isEmpty) Copy("已应用组合条件；各来源的实际筛选范围如下。")
@@ -113,10 +125,10 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
                 if (condition != null && !condition.isEmpty) Copy(filterScope(id))
                 if (bucket.cached) Copy("离线缓存结果")
             }
-            items(bucket.videos.chunked(2), key = { "$id:${it.first().id}" }) { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(bucket.videos.chunked(columns), key = { "$id:${it.first().id}" }) { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap)) {
                     row.forEach { video -> MediaCard(video, Modifier.weight(1f), menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) } }
-                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
             item(key = "$id:status") {

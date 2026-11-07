@@ -10,17 +10,18 @@ import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
 import kotlinx.coroutines.*
 
-@Composable fun GlobalInboxScreen(app: R34Application, play: (Video) -> Unit, dialogs: ComposeDialogs) {
+@Composable fun GlobalInboxScreen(app: R34Application, play: (Video) -> Unit, dialogs: ComposeDialogs, manageSubscriptions: () -> Unit) {
     val personal by app.library.personal.changes.collectAsState()
     var unread by rememberSaveable { mutableStateOf(true) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val entries = remember(personal, unread) { app.library.personal.snapshot().inboxes.values.flatMap { it.entries }.filter { !unread || !it.read }.distinctBy { it.video.entryKey }.sortedByDescending { it.at } }
-    Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.fillMaxSize().padding(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Title("订阅更新", large = true)
         Choices(listOf("未读", "全部"), if (unread) 0 else 1) { unread = it == 0 }
-        Action(if (busy) "正在检查订阅…" else "检查全部来源", enabled = !busy) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Action(if (busy) "正在检查订阅…" else "检查全部来源", enabled = !busy, modifier = Modifier.weight(1f)) {
             busy = true; message = ""
             scope.launch { try {
                 var failed = 0; var checked = 0
@@ -31,6 +32,8 @@ import kotlinx.coroutines.*
                 }
                 message = if (checked == 0) "还没有订阅标签，可在来源内容中订阅感兴趣的标签。" else "已检查 $checked 个订阅${if (failed > 0) "，$failed 项暂不可用，已保留原有记录" else ""}"
             } catch (e: Exception) { if (e is CancellationException) throw e; message = e.message ?: "检查失败，原有更新保留" } finally { busy = false } }
+            }
+            Action("标签订阅", modifier = Modifier.weight(1f), click = manageSubscriptions)
         }
         if (message.isNotBlank()) Copy(message)
         if (entries.isEmpty()) Copy(if (unread) "暂无未读更新" else "暂无订阅更新")

@@ -58,7 +58,14 @@ class GalleryActivity : ComponentActivity() {
     private val images = mutableStateMapOf<Int, GalleryImage>()
     private val dialogs = ComposeDialogs()
     private val progressSaver by lazy { ReadingProgressSaver(lifecycleScope, store::saveReading) }
-    private fun saveProgress() { saveReader?.invoke(); progressSaver.flush() }
+    private fun saveProgress() {
+        saveReader?.invoke()
+        detail?.let { gallery ->
+            progressSaver.record(ReadingProgress(entry, page.coerceIn(1, gallery.pageCount), gallery.pageCount,
+                images[page]?.pageUrl.orEmpty(), offset = stripOffset))
+        }
+        progressSaver.flush()
+    }
     private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { if (it.resultCode == RESULT_OK) load(reading) }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -147,7 +154,7 @@ class GalleryActivity : ComponentActivity() {
         val backdrop = rememberLayerBackdrop()
         val positionChanged: (Int, GalleryImage?, Int) -> Unit = { current, image, offset ->
             page = current; stripOffset = offset
-            if (image != null) progressSaver.record(ReadingProgress(entry, current, gallery.pageCount, image.pageUrl, offset = offset))
+            progressSaver.record(ReadingProgress(entry, current, gallery.pageCount, image?.pageUrl.orEmpty(), offset = offset))
         }
         LaunchedEffect(autoPageRunning, page, images[page], readingBehavior.autoPageSeconds, gallery.pageCount) {
             if (autoPageRunning && readingBehavior.autoPageSeconds > 0 && images[page] != null) {

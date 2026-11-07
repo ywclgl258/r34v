@@ -132,6 +132,34 @@ class NewFeaturesUiTest : ComposeUiCase() {
         clickText("恢复备份"); waitText("选择备份文件"); ui.onNodeWithText("选择备份文件").assertIsEnabled()
         f.shot("features-backup")
     }
+    @Test fun multiSourceSearchDefaultsToAllSupportedSourcesAndShowsAuthFailures() = ComposeFixture().use { f ->
+        val expected = com.r34v.r34v.ui.searchableSiteIds(f.app.network)
+        f.feedOverride = { site, request -> if (request.kind != FeedKind.SEARCH) null else
+            FeedPage(listOf(f.video(site).copy(title = "全站搜索-$site")), 1, 1, "search") }
+        f.launch(); waitHome(); clickText("搜索"); clickText("多个站点")
+        waitText("选择来源 · ${expected.size} 个站点")
+        clickText("选择来源 · ${expected.size} 个站点"); f.shot("multi-source-all"); clickText("全选"); clickText("确定")
+        ui.onNode(hasSetTextAction()).performTextInput("all")
+        ui.onNodeWithContentDescription("提交搜索").performClick()
+        ui.waitUntil(25000) {
+            f.requests.filter { it.second.kind == FeedKind.SEARCH && it.second.target == "all" }.map { it.first }.toSet() == expected.filter { it != "exhentai" }.toSet()
+        }
+        ui.onNodeWithTag("cross-search-results").performScrollToNode(hasText("本站需要登录", substring = true))
+        assertEquals(expected.toSet(), f.app.library.string("cross_search_sites").split(',').filter(String::isNotBlank).toSet())
+        assertEquals("r34v", f.app.library.siteId)
+    }
+
+    @Test fun libraryAndInboxExposeSubscriptionManagement() = ComposeFixture().use { f ->
+        f.app.library.clearSubscriptions("r34v")
+        f.app.library.toggleSubscription(Subscription("sample", "示例标签", site = "r34v"), "r34v")
+        f.launch(); waitHome(); clickText("片库"); waitText("我的片库"); f.shot("library-tag-subscriptions"); clickText("标签订阅")
+        waitText("管理标签"); clickText("管理标签"); waitText("示例标签")
+        ui.onNodeWithContentDescription("取消订阅 示例标签").performClick(); clickText("完成")
+        assertFalse(f.app.library.isSubscribed("sample", "r34v"))
+        f.launch(); waitHome(); clickText("订阅更新 · 0"); clickText("标签订阅")
+        waitText("还没有订阅任何标签")
+    }
+
     @Test fun subscriptionInboxTracksNewWorksAndPersistsReadState() = ComposeFixture().use { f ->
         val updated = AtomicBoolean()
         f.app.library.clearSubscriptions("r34v")
@@ -149,11 +177,12 @@ class NewFeaturesUiTest : ComposeUiCase() {
         if (android.os.Build.VERSION.SDK_INT >= 33) f.ins.uiAutomation.executeShellCommand("pm grant ${f.ins.targetContext.packageName} android.permission.POST_NOTIFICATIONS").close()
         f.launchDownloads(); waitText("下载中心"); f.imageDelayMillis = 2500
         runBlocking { f.app.galleryDownloads.add(f.video("ehentai")); f.app.galleryDownloads.add(f.video("nhentai")) }
-        waitText("批量管理"); clickText("批量管理"); clickText("暂停所选")
-        ui.waitUntil(15000) { f.app.galleryDownloads.tasks().filter { it.entry.id == f.video("ehentai").id }.let { it.size == 2 && it.all { book -> book.state == GalleryDownloadState.PAUSED } } }
-        clickText("批量管理"); clickText("继续所选")
+        waitText("批量管理"); ui.onNodeWithTag("download-center").performScrollToNode(hasText("批量管理")); clickText("批量管理"); clickText("暂停所选")
+        try { ui.waitUntil(15000) { f.app.galleryDownloads.tasks().filter { it.entry.id == f.video("ehentai").id }.let { it.size == 2 && it.all { book -> book.state == GalleryDownloadState.PAUSED } } } }
+        catch (e: Throwable) { println("Batch pause state: ${f.app.galleryDownloads.tasks().map { it.id to it.state }}"); f.shot("batch-pause-timeout"); throw e }
+        ui.onNodeWithTag("download-center").performScrollToNode(hasText("批量管理")); clickText("批量管理"); clickText("继续所选")
         ui.waitUntil(10000) { f.app.galleryDownloads.tasks().filter { it.entry.id == f.video("ehentai").id }.all { it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING) } }
-        clickText("任意网络"); clickText("仅非计费网络")
+        ui.onNodeWithTag("download-center").performScrollToNode(hasText("任意网络")); clickText("任意网络"); clickText("仅非计费网络")
         ui.waitUntil(5000) { f.app.library.bool("download_unmetered") }
         f.shot("features-batch-downloads")
     }
@@ -177,10 +206,13 @@ class NewFeaturesUiTest : ComposeUiCase() {
             val before = f.app.library.prefs.all.toMap()
             ui.onNode(hasSetTextAction()).performTextInput("wrong-password")
             ui.onNodeWithText("解密并预览").performScrollTo().performClick()
-            ui.waitUntil(15000) { ui.onAllNodes(hasText("密码不正确或备份文件已损坏", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+            try { ui.waitUntil(15000) { ui.onAllNodes(hasText("密码不正确或备份文件已损坏", substring = true)).fetchSemanticsNodes().isNotEmpty() } }
+            catch (e: Throwable) { f.shot("backup-wrong-timeout"); throw e }
+            f.shot("backup-wrong-password")
             assertEquals(before, f.app.library.prefs.all)
             ui.onNode(hasSetTextAction()).performTextReplacement("fixture-password")
-            ui.onNodeWithText("解密并预览").performScrollTo().performClick(); waitText("恢复预览")
+            ui.onNodeWithText("解密并预览").performScrollTo().performClick()
+            try { waitText("恢复预览") } catch (e: Throwable) { f.shot("backup-correct-timeout"); throw e }
             assertFalse(f.app.library.personal.contains(entry)); f.shot("features-backup-preview")
             ui.onNodeWithText("合并恢复").performScrollTo().performClick(); waitText("已合并恢复")
             assertTrue(f.app.library.personal.contains(entry))

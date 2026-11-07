@@ -11,7 +11,8 @@ class ResponsiveComposeUiTest : ComposeUiCase() {
     @Test fun wideGalleryAndReaderKeepUsableSpace(): Unit = ComposeFixture().use { f ->
         f.app.library.switchSite("ehentai"); val activity = f.launch(); openSourceHome(); ui.waitUntil(15000) { ui.onAllNodesWithContentDescription("内容列表").fetchSemanticsNodes().isNotEmpty() }; waitCovers()
         ui.onNodeWithContentDescription("内容列表").performScrollToNode(hasTestTag("media-ehentai-${f.video("ehentai").id}"))
-        val columns = if (f.ins.targetContext.resources.configuration.screenWidthDp >= 600) 3 else 2
+        val width = f.ins.targetContext.resources.configuration.screenWidthDp
+        val columns = if (width >= 1280) 6 else if (width >= 1024) 5 else if (width >= 840) 4 else if (width >= 600) 3 else 2
         val cards = (0 until columns).map { ui.onNodeWithTag("media-ehentai-${f.video("ehentai", index = it).id}").fetchSemanticsNode().boundsInRoot }
         assertTrue(cards.zipWithNext().all { (left, right) -> left.left < right.left })
         f.shot("14-responsive-gallery")

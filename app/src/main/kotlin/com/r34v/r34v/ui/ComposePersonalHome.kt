@@ -37,7 +37,8 @@ import kotlinx.coroutines.*
     val continuing = catalog.filter { it.started && !it.completed }
     val hero = continuing.firstOrNull() ?: later.firstOrNull()?.video?.let { v -> catalog.firstOrNull { it.video.entryKey == v.entryKey } ?: CatalogEntry(v) }
     val unread = snapshot.inboxes.values.sumOf { box -> box.entries.count { !it.read } }
-    LazyColumn(Modifier.fillMaxSize().testTag("personal-home"), contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 18.dp, bottom = (132 + ((androidx.compose.ui.platform.LocalConfiguration.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+    val density = LocalUiDensity.current
+    LazyColumn(Modifier.fillMaxSize().testTag("personal-home"), contentPadding = PaddingValues(start = density.pagePadding, end = density.pagePadding, top = density.pagePadding, bottom = (132 + ((androidx.compose.ui.platform.LocalConfiguration.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp), verticalArrangement = Arrangement.spacedBy(density.sectionGap)) {
         item {
             Title(if (continuing.isNotEmpty()) "接着看" else "为今晚准备", large = true)
             Spacer(Modifier.height(12.dp))

@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -62,20 +63,28 @@ val GlassBottomColor = Color(0xf0121212)
     disabledIndicatorColor = Color.Transparent, errorIndicatorColor = MaterialTheme.colorScheme.error,
     cursorColor = Color.White, focusedLabelColor = Color.White, unfocusedLabelColor = MutedColor)
 
+data class UiDensity(val compact: Boolean, val controlHeight: androidx.compose.ui.unit.Dp,
+    val contentPadding: androidx.compose.ui.unit.Dp, val sectionGap: androidx.compose.ui.unit.Dp,
+    val pagePadding: androidx.compose.ui.unit.Dp, val cardGap: androidx.compose.ui.unit.Dp)
+val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 24.dp, 18.dp, 12.dp) }
+
 @Composable fun R34Theme(content: @Composable () -> Unit) {
+    val compact = LocalConfiguration.current.screenWidthDp >= 840 && LocalDensity.current.fontScale <= 1.3f
+    val density = UiDensity(compact, if (compact) 40.dp else 48.dp, if (compact) 12.dp else 16.dp,
+        if (compact) 18.dp else 24.dp, if (compact) 16.dp else 18.dp, if (compact) 10.dp else 12.dp)
     val base = Typography()
     val typography = base.copy(
-        headlineLarge = base.headlineLarge.copy(fontSize = 26.sp, lineHeight = 32.sp, fontWeight = FontWeight.Bold),
-        headlineMedium = base.headlineMedium.copy(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold),
-        titleLarge = base.titleLarge.copy(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold),
-        titleMedium = base.titleMedium.copy(fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold),
-        titleSmall = base.titleSmall.copy(fontSize = 14.sp, lineHeight = 20.sp),
-        bodyLarge = base.bodyLarge.copy(fontSize = 16.sp, lineHeight = 24.sp),
-        bodyMedium = base.bodyMedium.copy(fontSize = 14.sp, lineHeight = 21.sp),
-        bodySmall = base.bodySmall.copy(fontSize = 12.sp, lineHeight = 18.sp),
-        labelLarge = base.labelLarge.copy(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
-        labelMedium = base.labelMedium.copy(fontSize = 12.sp, lineHeight = 17.sp),
-        labelSmall = base.labelSmall.copy(fontSize = 11.sp, lineHeight = 16.sp),
+        headlineLarge = base.headlineLarge.copy(fontSize = if (compact) 22.sp else 26.sp, lineHeight = if (compact) 28.sp else 32.sp, fontWeight = FontWeight.Bold),
+        headlineMedium = base.headlineMedium.copy(fontSize = if (compact) 20.sp else 22.sp, lineHeight = if (compact) 26.sp else 28.sp, fontWeight = FontWeight.Bold),
+        titleLarge = base.titleLarge.copy(fontSize = if (compact) 16.sp else 18.sp, lineHeight = if (compact) 22.sp else 24.sp, fontWeight = FontWeight.SemiBold),
+        titleMedium = base.titleMedium.copy(fontSize = if (compact) 14.sp else 15.sp, lineHeight = if (compact) 20.sp else 21.sp, fontWeight = FontWeight.SemiBold),
+        titleSmall = base.titleSmall.copy(fontSize = if (compact) 13.sp else 14.sp, lineHeight = if (compact) 18.sp else 20.sp),
+        bodyLarge = base.bodyLarge.copy(fontSize = if (compact) 14.sp else 16.sp, lineHeight = if (compact) 21.sp else 24.sp),
+        bodyMedium = base.bodyMedium.copy(fontSize = if (compact) 13.sp else 14.sp, lineHeight = if (compact) 19.sp else 21.sp),
+        bodySmall = base.bodySmall.copy(fontSize = if (compact) 11.sp else 12.sp, lineHeight = if (compact) 16.sp else 18.sp),
+        labelLarge = base.labelLarge.copy(fontSize = if (compact) 13.sp else 14.sp, lineHeight = if (compact) 18.sp else 20.sp, fontWeight = FontWeight.SemiBold),
+        labelMedium = base.labelMedium.copy(fontSize = if (compact) 11.sp else 12.sp, lineHeight = if (compact) 16.sp else 17.sp),
+        labelSmall = base.labelSmall.copy(fontSize = if (compact) 10.sp else 11.sp, lineHeight = if (compact) 14.sp else 16.sp),
     )
     MaterialTheme(typography = typography, colorScheme = darkColorScheme(primary = BrandColor, onPrimary = Color.White,
         secondary = Color.White, background = CanvasColor, surface = SurfaceColor,
@@ -85,56 +94,65 @@ val GlassBottomColor = Color(0xf0121212)
         surfaceContainer = SurfaceColor, surfaceContainerLow = SurfaceColor, surfaceContainerHigh = RaisedColor,
         surfaceContainerHighest = ControlColor, surfaceContainerLowest = CanvasColor,
         outline = Color(0xff747474), error = Color(0xffff6670))) {
-        CompositionLocalProvider(LocalReduceTransparency provides rememberReducedTransparency()) {
+        CompositionLocalProvider(LocalUiDensity provides density, LocalReduceTransparency provides rememberReducedTransparency()) {
             Surface(Modifier.fillMaxSize(), color = CanvasColor, contentColor = Color.White, content = content)
         }
     }
 }
 @Composable fun Title(text: String, modifier: Modifier = Modifier, large: Boolean = false, maxLines: Int = Int.MAX_VALUE) {
+    val compact = LocalUiDensity.current.compact
     Text(text, modifier.semantics { heading() }, color = MaterialTheme.colorScheme.onSurface,
-        fontSize = (if (large) 24 else 18).sp, lineHeight = (if (large) 30 else 25).sp, fontWeight = FontWeight.SemiBold,
+        fontSize = (if (compact) if (large) 20 else 16 else if (large) 24 else 18).sp,
+        lineHeight = (if (compact) if (large) 26 else 22 else if (large) 30 else 25).sp, fontWeight = FontWeight.SemiBold,
         maxLines = maxLines, overflow = TextOverflow.Ellipsis)
 }
-@Composable fun Copy(text: String, modifier: Modifier = Modifier) { Text(text, modifier, color = MutedColor, fontSize = 14.sp, lineHeight = 21.sp) }
+@Composable fun Copy(text: String, modifier: Modifier = Modifier) {
+    Text(text, modifier, color = MutedColor, fontSize = if (LocalUiDensity.current.compact) 13.sp else 14.sp,
+        lineHeight = if (LocalUiDensity.current.compact) 19.sp else 21.sp)
+}
 @Composable fun Glyph(@DrawableRes icon: Int, description: String?, modifier: Modifier = Modifier) {
-    Icon(painterResource(icon), description, modifier.size(20.dp))
+    Icon(painterResource(icon), description, modifier.size(if (LocalUiDensity.current.compact) 18.dp else 20.dp))
 }
 @Composable fun IconAction(@DrawableRes icon: Int, description: String, modifier: Modifier = Modifier, click: () -> Unit) {
-    IconButton(onClick = click, modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) { Glyph(icon, description) }
+    IconButton(onClick = click, modifier = Modifier.minimumInteractiveComponentSize().size(if (LocalUiDensity.current.compact) 40.dp else 48.dp).then(modifier)) { Glyph(icon, description) }
 }
 @Composable fun TextAction(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) {
-    TextButton(onClick, modifier.heightIn(min = 48.dp), enabled,
+    val compact = LocalUiDensity.current.compact
+    TextButton(onClick, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight), enabled,
+        contentPadding = PaddingValues(horizontal = if (compact) 12.dp else 16.dp, vertical = if (compact) 8.dp else 12.dp),
         colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = MutedColor.copy(alpha = .5f)), content = content)
 }
 @Composable fun Action(text: String, primary: Boolean = false, enabled: Boolean = true, modifier: Modifier = Modifier,
     icon: Int? = null, selected: Boolean = false, click: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    Button(click, modifier.heightIn(min = 48.dp).semantics { this.selected = selected }, enabled,
-        shape = RoundedCornerShape(24.dp), interactionSource = interaction, elevation = null,
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+    val compact = LocalUiDensity.current.compact
+    Button(click, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight).semantics { this.selected = selected }, enabled,
+        shape = RoundedCornerShape(if (compact) 20.dp else 24.dp), interactionSource = interaction, elevation = null,
+        contentPadding = PaddingValues(horizontal = if (compact) 14.dp else 16.dp, vertical = if (compact) 9.dp else 12.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = if (focused) ControlFocusColor else if (primary) SelectedControlColor else if (selected) ActiveControlColor else ControlColor,
             contentColor = if (primary && !focused) Color.Black else Color.White,
             disabledContainerColor = ControlColor.copy(alpha = .55f), disabledContentColor = MutedColor.copy(alpha = .65f))) {
         val glyph = icon ?: R.drawable.ic_check.takeIf { selected }
-        if (glyph != null) { Glyph(glyph, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)) }
-        Text(text, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
+        if (glyph != null) { Glyph(glyph, null, Modifier.size(if (compact) 16.dp else 18.dp)); Spacer(Modifier.width(if (compact) 6.dp else 8.dp)) }
+        Text(text, fontSize = if (compact) 13.sp else 14.sp, lineHeight = if (compact) 18.sp else 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
     }
 }
 @Composable fun Choice(text: String, selected: Boolean = false, click: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    val horizontalPadding = if (LocalDensity.current.fontScale > 1.3f) 10.dp else 14.dp
+    val compact = LocalUiDensity.current.compact
+    val horizontalPadding = if (LocalDensity.current.fontScale > 1.3f) 10.dp else if (compact) 12.dp else 14.dp
     val container by animateColorAsState(if (focused) ControlFocusColor else if (selected) SelectedControlColor else ControlColor, tween(120), label = "choice")
     val content = if (selected && !focused) Color.Black else Color.White
-    Box(Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(50))
+    Box(Modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight).clip(RoundedCornerShape(50))
         .selectable(selected, interactionSource = interaction, indication = LocalIndication.current, role = Role.Tab, onClick = click), contentAlignment = Alignment.Center) {
-        Row(Modifier.heightIn(min = 34.dp).clip(RoundedCornerShape(50)).background(container).padding(horizontal = horizontalPadding, vertical = 7.dp),
+        Row(Modifier.heightIn(min = if (compact) 30.dp else 34.dp).clip(RoundedCornerShape(50)).background(container).padding(horizontal = horizontalPadding, vertical = if (compact) 6.dp else 7.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            if (selected) { CompositionLocalProvider(LocalContentColor provides content) { Glyph(R.drawable.ic_check, null, Modifier.size(14.dp)) }; Spacer(Modifier.width(6.dp)) }
-            Text(text, color = content, fontSize = 14.sp,
-                lineHeight = 20.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+            if (selected) { CompositionLocalProvider(LocalContentColor provides content) { Glyph(R.drawable.ic_check, null, Modifier.size(if (compact) 12.dp else 14.dp)) }; Spacer(Modifier.width(6.dp)) }
+            Text(text, color = content, fontSize = if (compact) 13.sp else 14.sp,
+                lineHeight = if (compact) 18.sp else 20.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
         }
     }
 }
@@ -148,10 +166,12 @@ val GlassBottomColor = Color(0xf0121212)
 @Composable fun Selector(text: String, enabled: Boolean = true, modifier: Modifier = Modifier, click: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    FilledTonalButton(click, modifier.heightIn(min = 48.dp), enabled, shape = RoundedCornerShape(16.dp), interactionSource = interaction,
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+    val compact = LocalUiDensity.current.compact
+    FilledTonalButton(click, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight), enabled,
+        shape = RoundedCornerShape(if (compact) 12.dp else 16.dp), interactionSource = interaction,
+        contentPadding = PaddingValues(horizontal = if (compact) 12.dp else 16.dp, vertical = if (compact) 9.dp else 12.dp),
         colors = ButtonDefaults.filledTonalButtonColors(containerColor = if (focused) ControlFocusColor else ControlColor, contentColor = Color.White)) {
-        Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp); Spacer(Modifier.width(8.dp)); Icon(painterResource(R.drawable.ic_chevron_down), null, Modifier.size(16.dp))
+        Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = if (compact) 12.sp else 13.sp); Spacer(Modifier.width(if (compact) 6.dp else 8.dp)); Icon(painterResource(R.drawable.ic_chevron_down), null, Modifier.size(if (compact) 14.dp else 16.dp))
     }
 }
 @Composable fun Choices(values: List<String>, selected: Int, choose: (Int) -> Unit) {
@@ -223,17 +243,18 @@ val GlassBottomColor = Color(0xf0121212)
     val gallery = site.mediaKind == MediaKind.GALLERY || video.mediaKind == MediaKind.GALLERY
     var ratio by remember(video.site, video.id) { mutableFloatStateOf(if (gallery) video.thumbAspectRatio else 16f / 9f) }
     var expanded by remember { mutableStateOf(false) }
-    Column(modifier.testTag("media-${video.site}-${video.id}").combinedClickable(onClick = click, onLongClick = { expanded = true }).padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Box(Modifier.clip(RoundedCornerShape(14.dp))) {
+    val compact = LocalUiDensity.current.compact
+    Column(modifier.testTag("media-${video.site}-${video.id}").combinedClickable(onClick = click, onLongClick = { expanded = true }).padding(bottom = if (compact) 8.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 5.dp)) {
+        Box(Modifier.clip(RoundedCornerShape(if (compact) 10.dp else 14.dp))) {
             SiteImage(video.thumb, site, Modifier.fillMaxWidth().aspectRatio(ratio.coerceIn(.45f, 1.8f)), gallery) { if (gallery && !video.hasThumbDimensions) ratio = it }
             Box(Modifier.align(Alignment.TopEnd)) {
                 IconAction(R.drawable.ic_more, "${video.title} 的更多操作", Modifier.background(Color.Black.copy(alpha = .65f), androidx.compose.foundation.shape.CircleShape)) { expanded = true }
                 DropdownMenu(expanded, { expanded = false }) { actions.forEach { (label, action) -> DropdownMenuItem({ Text(label) }, { expanded = false; action() }) } }
             }
         }
-        Text(video.title, fontSize = 14.sp, lineHeight = 20.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(video.title, fontSize = if (compact) 13.sp else 14.sp, lineHeight = if (compact) 19.sp else 20.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         val metadata = listOf(mediaCountOrDuration(video), video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
-        if (metadata.isNotBlank()) Text(metadata, color = MutedColor, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (metadata.isNotBlank()) Text(metadata, color = MutedColor, fontSize = if (compact) 11.sp else 12.sp, lineHeight = if (compact) 16.sp else 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (progress != null) LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(2.dp),
             color = BrandColor, trackColor = Color.White.copy(alpha = .15f), gapSize = 0.dp, drawStopIndicator = {})
     }
@@ -261,14 +282,14 @@ class ComposeDialogs {
                     Box(Modifier.align(Alignment.CenterHorizontally).size(32.dp, 4.dp).background(Color.White.copy(alpha = .3f), RoundedCornerShape(50)))
                     Title(title, Modifier.padding(top = 16.dp, bottom = 8.dp))
                     Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).selectableGroup()) {
-                        values.forEachIndexed { i, value -> Row(Modifier.fillMaxWidth().heightIn(min = 50.dp)
-                            .clip(RoundedCornerShape(14.dp)).background(if (selected == i) Color.White.copy(alpha = .09f) else Color.Transparent)
+                        values.forEachIndexed { i, value -> Row(Modifier.fillMaxWidth().heightIn(min = if (LocalUiDensity.current.compact) 48.dp else 50.dp)
+                            .clip(RoundedCornerShape(if (LocalUiDensity.current.compact) 12.dp else 14.dp)).background(if (selected == i) Color.White.copy(alpha = .09f) else Color.Transparent)
                             .then(if (selected >= 0) Modifier.selectable(selected == i, role = Role.RadioButton) { dismiss(); action(i) }
                                 else Modifier.clickable(role = Role.Button) { dismiss(); action(i) })
-                            .padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(value, Modifier.weight(1f).padding(vertical = 14.dp), fontSize = 13.sp,
+                            .padding(horizontal = LocalUiDensity.current.contentPadding), verticalAlignment = Alignment.CenterVertically) {
+                            Text(value, Modifier.weight(1f).padding(vertical = if (LocalUiDensity.current.compact) 10.dp else 14.dp), fontSize = if (LocalUiDensity.current.compact) 12.sp else 13.sp,
                                 fontWeight = if (selected == i) FontWeight.SemiBold else FontWeight.Normal)
-                            if (selected == i) Glyph(R.drawable.ic_check, null, Modifier.size(20.dp))
+                            if (selected == i) Glyph(R.drawable.ic_check, null, Modifier.size(if (LocalUiDensity.current.compact) 18.dp else 20.dp))
                         } }
                     }
                     TextAction(::dismiss, Modifier.align(Alignment.End)) { Text("取消") }

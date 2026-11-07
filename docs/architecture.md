@@ -5,12 +5,12 @@
 ## 模块和数据流
 
 - `MainActivity`：Compose Scaffold、站点抽屉、首次教程及首页/发现/搜索/片库/设置导航。页面输入、站点和返回栈通过状态与 Bundle 恢复；FeedStates ViewModel 按站点、请求与屏蔽规则保存最多 8 份列表和对应滚动状态，5 分钟后整体过期。进程死亡后重新加载列表并从头布局，完整列表不写入 Bundle；轮播与展开状态仍通过 rememberSaveable 管理。
-- `ui/ComposeBrowse`：列表请求、LazyVerticalStaggeredGrid 搜索结果与漫画、发现和索引；手机双列，宽屏三列。请求随页面离开取消，刷新取消旧分页并阻止过期回包；分页保留原站游标与语言条件。过滤后空页不等于结束，连续三页无可显示内容后提供手动继续；重复游标停止自动请求并可刷新恢复。
+- `ui/ComposeBrowse`：列表请求、LazyVerticalStaggeredGrid 搜索结果与漫画、发现和索引；手机双列，600dp 起三列，840／1024／1280dp 分别增加到四／五／六列。请求随页面离开取消，刷新取消旧分页并阻止过期回包；分页保留原站游标与语言条件。过滤后空页不等于结束，连续三页无可显示内容后提供手动继续；重复游标停止自动请求并可刷新恢复。
 - `ui/ComposeCinema`：2.2.1 沉浸式 Hero、透明顶栏配套、轻量底部导航、LazyColumn + LazyRow 海报片架、真实继续观看和片单状态。最新内容在最后追加，避免可选榜单或片架插入导致跳过首页 Hero。
 - `PlayerActivity`：Compose 详情、播放控件、清晰度、倍速、手势、横竖屏全屏、进度保存和过期地址刷新。仅 Media3 PlayerView 画面使用 AndroidView，关闭自带控制器，所有控制按钮与时间轴均为 Compose。
-- `GalleryActivity` 与 `ui/ComposeReader`：Compose 画廊详情与 LazyColumn 条漫、缩放、全屏、跳页及页内进度。ReaderBuffer 独立管理可见页和后续三页预读，最多两个并发，额外屏外解码预算24MiB；位图释放采用移除引用，避免 RenderThread 使用已 recycle 的位图。阅读进度每 750ms 合并写入，离开或进入后台时立即保存；下载目录在打开图集时解析一次，逐页读取不再重复检查整本。
+- `GalleryActivity` 与 `ui/ComposeReader`：Compose 画廊详情与 LazyColumn 条漫、缩放、全屏、跳页及页内进度。ReaderBuffer 独立管理可见页和后续三页预读，最多两个并发，额外屏外解码预算24MiB；位图释放采用移除引用，避免 RenderThread 使用已 recycle 的位图。阅读进度每 750ms 合并写入，离开或进入后台时立即保存；首图未就绪时也保存已加载图集的当前位置，取得图页地址后更新。下载目录在打开图集时解析一次，逐页读取不再重复检查整本。
 - `SiteAuthActivity`：Compose 登录说明与操作，仅官方 WebView 使用 AndroidView；保留官方域名限制、TLS校验、权限验证与退出时临时 Cookie 清理。
-- `ui/ComposeUi`：黑底中性灰阶与三级材质主题、共享字号/固定圆角/无描边填充按钮、`GlassSurface`、Coil AsyncImage 封面、菜单、玻璃底部面板和对话框。`R34Application.coverLoader` 按站点缓存 loader，共享有界内存/磁盘缓存并为每次请求取得当前 Network.client。旧 View 组件与 RecyclerView/DrawerLayout 直接依赖已删除。
+- `ui/ComposeUi`：黑底中性灰阶与三级材质主题、共享字号/固定圆角/无描边填充按钮、`GlassSurface`、Coil AsyncImage 封面、菜单、玻璃底部面板和对话框。`LocalUiDensity` 在宽度至少840dp且系统字体不超过130%时提供紧凑密度：页面标题20sp、分组16sp、正文13sp、可见按钮40dp；外层保留至少48dp触控区。手机和大字体沿用原字号并让容器随内容增长。`R34Application.coverLoader` 按站点缓存 loader，共享有界内存/磁盘缓存并为每次请求取得当前 Network.client。旧 View 组件与 RecyclerView/DrawerLayout 直接依赖已删除。
 - `data/HtmlParser`：Jsoup 离线解析站点 HTML，不运行页面脚本。列表、详情、分类和两类排行榜分别解析。
 - `data/Network` 和 `data/SystemProxySelector`：OkHttp、分站 Cookie、系统代理与系统 DNS。遵循系统按 URL 作出的代理/PAC 排除决定，未配置代理才直连；不尝试代理列表中的后续直连回退。移除 DoH、固定/手填 IP、IP 池、VPN 分支和应用内独立代理，旧配置在迁移时清除。系统代理变更广播使旧空闲连接失效，新请求采用新设置。页面请求可取消且有限时，视频连接不设整文件请求时限。
 - `data/LibraryStore`：原生私有 SharedPreferences，沿用旧 JSON 字段。对旧 Flutter 配置只做一次复制迁移，保留原件供回退。
@@ -37,7 +37,7 @@
 
 ## 数据迁移
 
-保持包名 `com.r34v.r34v`，当前发布版本为2.5.1 / 44。2.0.0 与1.18.0的签名来源不同，现已加入签名继承，支持覆盖升级并保留数据；详细平台边界见 [签名与升级](signing.md)。开发版使用 `com.r34v.r34v.debug` 并明确显示“开发版”，与发布版隔离。
+保持包名 `com.r34v.r34v`，当前发布版本为2.5.2 / 45。2.0.0 与1.18.0的签名来源不同，现已加入签名继承，支持覆盖升级并保留数据；详细平台边界见 [签名与升级](signing.md)。开发版使用 `com.r34v.r34v.debug` 并明确显示“开发版”，与发布版隔离。
 
 迁移包括观看历史、视频/角色/作者/标签收藏、设置、登录会话、搜索历史和旧缓存索引。搜索列表兼容旧 Java 列表格式和 JSON 格式，旧浮点倍速转换成原生配置。迁移幂等，重启不会再次覆盖新进度。原生版的持续播放缓存使用新目录，旧版未完成的临时传输文件不会当作完整视频导入。
 
@@ -75,3 +75,8 @@ JVM 测试覆盖页面样本、分页、懒加载图片、分组边界、播放�
 - `data/adapter/CossoraProtocol`：仅识别 Cosplaytele 文章里的指定 cossora HTTPS 嵌入页，以 `video-<UUID>` 和 `文章地址#video-<UUID>` 保持视频与图集身份独立。嵌入页的公开 AES-CBC 参数在原生代码中解码，不运行整站脚本；只接受 cossora 域下的 HLS 与封面，短效令牌不写入图集目录。
 - `PhotoArchiveAdapter` 的 `gallery()` 保持图页读取，并在 `GalleryDetail.videoEntries` 携带可选视频列表；`detail()` 仅在实际打开或刷新视频时解析嵌入页。`GalleryActivity` 复用 `PlayerActivity` 和 Media3 HLS，图页缓存、阅读位置、收藏与下载身份不混用。
 - `DownloadRecovery` 区分 TLS 连接中断与证书／主机名安全错误。E／Ex 仅在异常链明确为连接关闭、重置或超时等传输故障时，通过页面已有 `nl` 地址单次刷新；证书与安全错误不重试。响应地址不同也先拒绝，再按页面刷新策略处理。所有路径沿用系统代理、HTTPS 证书校验与既有完成页／取消／落盘事务。
+
+## 2.5.2 搜索来源与订阅入口
+
+- `ui/ComposeCrossSearch` 统一列出适配器声明支持搜索的来源。未保存来源选择时，多站搜索默认选择全部这些来源；已有自定义子集不被覆盖，对话框提供显式“全选”。每站独立查询与失败展示不变，ExHentai 未登录显示权限提示而不是静默跳过。
+- `ui/ComposeLibraryHub` 与 `ui/ComposeGlobalInbox` 提供明确的“标签订阅”入口，复用原有 `SubscriptionScreen`、按来源隔离的标签存储、排序、管理和更新收件箱；收藏标签与标签订阅仍是不同数据，不相互迁移或删除。

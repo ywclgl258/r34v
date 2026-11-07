@@ -250,7 +250,8 @@ class PlayerActivity : ComponentActivity() {
         @Suppress("UNUSED_VARIABLE") val changed = revision
         Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(SurfaceColor.copy(alpha = .42f), CanvasColor)))
             .verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            Text(video.title, color = Color.White, fontSize = 20.sp, lineHeight = 27.sp,
+            Text(video.title, color = Color.White, fontSize = if (LocalUiDensity.current.compact) 17.sp else 20.sp,
+                lineHeight = if (LocalUiDensity.current.compact) 24.sp else 27.sp,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
             val metadata = listOf(video.duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
             if (metadata.isNotBlank()) Copy(metadata)

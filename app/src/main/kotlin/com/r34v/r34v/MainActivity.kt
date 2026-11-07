@@ -89,7 +89,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         siteId = store.siteId
-        searchSites = store.string("cross_search_sites").split(',').filter { SiteRegistry.byId(it) != null }.ifEmpty { listOf(siteId) }
+        searchSites = store.string("cross_search_sites").split(',').filter { SiteRegistry.byId(it) != null }.ifEmpty { searchableSiteIds(app.network) }
         if (savedInstanceState != null) {
             screen = savedInstanceState.getString("screen") ?: "home"
             navigationTab = savedInstanceState.getString("navigationTab") ?: "home"
@@ -435,14 +435,14 @@ class MainActivity : ComponentActivity() {
                             "index" -> IndexScreen(app, site, request.target, dialogs, ::openFeed, ::browse, ::toggleSubscription)
                             "search" -> SearchScreen(adapter)
                             "multiSearch" -> CrossSearchScreen(app, crossSearch, searchQuery, searchSites, { play(it) }, ::favorite, revision, searchCategory, searchLanguages, { searchCategory = it }, ::saveSearch, condition = searchCondition)
-                            "updates" -> GlobalInboxScreen(app, { play(it) }, dialogs)
+                            "updates" -> GlobalInboxScreen(app, { play(it) }, dialogs, manageSubscriptions = { navigate("subscriptions") })
                             "library" -> LibraryScreen(site)
                             "subscriptions" -> SubscriptionScreen(app, site, dialogs, { play(it) }, ::favorite,
                                 store.favorites(site.id).filter { it.kind in listOf("video", "gallery") }.map { "${it.site}:${it.target}" }.toSet(),
                                 openTag = { openTag(it) }, revision = { revision++ })
                             "settings" -> SettingsScreen(site)
                             "backup" -> BackupScreen(app) {
-                                searchSites = store.string("cross_search_sites").split(',').filter { SiteRegistry.byId(it) != null }.ifEmpty { listOf(siteId) }
+                                searchSites = store.string("cross_search_sites").split(',').filter { SiteRegistry.byId(it) != null }.ifEmpty { searchableSiteIds(app.network) }
                                 revision++
                             }
                         }
@@ -474,7 +474,7 @@ class MainActivity : ComponentActivity() {
             if (multipleSources) navigate("multiSearch") else openFeed(adapter.searchRequest(query, when (searchScope) { 1 -> FeedKind.TAG; 2 -> FeedKind.MODEL; else -> FeedKind.SEARCH }).copy(
                 includeTags = condition.includeTags, excludeTags = condition.excludeTags, filter = condition.filter))
         }
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(if (LocalUiDensity.current.compact) 10.dp else 14.dp)) {
             Choices(listOf("当前站点", "多个站点"), if (multipleSources) 1 else 0) { multipleSources = it == 1 }
             if (multipleSources) TextAction({ dialogs.searchSources(app, searchSites) { searchSites = it; store.set("cross_search_sites", it.joinToString(",")) } }) { Text("选择来源 · ${searchSites.size} 个站点") }
             else Copy("在 ${adapter.site.name} 中搜索${if (gallery) "，寻找想看的$noun" else ""}")
@@ -520,7 +520,7 @@ class MainActivity : ComponentActivity() {
         val catalog = if (libraryTab in listOf("片库", "片单")) rememberPersonalCatalog(app, revision, resumed) else emptyList()
         if (libraryTab == "片库") {
             LibraryHubScreen(app, dialogs, catalog, { MediaRouter.open(this@MainActivity, it) }, task = { label ->
-                if (label == "更新") navigate("updates") else { favoriteTab = if (site.mediaKind == MediaKind.GALLERY) site.category.itemNoun else "视频"; libraryTab = if (label == "收藏") favoriteTab else label }
+                if (label == "更新") navigate("updates") else if (label == "标签订阅") navigate("subscriptions") else { favoriteTab = if (site.mediaKind == MediaKind.GALLERY) site.category.itemNoun else "视频"; libraryTab = if (label == "收藏") favoriteTab else label }
             }, search = { navigate("search") }, importLocal = ::importLocal, openLink = ::pasteLink, download = ::downloadBatch,
                 image = { favorite -> play(favorite.video, read = true, page = favorite.page) })
             return
@@ -573,7 +573,7 @@ class MainActivity : ComponentActivity() {
     @Composable private fun SettingsScreen(site: SiteContext) {
         @Suppress("UNUSED_VARIABLE") val observedRevision = revision
         val adapter = AdapterRegistry.adapter(site, app.network)
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(if (LocalUiDensity.current.compact) 10.dp else 12.dp)) {
             Title("显示"); Toggle("减少透明效果", "reduce_transparency"); Copy("使用深色实底控件，保持清晰对比。")
             Toggle("标签优先显示中文词典", "translate_tags", true)
             Title("内容过滤"); Setting("屏蔽词", "${store.blockedTags().size} 个") { blockedTags() }

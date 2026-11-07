@@ -25,10 +25,19 @@ class NextFeaturesUiTest : ComposeUiCase() {
         val activity = f.launch(); home(); waitText("怪奇物语"); waitCovers(); f.shot("next-personal-home")
         clickText("搜索"); clickText("多个站点")
         ui.onNode(hasSetTextAction()).performTextInput("space")
-        clickText("保存搜索方案"); ui.onNode(hasSetTextAction() and hasAnyAncestor(isDialog())).performTextReplacement("我的科幻搜索"); clickText("确定")
+        closeKeyboard(f)
+        clickText("保存搜索方案"); ui.onNode(hasSetTextAction() and hasAnyAncestor(isDialog())).performTextReplacement("我的科幻搜索")
+        closeKeyboard(f); clickText("确定")
         assertEquals("space", f.app.library.personal.snapshot().savedSearches.single().query)
-        clickText("首页"); home(); waitText("我的科幻搜索")
-        ui.runOnIdle { activity.recreate() }; home(); clickText("我的科幻搜索"); waitText("搜索：space")
+        clickText("首页"); home()
+        ui.onNodeWithTag("personal-home").performScrollToNode(hasText("我的科幻搜索"))
+        ui.onNodeWithTag("personal-home").performTouchInput { swipeUp() }
+        ui.onNodeWithText("我的科幻搜索").assertIsDisplayed(); f.shot("api24-personal-saved-search")
+        ui.runOnIdle { activity.recreate() }; home()
+        ui.onNodeWithTag("personal-home").performScrollToNode(hasText("我的科幻搜索"))
+        ui.onNodeWithTag("personal-home").performTouchInput { swipeUp() }
+        ui.onNodeWithText("我的科幻搜索").assertIsDisplayed().performClick()
+        waitText("搜索：space")
         assertEquals("r34v", f.app.library.siteId)
         f.shot("next-saved-search")
     }

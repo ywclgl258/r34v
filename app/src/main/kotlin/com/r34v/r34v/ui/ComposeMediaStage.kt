@@ -26,7 +26,17 @@ fun mediaCountOrDuration(video: Video): String = video.duration.takeUnless {
     val site = SiteRegistry.byIdOrDefault(video.site)
     val compact = LocalConfiguration.current.screenWidthDp < 360 || LocalConfiguration.current.fontScale > 1.3f
     val wide = LocalConfiguration.current.screenWidthDp >= 700
-    if (site.category == SiteCategory.COMIC) {
+    if (site.category == SiteCategory.COMIC && wide) {
+        Row(Modifier.fillMaxWidth().contentPanel(24).padding(LocalUiDensity.current.contentPadding).testTag("comic-stage"),
+            horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            SiteImage(video.thumb, site, Modifier.width(80.dp).aspectRatio(.7f).clip(RoundedCornerShape(10.dp)), fit = true)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Copy(status); Title(video.title, maxLines = 3)
+                if (mediaCountOrDuration(video).isNotBlank()) Copy(mediaCountOrDuration(video))
+            }
+            Action(action, primary = true, modifier = Modifier.widthIn(min = 160.dp)) { play(video) }
+        }
+    } else if (site.category == SiteCategory.COMIC) {
         Column(Modifier.fillMaxWidth().contentPanel(24).padding(16.dp).testTag("comic-stage"), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 SiteImage(video.thumb, site, Modifier.width(if (compact) 80.dp else 108.dp).aspectRatio(.7f).clip(RoundedCornerShape(12.dp)), fit = true)
@@ -42,8 +52,8 @@ fun mediaCountOrDuration(video: Video): String = video.duration.takeUnless {
     } else if (wide) {
         Row(Modifier.fillMaxWidth().contentPanel(24).testTag(if (site.category == SiteCategory.PHOTO) "photo-stage" else "video-stage"),
             verticalAlignment = Alignment.CenterVertically) {
-            SiteImage(video.thumb, site, Modifier.weight(1.2f).height((LocalConfiguration.current.screenHeightDp * .42f).dp.coerceIn(148.dp, 340.dp)), fit = site.category == SiteCategory.PHOTO)
-            Column(Modifier.weight(1f).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            SiteImage(video.thumb, site, Modifier.weight(1.1f).height((LocalConfiguration.current.screenHeightDp * .32f).dp.coerceIn(140.dp, 240.dp)), fit = site.category == SiteCategory.PHOTO)
+            Column(Modifier.weight(1f).padding(LocalUiDensity.current.sectionGap), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Copy(status); Title(video.title, large = true, maxLines = 3)
                 Action(action, primary = true, modifier = Modifier.fillMaxWidth()) { play(video) }
             }

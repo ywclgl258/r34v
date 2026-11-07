@@ -176,7 +176,22 @@ abstract class ComposeUiCase {
     fun waitHome() { ui.waitUntil(15000) { listOf("personal-home", "home-carousel", "video-stage", "comic-stage", "photo-stage").any { ui.onAllNodesWithTag(it).fetchSemanticsNodes().isNotEmpty() } }; ui.waitForIdle() }
     fun openSourceHome() { waitHome(); ui.onNodeWithTag("personal-home").performScrollToNode(hasText("浏览当前来源的最新内容")); clickText("浏览当前来源的最新内容") }
     fun clickText(text: String) { waitText(text); ui.onAllNodesWithText(text).onLast().performClick() }
-    fun back(fixture: ComposeFixture) { ui.waitForIdle(); fixture.ins.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK); ui.waitForIdle() }
+    fun back(fixture: ComposeFixture) {
+        ui.waitForIdle()
+        fixture.ins.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+        fixture.ins.waitForIdleSync()
+        fixture.ins.uiAutomation.waitForIdle(250, 3000)
+        ui.waitForIdle()
+    }
+    fun closeKeyboard(fixture: ComposeFixture) {
+        val keyboard = fixture.ins.targetContext.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+        fixture.ins.runOnMainSync {
+            val activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).first()
+            keyboard.hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+        }
+        fixture.ins.waitForIdleSync()
+        ui.waitForIdle()
+    }
     fun switchSite(name: String) { ui.onNode(hasContentDescription("切换站点，当前", substring = true)).performClick(); ui.onNodeWithContentDescription("站点列表").performScrollToNode(hasText(name)); clickText(name) }
     fun readerTool(label: String) { ui.onNodeWithContentDescription("阅读工具").performClick(); clickText(label) }
     fun openWatchLater() { ui.onNodeWithTag("library-hub").performScrollToNode(hasText("稍后看")); clickText("稍后看") }

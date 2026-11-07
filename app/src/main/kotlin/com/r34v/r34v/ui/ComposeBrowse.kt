@@ -108,8 +108,12 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     }
     val nearEnd by remember { derivedStateOf { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= grid.layoutInfo.totalItemsCount - 7 } == true } }
     LaunchedEffect(nearEnd, next, busy) { if (nearEnd && loaded && next <= total && !busy && error == null) load(true) }
-    val columns = if (LocalConfiguration.current.fontScale > 1.5f && LocalConfiguration.current.screenWidthDp < 400) 1 else if (LocalConfiguration.current.screenWidthDp >= 840) 4 else if (LocalConfiguration.current.screenWidthDp >= 600) 3 else 2
-    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = grid, contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 132.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalItemSpacing = 14.dp) {
+    val width = LocalConfiguration.current.screenWidthDp
+    val columns = if (LocalConfiguration.current.fontScale > 1.5f && width < 400) 1 else if (width >= 1280) 6 else if (width >= 1024) 5 else if (width >= 840) 4 else if (width >= 600) 3 else 2
+    val density = LocalUiDensity.current
+    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = grid,
+        contentPadding = PaddingValues(start = density.pagePadding, end = density.pagePadding, top = 16.dp, bottom = 132.dp),
+        horizontalArrangement = Arrangement.spacedBy(density.cardGap), verticalItemSpacing = if (density.compact) 10.dp else 14.dp) {
         if (home && site.mediaKind == MediaKind.GALLERY && videos.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, key = "gallery-stage") {
             val progress = app.library.readings(site.id).firstOrNull { it.page < it.pages && app.library.allowed(it.entry, site.id) }
             val entry = progress?.entry ?: videos.first()
@@ -153,27 +157,29 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 }
 
 @Composable fun ExploreScreen(adapter: SiteAdapter, feed: (FeedRequest) -> Unit, browse: (String) -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    val density = LocalUiDensity.current
+    val columns = if (density.compact) 3 else 2
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(density.pagePadding), verticalArrangement = Arrangement.spacedBy(if (density.compact) 12.dp else 14.dp)) {
         Title("找到下一部想看的", large = true); Copy("从榜单、分类和创作者开始")
         val genres = adapter.sections.filter { it.feed?.kind == FeedKind.CATEGORY }
         val ranked = adapter.sections.filter { it.feed != null && it !in genres }.sortedByDescending { it.feed?.kind == FeedKind.POPULAR }
         if (ranked.isNotEmpty()) {
             Title("精选榜单")
-            ranked.chunked(2).forEach { pair ->
+            ranked.chunked(columns).forEach { pair ->
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     pair.forEach { section ->
                         val popular = section.feed?.kind == FeedKind.POPULAR
                         Column(Modifier.weight(1f).contentPanel(20).clickable { feed(section.feed!!) }
                             .then(if (popular) Modifier.background(BrandColor.copy(alpha = .12f)) else Modifier)
-                            .padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            .padding(if (density.compact) 12.dp else 14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text(section.title, Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                                Text(section.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                                 Glyph(R.drawable.ic_chevron_right, null, Modifier.size(14.dp))
                             }
                             if (popular) Text("本周焦点 · 先看大家都在看的内容", color = MutedColor, fontSize = 11.sp)
                         }
                     }
-                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                    repeat(columns - pair.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
         }
@@ -222,7 +228,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 }
 data class LibraryCard(val video: Video, val menuLabel: String, val remove: () -> Unit, val read: Boolean = false, val progress: Float? = null)
 @Composable fun MediaLibrary(cards: List<LibraryCard>, clear: (() -> Unit)?, empty: @Composable () -> Unit, play: (LibraryCard) -> Unit) {
-    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(if (LocalConfiguration.current.screenWidthDp >= 600) 3 else 2), Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(top = 12.dp), verticalItemSpacing = 8.dp) {
+    val width = LocalConfiguration.current.screenWidthDp
+    val columns = if (width >= 1280) 6 else if (width >= 1024) 5 else if (width >= 840) 4 else if (width >= 600) 3 else 2
+    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap), contentPadding = PaddingValues(top = 12.dp), verticalItemSpacing = 8.dp) {
         if (clear != null) item(span = StaggeredGridItemSpan.FullLine) { TextAction(clear) { Text("清空记录") } }
         if (cards.isEmpty()) item(span = StaggeredGridItemSpan.FullLine) { empty() }
         items(cards, key = { "${it.video.site}:${it.video.id}" }) { card -> MediaCard(card.video, menu = listOf(card.menuLabel to card.remove), progress = card.progress) { play(card) } }
