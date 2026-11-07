@@ -48,3 +48,11 @@
 - 旧 2.0.0 兼容包完成静态分段验签，本轮未重复原 2.0.0 设备的运行时覆盖安装。
 - 无效果廊记录的重复错误页仍属于后续导航优化范围；正常阅读、未解码时退出与进度保存按上述实际路径验证。
 - 生产包不包含 AndroidTest 适配器、中性测试素材或实站探针。
+
+## 远端提交、CI 与 Release
+
+- 正式源码提交：`c4d1bf345efcdef087ad831451a680834e87f0b2`；标签：`v2.5.2`。
+- [CI 运行 42347678285](https://github.com/ywclgl258/r34v/actions/runs/42347678285)：verify、API 24、API 36 全部通过，两个设备各 54 项测试，日志保存在 `dist/verification-2.5.2/ci-*.log`。
+- CI 日志明确提示缺少固定签名材料，工作流因此跳过签名构建及签名产物上传，没有生成替代密钥。正式包由本机既有固定证书构建，按平台分段验签后上传。
+- [R34V v2.5.2 Release](https://github.com/ywclgl258/r34v/releases/tag/v2.5.2) 已创建且 `isDraft=false`。标准包、Android 7/8 兼容包及 `R34V-v2.5.2-SHA256SUMS.txt` 均已上传。
+- 远端 API 资产名称、大小及 SHA-256 与本机一致；重新下载两个 APK 后，`sha256sum -c` 均返回 OK。远端记录保存在 `dist/verification-2.5.2/remote/`。
