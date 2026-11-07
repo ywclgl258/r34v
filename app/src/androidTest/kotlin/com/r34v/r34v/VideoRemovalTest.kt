@@ -65,6 +65,11 @@ class VideoRemovalTest : ComposeUiCase() {
             ui.runOnIdle { f.app.playback.remove(id); f.app.playback.add(video, stream) }
             ui.waitUntil(20000) { task()?.let { it.startTimeMs > first && it.state == Download.STATE_COMPLETED } == true }
             assertTrue(f.app.playback.cached(id))
+            // Media3 commits its database before dispatching the listener that writes the sidecar.
+            ui.waitUntil(15000) {
+                runBlocking { f.app.index.scan(f.app.playback::cached) }
+                    .any { it.cacheKey == id && it.state == LibraryRecord.STATE_COMPLETED }
+            }
             val records = runBlocking { f.app.index.scan(f.app.playback::cached) }
             assertTrue(records.any { it.cacheKey == id && it.state == LibraryRecord.STATE_COMPLETED })
             ui.runOnIdle { f.app.playback.remove(id) }

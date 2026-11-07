@@ -130,7 +130,12 @@ class FeatureBatchUiTest : ComposeUiCase() {
         assertTrue(f.app.library.personal.snapshot().searchUpdates.getValue(search.id).entries.all { it.read })
         clickText("检查详情"); waitText("Hanime1：来源暂不可用"); clickText("关闭")
         generation.incrementAndGet(); clickText("检查搜索更新")
-        waitText("搜索新增作品"); f.shot("batch-search-updates")
+        ui.waitUntil(15000) {
+            f.app.library.personal.snapshot().searchUpdates.getValue(search.id).entries.any { it.video.entryKey == fresh.entryKey && !it.read }
+        }
+        // The header can fill a small CI viewport; lazy rows appear only after scrolling.
+        ui.onNodeWithTag("catalog-list").performScrollToNode(hasText("搜索新增作品"))
+        ui.onNodeWithText("搜索新增作品").assertIsDisplayed(); f.shot("batch-search-updates")
         assertEquals(1, f.app.library.personal.snapshot().searchUpdates.getValue(search.id).entries.count { !it.read })
         clickText("搜索新增作品")
         ui.waitUntil(15000) { f.app.library.personal.snapshot().searchUpdates.getValue(search.id).entries.all { it.read } }
