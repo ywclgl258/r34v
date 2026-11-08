@@ -12,6 +12,34 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ModernUiTest : ComposeUiCase() {
+    @Test fun launchAndHomeShowTheCurrentSiteWhilePersonalContentStaysInMine() = ComposeFixture(cinematic = true).use { f ->
+        clear(f)
+        val video = f.video()
+        f.app.library.saveWatch(Watch(video.id, video.title, video.thumb, video.url, 180, 600, site = video.site))
+        f.app.library.personal.add(video)
+        val activity = f.launch(); waitHome()
+        ui.onNodeWithTag("home-carousel").assertExists()
+        ui.onNodeWithTag("personal-home").assertDoesNotExist()
+        ui.onNodeWithText("首页").assertIsSelected()
+        ui.onNodeWithContentDescription("返回").assertDoesNotExist()
+        org.junit.Assert.assertTrue(f.requests.any { it.first == "r34v" && it.second.kind == FeedKind.LATEST })
+        f.shot("navigation-site-home")
+        openPersonalHome()
+        ui.onNodeWithTag("personal-home").performScrollToNode(hasText("继续观看"))
+        ui.onNodeWithText("继续观看").assertIsDisplayed()
+        f.shot("navigation-personal")
+        ui.runOnIdle { activity.recreate() }; waitHome()
+        ui.onNodeWithTag("personal-home").assertExists()
+        back(f); waitHome(); ui.onNodeWithText("首页").assertIsSelected()
+        ui.onNodeWithTag("personal-home").assertDoesNotExist()
+        switchSite(SiteRegistry.EHENTAI.name); waitHome()
+        ui.onNodeWithTag("comic-stage").assertExists()
+        ui.onNodeWithText("首页").assertIsSelected()
+        f.launch(); waitHome()
+        ui.onNodeWithTag("comic-stage").assertExists()
+        org.junit.Assert.assertEquals("ehentai", f.app.library.siteId)
+    }
+
     private fun clear(f: ComposeFixture) {
         f.app.library.prefs.edit().putString(PersonalStore.KEY, f.app.library.gson.toJson(PersonalLibrary())).commit()
         f.app.library.prefs.edit().apply {
@@ -20,7 +48,7 @@ class ModernUiTest : ComposeUiCase() {
     }
 
     @Test fun emptyHomeAndLibraryKeepDestinationsReadable(): Unit = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
-        clear(f); f.launch(); waitHome(); waitText("发现下一部"); f.shot("modern-empty-home")
+        clear(f); f.launch(); openPersonalHome(); waitText("发现下一部"); f.shot("modern-empty-home")
         clickText("片库"); waitText("我的片库")
         val config = f.ins.targetContext.resources.configuration
         if (config.screenWidthDp < 840 || config.fontScale > 1.3f) {
@@ -38,7 +66,7 @@ class ModernUiTest : ComposeUiCase() {
         clear(f)
         val video = f.video(index = 1)
         f.app.library.personal.add(video)
-        f.launch(); waitHome(); clickText("开始观看"); waitText("简介")
+        f.launch(); openPersonalHome(); clickText("开始观看"); waitText("简介")
         ui.onNodeWithText("收藏").performScrollTo().performClick()
         waitText("已收藏")
         org.junit.Assert.assertTrue(f.app.library.isFavorite("video", video.id, video.site))
@@ -52,7 +80,7 @@ class ModernUiTest : ComposeUiCase() {
         val video = f.video()
         f.app.library.personal.add(video)
         f.app.library.saveWatch(Watch(video.id, video.title, video.thumb, video.url, 600, 600, site = video.site))
-        f.launch(); waitHome(); waitText("发现下一部")
+        f.launch(); openPersonalHome(); waitText("发现下一部")
         ui.onAllNodes(hasText("继续观看") and hasClickAction()).assertCountEquals(0)
         ui.onNodeWithText("我的稍后看").assertExists()
         f.shot("modern-finished-watch")
@@ -62,7 +90,7 @@ class ModernUiTest : ComposeUiCase() {
         clear(f)
         val photo = SiteRegistry.all.first { it.category == SiteCategory.PHOTO }.id
         listOf("r34v", "ehentai", photo).forEach { f.app.library.personal.add(f.video(it)) }
-        val activity = f.launch(); waitHome()
+        val activity = f.launch(); openPersonalHome()
         fun select(label: String, tag: String) {
             ui.onNodeWithTag("personal-home").performScrollToIndex(0)
             ui.onNode(hasText(label) and hasAnyAncestor(hasTestTag("personal-home"))).performScrollTo().performClick()
@@ -98,7 +126,7 @@ class ModernUiTest : ComposeUiCase() {
     @Test fun movingAWatchLaterItemKeepsItsNewPositionVisible(): Unit = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
         clear(f)
         (0..3).forEach { f.app.library.personal.add(f.video(index = it)) }
-        f.launch(); waitHome()
+        f.launch(); openPersonalHome()
         ui.onNodeWithTag("personal-home").performScrollToNode(hasText("查看片单"))
         clickText("查看片单"); waitText("按顺序观看 / 阅读")
         val first = f.video()

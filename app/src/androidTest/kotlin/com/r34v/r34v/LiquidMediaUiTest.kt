@@ -14,8 +14,7 @@ class LiquidMediaUiTest : ComposeUiCase() {
         f.app.library.prefs.edit().apply { SiteRegistry.all.forEach { remove("${it.id}:watch_history_v1"); remove("${it.id}:reading_history_v1") } }.commit()
         val activity = f.launch(); waitHome()
         val suffix = "${activity.resources.configuration.screenWidthDp}dp-${(activity.resources.configuration.fontScale * 100).toInt()}font"
-        ui.onNodeWithTag("personal-home").performScrollToNode(hasText("浏览当前来源的最新内容"))
-        clickText("浏览当前来源的最新内容")
+        ui.onNodeWithTag("personal-home").assertDoesNotExist()
         ui.waitUntil(15000) { ui.onAllNodesWithTag("home-carousel").fetchSemanticsNodes().isNotEmpty() || ui.onAllNodesWithTag("video-stage").fetchSemanticsNodes().isNotEmpty() }; waitCovers()
         f.shot("liquid-video-$suffix")
         switchSite(SiteRegistry.EHENTAI.name)
@@ -45,9 +44,10 @@ class LiquidMediaUiTest : ComposeUiCase() {
         val resume = f.video("r34v")
         f.app.library.saveWatch(Watch(resume.id, resume.title, resume.thumb, resume.url, 180, 600, site = resume.site))
         f.launch(); openSourceHome(); switchSite(SiteRegistry.R34V.name)
-        waitText("3 分钟处继续")
+        ui.onNodeWithTag("home-carousel").assertExists()
+        openPersonalHome()
         val continueAction = hasText("继续观看") and hasClickAction()
-        ui.onNodeWithContentDescription("内容列表").performScrollToNode(continueAction)
+        ui.onNodeWithTag("personal-home").performScrollToNode(continueAction)
         ui.onNode(continueAction).assertIsDisplayed()
         f.shot("liquid-video-resume-$suffix")
     }

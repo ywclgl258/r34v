@@ -13,7 +13,7 @@ class NextResponsiveUiTest : ComposeUiCase() {
         f.app.library.prefs.edit().putString(PersonalStore.KEY, f.app.library.gson.toJson(PersonalLibrary())).commit()
         val video = f.video(); f.app.library.personal.add(video); f.app.library.personal.add(f.video("ehentai"))
         f.app.library.saveWatch(Watch(video.id, video.title, video.thumb, video.url, 42, 600, site = video.site))
-        val activity = f.launch(); waitHome(); waitCovers()
+        val activity = f.launch(); openPersonalHome(); waitCovers()
         val width = activity.resources.configuration.screenWidthDp
         val scale = activity.resources.configuration.fontScale
         val tag = "${width}dp-${(scale * 100).toInt()}font"

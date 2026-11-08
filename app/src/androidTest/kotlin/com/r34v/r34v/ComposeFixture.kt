@@ -177,7 +177,11 @@ abstract class ComposeUiCase {
     fun waitText(text: String) { ui.waitUntil(15000) { runCatching { ui.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }.getOrDefault(false) } }
     fun waitCovers() { ui.waitUntil(15000) { ui.onAllNodesWithTag("cover-ready", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }; ui.waitForIdle() }
     fun waitHome() { ui.waitUntil(15000) { listOf("personal-home", "home-carousel", "video-stage", "comic-stage", "photo-stage").any { ui.onAllNodesWithTag(it).fetchSemanticsNodes().isNotEmpty() } }; ui.waitForIdle() }
-    fun openSourceHome() { waitHome(); ui.onNodeWithTag("personal-home").performScrollToNode(hasText("浏览当前来源的最新内容")); clickText("浏览当前来源的最新内容") }
+    fun openSourceHome() { clickText("首页"); waitHome() }
+    fun openPersonalHome() {
+        ui.onNode(hasText("我的") and hasAnyAncestor(hasTestTag("primary-navigation"))).performClick()
+        ui.waitUntil(15000) { ui.onAllNodesWithTag("personal-home").fetchSemanticsNodes().isNotEmpty() }; ui.waitForIdle()
+    }
     fun clickText(text: String) { waitText(text); ui.onAllNodesWithText(text).onLast().performClick() }
     fun back(fixture: ComposeFixture) {
         ui.waitForIdle()

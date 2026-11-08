@@ -71,7 +71,7 @@ class NextLocalUiTest : ComposeUiCase() {
         val monitor = f.ins.addMonitor(IntentFilter(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); addDataType("*/*") },
             Instrumentation.ActivityResult(Activity.RESULT_OK, Intent().setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)), true)
         try {
-            f.launch(); ui.waitUntil(15000) { ui.onAllNodesWithTag("personal-home").fetchSemanticsNodes().isNotEmpty() }
+            f.launch(); waitHome()
             clickText("片库"); ui.onNodeWithTag("library-hub").performScrollToNode(hasText("导入 CBZ / ZIP / 图片目录"))
             clickText("导入 CBZ / ZIP / 图片目录"); clickText("选择 CBZ / ZIP 文件")
             // A repeated import intentionally reopens the existing copy and saved page.
@@ -108,7 +108,7 @@ class NextLocalUiTest : ComposeUiCase() {
             }
             f.ins.addMonitor(monitor)
             try {
-                f.launch(); ui.waitUntil(15000) { ui.onAllNodesWithTag("personal-home").fetchSemanticsNodes().isNotEmpty() }
+                f.launch(); waitHome()
                 clickText("片库"); ui.onNodeWithText("导入 CBZ / ZIP / 图片目录").performScrollTo().performClick(); clickText("选择图片目录")
                 systemButton(f, "Use this folder")
                 systemButton(f, "Allow", readerMayAlreadyBeOpen = true)

@@ -54,14 +54,14 @@ import kotlinx.coroutines.launch
 @Composable fun CinemaNavigation(selectedTab: String, choose: (String) -> Unit) {
     val landscape = windowSizeDp().width > windowSizeDp().height
     val compact = LocalUiDensity.current.compact
-    val tabs = listOf(Triple("home", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore),
-        Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark))
+    val tabs = listOf(Triple("siteHome", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore),
+        Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark), Triple("home", "我的", R.drawable.ic_person))
     val selectedIndex by animateFloatAsState(tabs.indexOfFirst { it.first == selectedTab }.coerceAtLeast(0).toFloat(), tween(220), label = "navigationIndicator")
     val tabHeight = ((if (compact || landscape) 52 else 64) + ((LocalDensity.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp
     Box(Modifier.fillMaxWidth().background(CanvasColor).navigationBarsPadding().testTag("primary-navigation"), contentAlignment = Alignment.Center) {
         Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(1.dp).background(SurfaceColor))
         BoxWithConstraints(Modifier.widthIn(max = 620.dp).fillMaxWidth()) {
-            val tabWidth = maxWidth / 4
+            val tabWidth = maxWidth / tabs.size
             Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((tabWidth * selectedIndex + (tabWidth - 20.dp) / 2).roundToPx(), 0) }.width(20.dp).height(2.dp).background(BrandColor))
             Row(Modifier.fillMaxWidth().height(tabHeight).selectableGroup()) {
             tabs.forEach { (key, name, icon) ->

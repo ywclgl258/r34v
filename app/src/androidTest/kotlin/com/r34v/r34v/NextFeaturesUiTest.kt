@@ -13,7 +13,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NextFeaturesUiTest : ComposeUiCase() {
-    private fun home() { ui.waitUntil(15000) { ui.onAllNodesWithTag("personal-home").fetchSemanticsNodes().isNotEmpty() }; ui.waitForIdle() }
+    private fun home() = openPersonalHome()
     private fun seed(f: ComposeFixture) {
         f.app.library.prefs.edit().putString(PersonalStore.KEY, f.app.library.gson.toJson(PersonalLibrary())).commit()
         f.app.library.prefs.edit().apply { SiteRegistry.librarySources.forEach { remove("${it.id}:watch_history_v1"); remove("${it.id}:reading_history_v1") } }.commit()
@@ -31,7 +31,7 @@ class NextFeaturesUiTest : ComposeUiCase() {
         clickText("保存搜索方案"); ui.onNode(hasSetTextAction() and hasAnyAncestor(isDialog())).performTextReplacement("我的科幻搜索")
         closeKeyboard(f); clickText("确定")
         assertEquals("space", f.app.library.personal.snapshot().savedSearches.single().query)
-        clickText("首页"); home()
+        home()
         ui.onNodeWithTag("personal-home").performScrollToNode(hasText("我的科幻搜索"))
         ui.onNodeWithTag("personal-home").performTouchInput { swipeUp() }
         ui.onNodeWithText("我的科幻搜索").assertIsDisplayed(); f.shot("api24-personal-saved-search")

@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
     private val app get() = application as R34Application
     private val store get() = app.library
     private var siteId by mutableStateOf("")
-    private var screen by mutableStateOf("home")
+    private var screen by mutableStateOf("siteHome")
     private var request by mutableStateOf(FeedRequest())
     private var libraryTab by mutableStateOf("片库")
     private var favoriteTab by mutableStateOf("视频")
@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
     private var searchCondition by mutableStateOf(SearchCondition())
     private var importingUri by mutableStateOf<Uri?>(null)
     private var importingDirectory by mutableStateOf(false)
-    private var navigationTab by mutableStateOf("home")
+    private var navigationTab by mutableStateOf("siteHome")
     private var revision by mutableIntStateOf(0)
     private var resumed by mutableStateOf(false)
     private var tutorial by mutableStateOf(false)
@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity() {
     private val archivePicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> uri?.let { importingDirectory = false; importingUri = it } }
     private val directoryPicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { importingDirectory = true; importingUri = it } }
     private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
-        if (it.resultCode == RESULT_OK) navigate("home", false)
+        if (it.resultCode == RESULT_OK) navigate("siteHome", false)
     }
     private fun loginOfficial() = officialLogin.launch(Intent(this, SiteAuthActivity::class.java).putExtra("site", siteId))
     private val storageAccess = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { storageOptions() }
@@ -90,8 +90,8 @@ class MainActivity : ComponentActivity() {
         siteId = store.siteId
         searchSites = store.string("cross_search_sites").split(',').filter { SiteRegistry.byId(it) != null }.ifEmpty { searchableSiteIds(app.network) }
         if (savedInstanceState != null) {
-            screen = savedInstanceState.getString("screen") ?: "home"
-            navigationTab = savedInstanceState.getString("navigationTab") ?: "home"
+            screen = savedInstanceState.getString("screen") ?: "siteHome"
+            navigationTab = savedInstanceState.getString("navigationTab") ?: "siteHome"
             request = runCatching { store.gson.fromJson(savedInstanceState.getString("request"), FeedRequest::class.java) }.getOrNull() ?: FeedRequest()
             searchQuery = savedInstanceState.getString("searchQuery").orEmpty(); searchScope = savedInstanceState.getInt("searchScope")
             multipleSources = savedInstanceState.getBoolean("multipleSources")
@@ -144,12 +144,11 @@ class MainActivity : ComponentActivity() {
         tutorial = false; dialogs.dismiss()
         if (push && screen != target) backStack.addLast(screen to request)
         screen = target
-        if (target in listOf("home", "explore", "search", "library")) navigationTab = target
-        if (target == "siteHome") navigationTab = "explore"
+        if (target in listOf("siteHome", "home", "explore", "search", "library")) navigationTab = target
     }
     private fun back() {
         if (backStack.isNotEmpty()) { val previous = backStack.removeLast(); request = previous.second; navigate(previous.first, false) }
-        else if (screen != "home") navigate("home", false) else finish()
+        else if (screen != "siteHome") navigate("siteHome", false) else finish()
     }
     private fun switchSite(site: SiteContext) {
         if (site.id == siteId) return
@@ -246,18 +245,18 @@ class MainActivity : ComponentActivity() {
     }
     private fun pinCurrentChannel() {
         if (request.kind !in listOf(FeedKind.SEARCH, FeedKind.TAG, FeedKind.CATEGORY, FeedKind.MODEL, FeedKind.CHARACTER)) return
-        dialogs.edit("固定到发现", AdapterRegistry.adapter(SiteRegistry.byIdOrDefault(siteId), app.network).feedTitle(request).ifBlank { request.target },
+        dialogs.edit("固定到我的频道", AdapterRegistry.adapter(SiteRegistry.byIdOrDefault(siteId), app.network).feedTitle(request).ifBlank { request.target },
             validate = { if (it.isBlank() || it.length > 80) "名称需要 1–80 个字" else null }) { name ->
-            store.personal.pinFeed(siteId, request, name); revision++; showNotice("已固定到首页的我的频道")
+            store.personal.pinFeed(siteId, request, name); revision++; showNotice("已固定到“我的”中的频道")
         }
     }
     private fun manageChannels() {
         dialogs.content = {
             val personalRevision by store.personal.changes.collectAsState()
             val channels = remember(personalRevision) { store.personal.snapshot().channels.sortedBy { it.order } }
-            AlertDialog(dialogs::dismiss, title = { Text("管理发现频道") }, text = {
+            AlertDialog(dialogs::dismiss, title = { Text("管理我的频道") }, text = {
                 LazyColumn(Modifier.heightIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (channels.isEmpty()) item { Copy("在保存搜索、分类或作者页面选择“固定到发现”。") }
+                    if (channels.isEmpty()) item { Copy("在保存搜索、分类或作者页面选择“固定到我的频道”。") }
                     items(channels, key = { it.id }) { channel ->
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(channel.name, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
@@ -326,7 +325,7 @@ class MainActivity : ComponentActivity() {
         }
         BackHandler { when { tutorial -> tutorial = false; drawer.isOpen -> scope.launch { drawer.close() }; else -> back() } }
         LaunchedEffect(screen, resumed, drawer.isOpen) {
-            if (resumed && screen == "home" && !drawer.isOpen && store.needsSiteSwitchTutorial) {
+            if (resumed && screen == "siteHome" && !drawer.isOpen && store.needsSiteSwitchTutorial) {
                 withFrameNanos { }; if (store.consumeSiteSwitchTutorial()) tutorial = true
             }
         }
@@ -364,8 +363,9 @@ class MainActivity : ComponentActivity() {
                     Brush.verticalGradient(listOf(Color.Black.copy(alpha = .8f), Color.Black.copy(alpha = .5f), Color.Transparent))
                     else Brush.verticalGradient(listOf(CanvasColor, CanvasColor))).onSizeChanged { sourceTopInset = with(density) { it.height.toDp() } }.statusBarsPadding()) {
                     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (screen in listOf("settings", "feed", "index", "subscriptions", "multiSearch", "backup", "siteHome", "updates", "searchUpdates")) IconAction(R.drawable.ic_back, "返回") { back() }
-                        if (screen in listOf("home", "siteHome")) { BrandWordmark(); Spacer(Modifier.width(6.dp)) }
+                        if (screen in listOf("settings", "feed", "index", "subscriptions", "multiSearch", "backup", "updates", "searchUpdates")) IconAction(R.drawable.ic_back, "返回") { back() }
+                        if (screen == "siteHome") { BrandWordmark(); Spacer(Modifier.width(6.dp)) }
+                        else if (screen == "home") Text("我的", Modifier.weight(1f), fontSize = 24.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                         else if (screen == "library" && libraryTab == "片库") Text("我的片库", Modifier.weight(1f), fontSize = 24.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                         else Text(when (screen) { "search" -> "搜索"; "multiSearch" -> "跨站搜索"; "backup" -> "备份与恢复"; "updates", "searchUpdates" -> "更新"; "explore" -> "发现"; "library" -> "片库"; "settings" -> "设置"; "subscriptions" -> "订阅"; "feed" -> adapter.feedTitle(request); else -> "浏览索引" }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = if (screen in listOf("search", "explore")) 24.sp else 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                         if (screen != "library" || libraryTab != "片库") Box {
@@ -380,7 +380,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        if (screen in listOf("home", "siteHome")) { Spacer(Modifier.weight(1f)); IconAction(R.drawable.ic_search, "搜索内容") { navigate("search") } }
+                        if (screen == "siteHome") { Spacer(Modifier.weight(1f)); IconAction(R.drawable.ic_search, "搜索内容") { navigate("search") } }
                         if (screen == "feed") IconAction(R.drawable.ic_add, "固定当前频道", click = ::pinCurrentChannel)
                         if (screen == "library") IconAction(R.drawable.ic_bookmark, "订阅") { navigate("subscriptions") }
                         if (screen != "settings") ProfileAction { navigate("settings") }
@@ -422,7 +422,7 @@ class MainActivity : ComponentActivity() {
                                 val feedState = remember(site.id, screen, effective, blocked) { feeds.page(site.id, screen == "siteHome", effective, blocked) }
                                 key(feedState) { FeedScreen(app, site, effective, screen == "siteHome", feedState, dialogs, { play(it) }, ::favorite, ::scroll,
                                 permissionDenied = { revision++ }, saved = store.favorites(site.id).filter { it.kind == "video" }.map { "${it.site}:${it.target}" }.toSet(),
-                                continuing = store.history(site.id).filter { it.resumable && store.allowed(it.video()) }.take(12), browse = ::openFeed,
+                                browse = ::openFeed,
                                 subscribe = { toggleSubscription(it) },
                                 subscribed = request.kind == FeedKind.TAG && store.isSubscribed(request.target, site.id),
                                 sort = { request = it }) }
@@ -506,10 +506,10 @@ class MainActivity : ComponentActivity() {
                             Copy(value.query.ifBlank { "${value.sources.size} 个来源 · 已保存筛选" })
                         }
                     }
-                    IconAction(R.drawable.ic_more, "管理搜索 ${value.name}") { dialogs.choose(value.name, listOf("重命名", "固定到发现", "删除搜索方案")) { action ->
+                    IconAction(R.drawable.ic_more, "管理搜索 ${value.name}") { dialogs.choose(value.name, listOf("重命名", "固定到我的频道", "删除搜索方案")) { action ->
                         when (action) {
                             0 -> dialogs.edit("重命名搜索方案", value.name, validate = { if (it.isBlank() || it.length > 80) "请输入 1–80 个字" else null }) { store.personal.saveSearch(value.copy(name = it)) }
-                            1 -> { store.personal.pinSearch(value); showNotice("已固定到首页的我的频道") }
+                            1 -> { store.personal.pinSearch(value); showNotice("已固定到“我的”中的频道") }
                             else -> dialogs.confirm("删除「${value.name}」？") { store.personal.removeSearch(value.id) }
                         }
                     } }

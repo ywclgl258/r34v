@@ -47,10 +47,10 @@ class NextStageFeaturesUiTest : ComposeUiCase() {
         android.os.SystemClock.sleep(5000)
         ui.onNodeWithText("最近搜索").performScrollTo()
         ui.onNodeWithContentDescription("管理搜索 周末图集").performClick(); f.shot("api24-search-manage")
-        ui.onNodeWithText("固定到发现").performScrollTo().performClick()
-        clickText("首页"); waitHome()
+        ui.onNodeWithText("固定到我的频道").performScrollTo().performClick()
+        openPersonalHome()
         ui.onNodeWithTag("personal-home").performScrollToNode(hasText("我的频道"))
-        ui.waitUntil(7000) { ui.onAllNodesWithText("已固定到首页的我的频道").fetchSemanticsNodes().isEmpty() }
+        ui.waitUntil(7000) { ui.onAllNodesWithText("已固定到“我的”中的频道").fetchSemanticsNodes().isEmpty() }
         f.shot("next-stage-discovery-channels")
         clickText("周末图集")
         ui.waitUntil(15000) { f.requests.any { it.first == "nhentai" && it.second.kind == FeedKind.SEARCH && it.second.target == "city" && it.second.includeTags == listOf("tag:sample") && it.second.filter.minPages == 5 } }

@@ -18,7 +18,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NextRegressionUiTest : ComposeUiCase() {
-    private fun home() { ui.waitUntil(15000) { ui.onAllNodesWithTag("personal-home").fetchSemanticsNodes().isNotEmpty() } }
+    private fun home() = openPersonalHome()
     @Test fun savedSearchSourceSurvivesRecreationEvenWhenGeneralSearchSettingsDiffer() = ComposeFixture().use { f ->
         f.app.library.set("cross_search_sites", "r34v")
         val saved = SavedSearch(name = "仅漫画来源", query = "space", sources = listOf("nhentai"), category = "COMIC", languages = mapOf("nhentai" to "CHINESE"))
