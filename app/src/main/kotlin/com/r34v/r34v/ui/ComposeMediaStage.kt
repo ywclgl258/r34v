@@ -25,8 +25,8 @@ fun mediaCountOrDuration(video: Video): String = video.duration.takeUnless {
 /** One primary object, with a shape that belongs to its medium. No material over content. */
 @Composable fun MediaResumeHero(video: Video, status: String, action: String, play: (Video) -> Unit) {
     val site = SiteRegistry.byIdOrDefault(video.site)
-    val compact = LocalConfiguration.current.screenWidthDp < 360 || LocalConfiguration.current.fontScale > 1.3f
-    val wide = LocalConfiguration.current.screenWidthDp >= 700
+    val compact = windowSizeDp().width < 360 || LocalConfiguration.current.fontScale > 1.3f
+    val wide = windowSizeDp().width >= 700
     val actionIcon = when (site.category) {
         SiteCategory.VIDEO -> R.drawable.ic_play
         SiteCategory.COMIC -> R.drawable.ic_bookmark
@@ -58,7 +58,7 @@ fun mediaCountOrDuration(video: Video): String = video.duration.takeUnless {
     } else if (wide) {
         Row(Modifier.fillMaxWidth().contentPanel(12).testTag(if (site.category == SiteCategory.PHOTO) "photo-stage" else "video-stage"),
             verticalAlignment = Alignment.CenterVertically) {
-            SiteImage(video.thumb, site, Modifier.weight(1.1f).height((LocalConfiguration.current.screenHeightDp * .32f).dp.coerceIn(140.dp, 240.dp)), fit = site.category == SiteCategory.PHOTO)
+            SiteImage(video.thumb, site, Modifier.weight(1.1f).height((windowSizeDp().height * .32f).dp.coerceIn(140.dp, 240.dp)), fit = site.category == SiteCategory.PHOTO)
             Column(Modifier.weight(1f).padding(LocalUiDensity.current.sectionGap), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Copy(status); Title(video.title, large = true, maxLines = 3)
                 Action(action, primary = true, icon = actionIcon, modifier = Modifier.fillMaxWidth()) { play(video) }

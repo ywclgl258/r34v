@@ -1,6 +1,7 @@
 package com.r34v.r34v.ui
 
 import android.graphics.Bitmap
+import androidx.core.graphics.scale
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
@@ -31,7 +32,7 @@ import kotlinx.coroutines.sync.withPermit
                         val full = load(index + 1, false).bitmap
                         withContext(Dispatchers.Default) {
                             val scale = minOf(1f, 240f / maxOf(full.width, full.height))
-                            Bitmap.createScaledBitmap(full, (full.width * scale).toInt().coerceAtLeast(1), (full.height * scale).toInt().coerceAtLeast(1), true).also { if (it !== full) full.recycle() }
+                            full.scale((full.width * scale).toInt().coerceAtLeast(1), (full.height * scale).toInt().coerceAtLeast(1), true).also { if (it !== full) full.recycle() }
                         }
                     }
                 } catch (e: Exception) { if (e is CancellationException) throw e; failed = true } }

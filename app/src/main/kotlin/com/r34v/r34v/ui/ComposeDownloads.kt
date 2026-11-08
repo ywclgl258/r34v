@@ -205,7 +205,7 @@ private data class DownloadSnapshot(
             scanNote?.let { Copy(it) }
         }
         message?.let { text -> item("error") { EmptyState("下载任务读取失败", text) { refresh++ } } }
-        if (!ready) item("loading") { Loading("正在读取下载任务") }
+        if (!ready) item("loading") { Loading(title = "正在读取下载任务") }
         else if (count == 0 && message == null) item("empty") {
             EmptyState("还没有下载内容", "在视频详情选择清晰度下载，或在漫画/写真详情下载整本。原有视频下载会自动显示在这里。", "去发现", discover)
         }
@@ -262,7 +262,7 @@ private data class DownloadSnapshot(
                     }
                 }) {
                 if (completed && book.partial) {
-                    Action("查看已存页", true) { comic(book.entry) }
+                    Action("查看已存页", primary = true) { comic(book.entry) }
                     TextAction({ act(book.id) { app.galleryDownloads.add(book.entry) } }) { Text("继续保存") }
                 } else Action(if (completed) "离线打开" else if (downloading) "暂停" else if (book.state == GalleryDownloadState.FAILED) "重试" else "继续",
                     primary = completed, enabled = book.id !in busy && book.state != GalleryDownloadState.REMOVING) {
@@ -277,7 +277,7 @@ private data class DownloadSnapshot(
             DownloadTile("gallery:${record.site}:${record.id}", record.video, "${SiteRegistry.byIdOrDefault(record.site).category.itemNoun} · ${if (record.sourceRoot == app.filesDir.absolutePath) "应用内" else "公共目录"}",
                 (if (available) "可离线打开" else record.detail.ifBlank { "图页不完整，可重新下载" }) + " · ${downloadSize(record.bytes)}") {
                 if (available) {
-                    Action("离线打开", true) { offline(record) }
+                    Action("离线打开", primary = true) { offline(record) }
                     TextAction({ dialogs.confirm("删除这份下载？", "删除", "将删除已下载图页。") { act("disk:${record.site}:${record.id}") {
                         val book = app.galleryDownloads.task(record.video)
                         if (book != null) app.galleryDownloads.remove(book.id) else withContext(Dispatchers.IO) {
@@ -318,7 +318,7 @@ private data class DownloadSnapshot(
             DownloadTile("disk-video:${record.site}:${record.id}:${record.quality}", record.video,
                 "视频 · ${record.quality} · ${if (record.sourceRoot == app.filesDir.absolutePath) "应用内" else "公共目录"}",
                 (if (available) "可离线播放" else "缓存已缺失，需重新下载") + " · ${downloadSize(record.bytes)}") {
-                if (available) Action("离线播放", true) { offline(record) }
+                if (available) Action("离线播放", primary = true) { offline(record) }
                 else Action("删除索引") { act("disk:${record.site}:${record.id}") { withContext(Dispatchers.IO) { app.index.removeVideo(record.site, record.id, record.quality) } } }
                 if (available) TextAction({ dialogs.confirm("删除这份视频下载？", "删除", "将删除所有下载位置中的这份视频，观看记录和收藏会保留。") {
                     act("disk:${record.site}:${record.id}") { app.playback.removeRestored(record) }
@@ -328,7 +328,7 @@ private data class DownloadSnapshot(
         items(legacy, key = { "legacy:${it.site}:${it.id}" }) { local ->
             val entry = Video(local.id, local.title, app.library.watch(local.id, local.site)?.path.orEmpty(), local.thumb, site = local.site)
             DownloadTile("legacy:${local.site}:${local.id}", entry, "视频 · ${local.quality}", "已下载 · 旧版本离线文件") {
-                Action("离线播放", true) { video(entry, null, local.path) }
+                Action("离线播放", primary = true) { video(entry, null, local.path) }
                 TextAction({ dialogs.confirm("删除这份视频下载？", "删除") { act("legacy:${local.site}:${local.id}") { withContext(Dispatchers.IO) { app.library.removeLocal(local.id, local.site) } } } }) { Text("删除") }
             }
         }

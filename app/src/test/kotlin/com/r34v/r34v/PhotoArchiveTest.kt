@@ -273,7 +273,7 @@ class PhotoArchiveTest {
         assertEquals(listOf("4khd", "everia", "4kup", "galleryepic", "cosplaytele"), photos.map { it.id })
         assertTrue(photos.all { it.mediaKind == MediaKind.GALLERY })
         assertTrue(photos.all { it.category.itemNoun == "写真集" })
-        assertEquals(12, SiteRegistry.all.size)
+        assertEquals(18, SiteRegistry.all.size)
         assertEquals(SiteRegistry.all.size, SiteCategory.entries.sumOf { SiteRegistry.ofCategory(it).size })
     }
 

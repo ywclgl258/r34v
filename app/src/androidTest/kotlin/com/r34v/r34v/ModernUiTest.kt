@@ -58,6 +58,65 @@ class ModernUiTest : ComposeUiCase() {
         f.shot("modern-finished-watch")
     }
 
+    @Test fun homeMediaTabsFilterTheFeatureAndSurviveRecreation(): Unit = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
+        clear(f)
+        val photo = SiteRegistry.all.first { it.category == SiteCategory.PHOTO }.id
+        listOf("r34v", "ehentai", photo).forEach { f.app.library.personal.add(f.video(it)) }
+        val activity = f.launch(); waitHome()
+        fun select(label: String, tag: String) {
+            ui.onNodeWithTag("personal-home").performScrollToIndex(0)
+            ui.onNode(hasText(label) and hasAnyAncestor(hasTestTag("personal-home"))).performScrollTo().performClick()
+            ui.waitUntil(15000) { ui.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithTag(tag).assertExists()
+        }
+        select("视频", "video-stage"); waitCovers(); f.shot("restructure-home-video")
+        select("漫画", "comic-stage"); f.shot("restructure-home-comic")
+        select("写真", "photo-stage"); f.shot("restructure-home-photo")
+        ui.runOnIdle { activity.recreate() }; waitHome()
+        ui.waitUntil(15000) { ui.onAllNodesWithTag("photo-stage").fetchSemanticsNodes().isNotEmpty() }
+        ui.onAllNodesWithTag("video-stage").assertCountEquals(0)
+        ui.onAllNodesWithTag("comic-stage").assertCountEquals(0)
+    }
+
+    @Test fun librarySectionsRestoreAndKeepImportAndSavedSearchReachable(): Unit = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
+        clear(f); f.app.library.personal.add(f.video())
+        f.app.library.personal.saveSmart(SmartShelf(name = "未完成清单"))
+        f.app.library.personal.saveSearch(SavedSearch(name = "周末片单", query = "space", sources = listOf("r34v")))
+        val activity = f.launch(); waitHome(); clickText("片库"); waitText("我的片库")
+        f.shot("restructure-library")
+        ui.onNodeWithText("智能片单").performScrollTo().performClick(); waitText("未完成清单")
+        f.shot("restructure-library-smart")
+        ui.runOnIdle { activity.recreate() }; waitText("未完成清单")
+        ui.onNodeWithText("本地内容").performScrollTo().performClick(); waitText("把喜欢的内容带在身边")
+        ui.onNodeWithTag("library-hub").performScrollToNode(hasText("导入 CBZ / ZIP / 图片目录"))
+        ui.onNodeWithText("导入 CBZ / ZIP / 图片目录").assertIsDisplayed()
+        clickText("搜索"); waitText("周末片单"); f.shot("restructure-search")
+        ui.onNodeWithText("周末片单").performScrollTo().performClick(); waitText("搜索：space")
+        ui.waitUntil(15000) { f.requests.any { it.second.kind == FeedKind.SEARCH && it.second.target == "space" } }
+    }
+
+    @Test fun movingAWatchLaterItemKeepsItsNewPositionVisible(): Unit = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
+        clear(f)
+        (0..3).forEach { f.app.library.personal.add(f.video(index = it)) }
+        f.launch(); waitHome()
+        ui.onNodeWithTag("personal-home").performScrollToNode(hasText("查看片单"))
+        clickText("查看片单"); waitText("按顺序观看 / 阅读")
+        val first = f.video()
+        val moved = f.video(index = 1)
+        ui.onNodeWithTag("catalog-list").performScrollToNode(hasText(moved.title))
+        ui.onNodeWithContentDescription("管理 ${moved.title}").performClick()
+        clickText("上移")
+        ui.waitUntil(15000) { f.app.library.personal.shelves().first().entries.first().video.entryKey == moved.entryKey }
+        ui.waitForIdle()
+        ui.onNodeWithText(moved.title).assertIsDisplayed()
+        org.junit.Assert.assertTrue(
+            ui.onNodeWithText(moved.title).fetchSemanticsNode().boundsInRoot.top <
+                ui.onNodeWithText(first.title).fetchSemanticsNode().boundsInRoot.top)
+        f.shot("restructure-watchlist-reordered")
+        ui.onNodeWithContentDescription("返回我的片库").performClick()
+        waitText("我的片单")
+    }
+
     /** Opt-in live fixture for independent manual UX review; always restores data when closed. */
     @Test fun liveReviewFixture(): Unit {
         assumeTrue(InstrumentationRegistry.getArguments().getString("modernUiReview") == "1")

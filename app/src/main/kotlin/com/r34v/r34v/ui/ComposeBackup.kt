@@ -1,5 +1,7 @@
 package com.r34v.r34v.ui
 
+import androidx.core.net.toUri
+
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -76,7 +78,7 @@ private fun InputStream.readBackup(): ByteArray {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
             if (mode == 0) {
                 Copy("密码至少 8 个字符。恢复备份时需要此密码。")
-                Action("选择位置并导出", true, enabled = !busy && password.length >= 8 && confirmation == password) {
+                Action("选择位置并导出", primary = true, enabled = !busy && password.length >= 8 && confirmation == password) {
                     busy = true; status = null
                     val secret = password.toCharArray()
                     scope.launch {
@@ -94,9 +96,9 @@ private fun InputStream.readBackup(): ByteArray {
                 }
             } else {
                 Action(if (sourceUri == null) "选择备份文件" else "重新选择文件", enabled = !busy) { status = null; import.launch(arrayOf("*/*")) }
-                if (sourceUri != null) Action("解密并预览", true, enabled = !busy && password.isNotEmpty()) {
+                if (sourceUri != null) Action("解密并预览", primary = true, enabled = !busy && password.isNotEmpty()) {
                     busy = true; status = null
-                    val secret = password.toCharArray(); val uri = android.net.Uri.parse(sourceUri)
+                    val secret = password.toCharArray(); val uri = requireNotNull(sourceUri).toUri()
                     scope.launch {
                         try {
                             preview = withContext(Dispatchers.IO) {
@@ -114,7 +116,7 @@ private fun InputStream.readBackup(): ByteArray {
             Title("恢复预览")
             Text(backup.summary())
             Copy("记录将合并去重，并保留时间较新的观看与阅读进度。设置使用备份中的值。")
-            Action("合并恢复", true, enabled = !busy) {
+            Action("合并恢复", primary = true, enabled = !busy) {
                 busy = true
                 scope.launch {
                     try { withContext(Dispatchers.IO) { app.library.restoreBackup(backup) }; preview = null; status = "已合并恢复"; restored() }
@@ -124,7 +126,7 @@ private fun InputStream.readBackup(): ByteArray {
             }
             TextAction({ preview = null }, enabled = !busy) { Text("取消恢复") }
         }
-        if (busy) Loading(if (preview == null) "正在处理备份" else "正在合并数据")
+        if (busy) Loading(title = if (preview == null) "正在处理备份" else "正在合并数据")
         status?.let { Text(it) }
     }
 }

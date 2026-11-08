@@ -1,5 +1,7 @@
 package com.r34v.r34v
 
+import androidx.core.net.toUri
+
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
@@ -52,7 +54,7 @@ class SiteAuthActivity : ComponentActivity() {
                 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
                 FlowRow { TextAction({ completeLogin() }) { Text("验证登录") }
                     TextAction({ openedTarget = false; verificationMessage = false; cookies?.removeAllCookies { browser?.loadUrl(EhLogin.officialUrl) } }) { Text("重新登录") }
-                    TextAction({ runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(EhLogin.officialUrl))) }.onFailure { toast("没有可用浏览器，请更新系统 WebView 或导入 Cookie") } }) { Text("用浏览器打开") }
+                    TextAction({ runCatching { startActivity(Intent(Intent.ACTION_VIEW, EhLogin.officialUrl.toUri())) }.onFailure { toast("没有可用浏览器，请更新系统 WebView 或导入 Cookie") } }) { Text("用浏览器打开") }
                 }
                 AndroidView(factory = { context -> FrameLayout(context).apply { createBrowser()?.let { addView(it, FrameLayout.LayoutParams(-1, -1)) } } }, modifier = Modifier.fillMaxWidth().weight(1f), onRelease = { releaseBrowser() })
             }
@@ -74,7 +76,7 @@ class SiteAuthActivity : ComponentActivity() {
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = request.isForMainFrame && !EhLogin.allowed(request.url.toString())
                     override fun onPageFinished(view: WebView, url: String) {
                         if (!EhLogin.allowed(url)) return
-                        if (EhLogin.hasIdentity(collected()) && (!openedTarget || Uri.parse(url).host == site.host)) completeLogin()
+                        if (EhLogin.hasIdentity(collected()) && (!openedTarget || url.toUri().host == site.host)) completeLogin()
                         // A late forum callback must not replace a permission error or verification status.
                         else if (!openedTarget && !verificationMessage && !status.contains("HTTP")) status = "请在官方页面登录，然后点击“验证登录”"
                     }

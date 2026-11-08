@@ -1,5 +1,6 @@
 package com.r34v.r34v.data
 
+import androidx.core.content.edit
 import com.google.gson.Gson
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.IOException
@@ -83,7 +84,12 @@ fun validateBackup(value: LibraryBackup) {
     }
     val personal = value.personal
     require(personal.shelves.size in 1..1000 && personal.shelves.count { it.id == PersonalLibrary.WATCH_LATER } == 1 && personal.shelves.map { it.id }.distinct().size == personal.shelves.size)
-    personal.shelves.forEach { shelf -> require(shelf.id.isNotBlank() && shelf.name.length in 1..80 && shelf.entries.size <= 50000); shelf.entries.forEach { video(it.video) } }
+    personal.shelves.forEach { shelf ->
+        require(shelf.id.isNotBlank() && shelf.name.length in 1..80 && shelf.entries.size <= 50000)
+        require(shelf.note.length <= 1000 && shelf.modifiedAt >= 0 &&
+            (shelf.coverKey.isEmpty() || shelf.entries.any { it.video.entryKey == shelf.coverKey }))
+        shelf.entries.forEach { video(it.video) }
+    }
     require(personal.bookmarks.size <= 50000)
     personal.bookmarks.forEach { video(it.video); require(it.page in 1..100000 && it.offset in -10000000..10000000) }
     personal.readerModes.forEach { (site, mode) -> source(site); require(ReaderMode.entries.any { it.name == mode }) }
@@ -156,7 +162,8 @@ fun mergeBackups(local: LibraryBackup, incoming: LibraryBackup): LibraryBackup {
         val all = first?.entries.orEmpty() + second?.entries.orEmpty()
         val newest = all.sortedByDescending { it.at }.distinctBy { it.video.entryKey }.associateBy { it.video.entryKey }
         val earliest = all.groupBy { it.video.entryKey }.mapValues { (_, entries) -> entries.minOf { it.addedAt.takeIf { time -> time > 0 } ?: it.at } }
-        (first ?: second!!).copy(entries = all.distinctBy { it.video.entryKey }.map { entry ->
+        val metadata = if (first == null || (second != null && second.modifiedAt > first.modifiedAt)) second!! else first
+        metadata.copy(entries = all.distinctBy { it.video.entryKey }.map { entry ->
             newest.getValue(entry.video.entryKey).copy(addedAt = earliest.getValue(entry.video.entryKey))
         })
     }
@@ -223,9 +230,9 @@ fun LibraryStore.restoreBackup(incoming: LibraryBackup) = synchronized(this) {
         if (key in backupBooleans) editor.putBoolean(raw, setting.toBooleanStrict()) else editor.putString(raw, setting)
     }
     if (!editor.commit()) {
-        val rollback = prefs.edit()
-        keys.forEach { key -> when (val value = previous[key]) { is String -> rollback.putString(key, value); is Boolean -> rollback.putBoolean(key, value); else -> rollback.remove(key) } }
-        rollback.commit()
+        prefs.edit(commit = true) {
+            keys.forEach { key -> when (val value = previous[key]) { is String -> putString(key, value); is Boolean -> putBoolean(key, value); else -> remove(key) } }
+        }
         throw IOException("恢复保存失败，请保留备份文件并重试")
     }
 }

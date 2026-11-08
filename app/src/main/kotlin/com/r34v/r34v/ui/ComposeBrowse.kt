@@ -108,7 +108,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     }
     val nearEnd by remember { derivedStateOf { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= grid.layoutInfo.totalItemsCount - 7 } == true } }
     LaunchedEffect(nearEnd, next, busy) { if (nearEnd && loaded && next <= total && !busy && error == null) load(true) }
-    val width = LocalConfiguration.current.screenWidthDp
+    val width = windowSizeDp().width
     val columns = if (LocalConfiguration.current.fontScale > 1.5f && width < 400) 1 else if (width >= 1280) 6 else if (width >= 1024) 5 else if (width >= 840) 4 else if (width >= 600) 3 else 2
     val density = LocalUiDensity.current
     LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = grid,
@@ -147,7 +147,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         items(videos, key = { "${it.site}:${it.id}" }, contentType = { "media" }) { video ->
             MediaCard(video, menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) }
         }
-        if (busy) item(span = StaggeredGridItemSpan.FullLine, key = "loading") { Loading(if (loaded) "正在加载下一页" else "正在加载内容") }
+        if (busy) item(span = StaggeredGridItemSpan.FullLine, key = "loading") { Loading(title = if (loaded) "正在加载下一页" else "正在加载内容") }
         error?.let { message -> item(span = StaggeredGridItemSpan.FullLine, key = "error") { EmptyState(if (loaded) "下一页加载失败" else "内容加载失败", message) { if (state.restartRequired) refresh() else load() } } }
         if (!busy && next <= total && state.emptyPages >= 3) item(span = StaggeredGridItemSpan.FullLine, key = "continue-empty") {
             Action("继续加载") { load() }
@@ -228,7 +228,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 }
 data class LibraryCard(val video: Video, val menuLabel: String, val remove: () -> Unit, val read: Boolean = false, val progress: Float? = null)
 @Composable fun MediaLibrary(cards: List<LibraryCard>, clear: (() -> Unit)?, empty: @Composable () -> Unit, play: (LibraryCard) -> Unit) {
-    val width = LocalConfiguration.current.screenWidthDp
+    val width = windowSizeDp().width
     val columns = if (width >= 1280) 6 else if (width >= 1024) 5 else if (width >= 840) 4 else if (width >= 600) 3 else 2
     LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap), contentPadding = PaddingValues(top = 12.dp), verticalItemSpacing = 8.dp) {
         if (clear != null) item(span = StaggeredGridItemSpan.FullLine) { TextAction(clear) { Text("清空记录") } }

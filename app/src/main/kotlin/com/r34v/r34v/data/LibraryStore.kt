@@ -1,5 +1,7 @@
 package com.r34v.r34v.data
 
+import androidx.core.content.edit
+
 import android.content.Context
 import android.content.SharedPreferences
 import com.google.gson.Gson
@@ -32,7 +34,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         val legacy = context.getSharedPreferences(legacyName, Context.MODE_PRIVATE)
         // Decide before migration writes its own flags: upgrades and legacy users need no first-use tip.
         if (!prefs.contains(SITE_SWITCH_TUTORIAL_SEEN)) {
-            prefs.edit().putBoolean(SITE_SWITCH_TUTORIAL_SEEN, prefs.all.isNotEmpty() || legacy.all.isNotEmpty()).apply()
+            prefs.edit { putBoolean(SITE_SWITCH_TUTORIAL_SEEN, prefs.all.isNotEmpty() || legacy.all.isNotEmpty()) }
         }
         migrate(legacy)
         siteId = SiteRegistry.byIdOrDefault(prefs.getString("active_site", null) ?: SiteRegistry.R34V.id).id
@@ -49,7 +51,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     private fun retireNetworkOverrides() {
         val retired = listOf("direct_ip", "doh", "cdn_direct", "player_proxy", "custom_site_ips").map { "settings_v1_$it" } +
             listOf("site_ip_pool_v1", "site_ip_pool_at_v1") + SiteRegistry.all.flatMap { listOf("${it.id}:ip_pool", "${it.id}:ip_pool_at") }
-        if (retired.any(prefs::contains)) prefs.edit().apply { retired.forEach(::remove) }.apply()
+        if (retired.any(prefs::contains)) prefs.edit { retired.forEach(::remove) }
     }
 
     private fun k(name: String) = "$siteId:$name"
@@ -131,7 +133,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         val site = SiteRegistry.byIdOrDefault(id)
         siteId = site.id
         SiteRegistry.current = site
-        prefs.edit().putString("active_site", site.id).apply()
+        prefs.edit { putString("active_site", site.id) }
     }
 
     fun galleryLanguage(siteId: String = this.siteId): GalleryLanguage = GalleryLanguage.entries.firstOrNull {
@@ -139,7 +141,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     } ?: GalleryLanguage.ALL
 
     fun setGalleryLanguage(value: GalleryLanguage, siteId: String = this.siteId) {
-        prefs.edit().putString("$siteId:gallery_language", value.name).apply()
+        prefs.edit { putString("$siteId:gallery_language", value.name) }
     }
 
     @Synchronized private fun <T> list(key: String, type: Class<T>): List<T> = runCatching {
@@ -153,14 +155,14 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
             gson.fromJson(raw, type)
         }.getOrNull() }
     }.getOrDefault(emptyList())
-    @Synchronized private fun write(key: String, value: Any) { prefs.edit().putString(key, gson.toJson(value)).apply() }
+    @Synchronized private fun write(key: String, value: Any) { prefs.edit { putString(key, gson.toJson(value)) } }
 
     fun history(siteId: String = this.siteId) = list("$siteId:watch_history_v1", Watch::class.java).filter { it.id.isNotBlank() }.sortedByDescending { it.at }
     fun watch(id: String, siteId: String = this.siteId) = history(siteId).firstOrNull { it.id == id }
     @Synchronized fun saveWatch(watch: Watch) =
         write("${watch.site}:watch_history_v1", (listOf(watch) + history(watch.site).filter { it.id != watch.id }).take(500))
     @Synchronized fun removeWatch(id: String) = write(k("watch_history_v1"), history().filter { it.id != id })
-    fun clearHistory() = prefs.edit().remove(k("watch_history_v1")).apply()
+    fun clearHistory() = prefs.edit { remove(k("watch_history_v1")) }
 
     fun favorites(siteId: String = this.siteId) = list("$siteId:favorites_v1", Favorite::class.java).filter { it.target.isNotBlank() }.sortedByDescending { it.at }
     fun isFavorite(kind: String, target: String, siteId: String = this.siteId) = favorites(siteId).any { it.kind == kind && it.target == target }
@@ -179,7 +181,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         check(prefs.edit().putString("$siteId:reading_history_v1", gson.toJson((listOf(progress) + readings(siteId).filter { it.entry.id != progress.entry.id }).take(500))).commit()) { "无法保存阅读进度" }
     }
     fun removeReading(id: String) = write(k("reading_history_v1"), readings().filter { it.entry.id != id })
-    fun clearReadings() = prefs.edit().remove(k("reading_history_v1")).apply()
+    fun clearReadings() = prefs.edit { remove(k("reading_history_v1")) }
 
     fun galleryCookies(site: SiteContext): Set<String>? = prefs.getString("${site.id}:encrypted_cookies", null)?.let { encoded ->
         runCatching { gson.fromJson(SessionVault.open(encoded), Array<String>::class.java).toSet() }.getOrNull()
@@ -191,7 +193,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
 
     fun searches(): List<String> = list(k("native_search_history"), String::class.java)
     fun addSearch(query: String) = write(k("native_search_history"), (listOf(query) + searches().filter { it != query }).take(30))
-    fun clearSearches() = prefs.edit().remove(k("native_search_history")).apply()
+    fun clearSearches() = prefs.edit { remove(k("native_search_history")) }
 
     fun blockedTags(siteId: String = this.siteId) = list("$siteId:blocked_tags", String::class.java)
     fun toggleBlocked(slug: String) { val tags = blockedTags(); write(k("blocked_tags"), if (slug in tags) tags - slug else tags + slug) }
@@ -239,20 +241,20 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     @Synchronized fun renameSubscription(slug: String, label: String, siteId: String = this.siteId) =
         write("$siteId:subscriptions_v1", subscriptions(siteId).map { if (it.slug == slug) it.copy(label = label.ifBlank { it.slug }) else it })
 
-    fun clearSubscriptions(siteId: String = this.siteId) = prefs.edit().remove("$siteId:subscriptions_v1").apply()
+    fun clearSubscriptions(siteId: String = this.siteId) = prefs.edit { remove("$siteId:subscriptions_v1") }
 
     /** Merge order for the subscription screen; stored per site like the list itself. */
     fun subscriptionOrder(siteId: String = this.siteId): SubscriptionOrder =
         SubscriptionOrder.entries.firstOrNull { it.name == prefs.getString("$siteId:subscription_order_v1", null) } ?: SubscriptionOrder.SUBSCRIBED
 
     fun setSubscriptionOrder(value: SubscriptionOrder, siteId: String = this.siteId) =
-        prefs.edit().putString("$siteId:subscription_order_v1", value.name).apply()
+        prefs.edit { putString("$siteId:subscription_order_v1", value.name) }
 
     // Global preferences: shared by every site on purpose.
     fun string(name: String, default: String = "") = prefs.getString("settings_v1_$name", default) ?: default
     fun bool(name: String, default: Boolean = false) = prefs.getBoolean("settings_v1_$name", default)
-    fun set(name: String, value: String) = prefs.edit().putString("settings_v1_$name", value).apply()
-    fun set(name: String, value: Boolean) = prefs.edit().putBoolean("settings_v1_$name", value).apply()
+    fun set(name: String, value: String) = prefs.edit { putString("settings_v1_$name", value) }
+    fun set(name: String, value: Boolean) = prefs.edit { putBoolean("settings_v1_$name", value) }
 
     fun localVideos(siteId: String = this.siteId) = list("$siteId:video_cache_v1", LocalVideo::class.java).filter { item ->
         runCatching { File(item.path).canonicalFile.let { it.path.startsWith(dataDir.path + File.separator) && it.isFile } }.getOrDefault(false)
@@ -266,7 +268,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         get() = prefs.getString("$siteId:native_username", null) ?: runCatching {
             JsonParser.parseString(prefs.getString("$siteId:auth_session_v1", "{}")).asJsonObject["u"]?.asString.orEmpty()
         }.getOrDefault("")
-        set(value) { prefs.edit().putString("$siteId:native_username", value).apply() }
+        set(value) { prefs.edit { putString("$siteId:native_username", value) } }
 
     fun legacyCookies(siteId: String = this.siteId): Map<String, String> = runCatching {
         JsonParser.parseString(prefs.getString("$siteId:auth_session_v1", "{}")).asJsonObject["c"].asJsonObject
@@ -275,7 +277,6 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
 
     /** Signs out one site without touching any other site's session. */
     fun logout(id: String = siteId) {
-        prefs.edit().remove("$id:native_cookies").remove("$id:auth_session_v1")
-            .putString("$id:native_username", "").apply()
+        prefs.edit { remove("$id:native_cookies"); remove("$id:auth_session_v1"); putString("$id:native_username", "") }
     }
 }

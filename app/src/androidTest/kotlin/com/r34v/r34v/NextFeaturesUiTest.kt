@@ -86,10 +86,10 @@ class NextFeaturesUiTest : ComposeUiCase() {
     }
     @Test fun offlinePlanShowsPendingAndSmartShelfIsStored() = ComposeFixture().use { f ->
         seed(f); f.app.library.personal.add(f.video()); f.app.library.personal.add(f.video("ehentai"))
-        f.launch(); home(); clickText("片库"); clickText("新建智能片单"); clickText("未看完"); clickText("全部类型"); clickText("全部来源"); clickText("确定")
+        f.launch(); home(); clickText("片库"); clickText("智能片单"); clickText("新建智能片单"); clickText("未看完"); clickText("全部类型"); clickText("全部来源"); clickText("确定")
         assertEquals(SmartRule.UNFINISHED, f.app.library.personal.snapshot().smartShelves.single().rule)
         f.shot("next-library-hub")
-        openWatchLater(); clickText("准备离线片单"); waitText("0 / 2 部已就绪")
+        clickText("我的片单"); openWatchLater(); clickText("准备离线片单"); waitText("0 / 2 部已就绪")
         ui.onNodeWithText("加入下载 · 2").assertIsDisplayed(); f.shot("next-offline-plan")
         clickText("取消")
         clickText("筛选"); waitText("片单筛选"); clickText("显示作品")

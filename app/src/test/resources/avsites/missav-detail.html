@@ -1,0 +1,169 @@
+ow.dataLayer.push({
+                event: 'recommendationVisit',
+                recommendation: {
+                    scenario: window.scenario,
+                },
+            })
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            let source
+            let isPreviewing = false
+
+                            eval(function(p,a,c,k,e,d){e=function(c){return c.toString(36)};if(!''.replace(/^/,String)){while(c--){d[c.toString(a)]=k[c]||c.toString(a)}k=[function(e){return d[e]}];e=function(){return'\\w+'};c=1};while(c--){if(k[c]){p=p.replace(new RegExp('\\b'+e(c)+'\\b','g'),k[c])}}return p}('f=\'8://7.6/5-4-3-2-1/e.0\';d=\'8://7.6/5-4-3-2-1/c/9.0\';b=\'8://7.6/5-4-3-2-1/a/9.0\';',16,16,'m3u8|6a0a57dacff5|aacb|4176|e14b|0c1dcef7|mrstcdn.store|surrit|https|video|1080p|source1280|720p|source842|playlist|source'.split('|'),0,{}))
+
+            const video = document.querySelector('video.player')
+
+            const initialPlayerEvent = () => {
+                setTimeout(() => {
+                    window.player.speed = 2
+
+                    setTimeout(() => {
+                        window.player.speed = 1
+                    }, 50)
+                }, 50)
+
+                window.player.on('play', () => {
+                    if (! hasPlayed) {
+                        if (window.hls) {
+                            window.hls.startLoad(-1)
+                        }
+
+                        hasPlayed = true
+
+                        window.dataLayer.push({
+                            event: 'videoPlay',
+                            item: {
+                                dvd_id: 'dldss-584',
+                            },
+                        })
+                    }
+                })
+
+                window.player.on('enterfullscreen', () => {
+                    screen.orientation.lock('landscape').catch(() => {})
+
+                    setHlsDefaultLevel()
+                })
+
+                window.player.on('exitfullscreen', () => {
+                    screen.orientation.lock('portrait').catch(() => {})
+
+                    setHlsDefaultLevel()
+                })
+
+                let converted = false
+
+                window.player.on('progress', (event) => {
+                    if (! window.isPublished || converted || ! window.user_uuid) {
+                        return
+                    }
+
+                    if (event.timeStamp > 100000) {
+                        converted = true
+
+                        window.recombeeClient.send(new recombee.AddPurchase(window.user_uuid, 'dldss-584', {
+                            cascadeCreate: false,
+                            recommId: window.currentRecommendId,
+                        }))
+                    }
+                })
+
+                if (! window.hls) {
+                    let resetPlayerCallback = null
+
+                    window.player.on('stalled', () => {
+                        let source = window.player.source
+                        let oldCurrentTime = 0
+                        let newCurrentTime = 0
+
+                        if (window.player.playing) {
+                            oldCurrentTime = window.player.currentTime
+
+                            if (resetPlayerCallback) {
+                                clearTimeout(resetPlayerCallback)
+                            }
+
+                            resetPlayerCallback = setTimeout(oldCurrentTime => {
+                                newCurrentTime = window.player.currentTime
+
+                                if (oldCurrentTime === newCurrentTime) {
+                                    let presevedTime = window.player.currentTime
+
+                                    window.player.once('canplay', () => {
+                                        window.player.currentTime = presevedTime
+                                    })
+
+                                    video.src = ''
+                                    video.src = source
+
+                                    window.player.play()
+                                }
+                            }, 500, oldCurrentTime)
+                        }
+                    })
+                }
+
+                document.querySelector('[data-plyr=mute]').addEventListener('click', () => {
+                    if (! window.player.muted && window.player.volume === 0) {
+                        window.player.volume = 100
+                    }
+                })
+            }
+
+            const setHlsDefaultLevel = () => {
+                if (! window.hls) {
+                    return
+                }
+
+                window.hls.currentLevel = window.hls.levels.findIndex((level, levelIndex) =>
+                    level.width + 20 > window.innerWidth || levelIndex === window.hls.levels.length - 1
+                )
+            }
+
+            let hasPlayed = false
+
+            let playerSettings = {
+                controls: [
+                    'play-large',
+                    'rewind',
+                    'play',
+                    'fast-forward',
+                    'progress',
+                    'current-time',
+                    'duration',
+                    'mute',
+                    'captions',
+                    'settings',
+                    'pip',
+                    'fullscreen',
+                    'volume',
+                ],
+                fullscreen: {
+                    enabled: true,
+                    fallback: true,
+                    iosNative: true,
+                    container: null,
+                },
+                speed: {
+                    selected: 1,
+                    options: [0.25, 0.5, 1, 1.25, 1.5, 2],
+                },
+                i18n: {
+                    speed: '速度',
+                    normal: '正常',
+                    quality: '畫質',
+                    qualityLabel: {
+                        0: '自動',
+                    },
+                },
+                thumbnail: {
+                                            enabled: true,
+                        pic_num: 5379,
+                        width: 300,
+                        height: 168,
+                        col: 6,
+                        row: 6,
+                        offsetX: 0,
+                        offsetY: 0,
+                        urls: ["https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_0.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_1.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_2.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_3.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_4.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_5.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_6.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_7.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_8.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_9.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_10.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_11.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_12.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_13.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_14.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_15.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_16.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_17.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_18.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_19.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_20.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_21.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_22.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_23.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_24.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_25.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_26.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_27.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_28.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_29.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_30.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_31.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_32.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_33.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_34.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_35.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_36.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_37.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_38.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_39.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_40.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_41.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_42.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_43.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_44.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_45.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_46.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_47.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_48.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_49.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_50.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_51.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_52.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_53.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_54.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_55.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_56.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_57.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_58.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_59.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_60.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_61.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_62.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_63.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_64.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_65.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_66.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_67.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_68.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_69.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_70.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_71.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_72.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_73.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_74.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_75.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_76.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_77.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_78.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_79.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_80.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_81.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_82.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_83.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_84.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_85.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_86.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_87.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_88.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_89.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_90.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-e14b-4176-aacb-6a0a57dacff5\/seek\/_91.jpg","https:\/\/surrit.mrstcdn.store\/0c1dcef7-</script></body>

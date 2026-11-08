@@ -103,8 +103,8 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
     var category by rememberSaveable(initialCategory) { mutableIntStateOf(SiteCategory.entries.indexOfFirst { it.name == initialCategory } + 1) }
     LaunchedEffect(query, sites, rulesVersion, languages, condition) { state.search(app, query, sites, languageOverrides = languages, condition = condition) }
     val columns = when {
-        androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 1280 -> 4
-        androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840 -> 3
+        windowSizeDp().width >= 1280 -> 4
+        windowSizeDp().width >= 840 -> 3
         else -> 2
     }
     LazyColumn(Modifier.fillMaxSize().testTag("cross-search-results"), contentPadding = PaddingValues(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap)) {
@@ -133,7 +133,7 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
             }
             item(key = "$id:status") {
                 when {
-                    bucket.busy -> Loading("正在搜索 ${site.name}")
+                    bucket.busy -> Loading(title = "正在搜索 ${site.name}")
                     bucket.error != null -> { Copy(bucket.error); Action("重试 ${site.name}") {
                         if (bucket.more) state.load(app, query, id) else state.refreshSource(app, query, id)
                     } }

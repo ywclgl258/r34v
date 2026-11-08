@@ -2,6 +2,8 @@
 @file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.r34v.r34v
 
+import androidx.core.net.toUri
+
 import android.Manifest
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -134,10 +136,14 @@ class PlayerActivity : ComponentActivity() {
                     // Restored from storage: the Media3 record is gone, only the cache remains.
                     check(cachedKey!!.startsWith("${video.site}:${video.id}:")) { "下载身份不匹配" }
                     check(withContext(Dispatchers.IO) { app.playback.cached(cachedKey!!, sourceRoot) }) { "本地缓存不完整，请重新下载" }
-                    Stream(cachedKey!!.substringAfterLast(':'), video.url)
+                    withContext(Dispatchers.IO) { app.playback.restoredStream(cachedKey!!, sourceRoot, video.url) }
                 }
                 else -> {
                     val result = app.repository.detail(video.url); detail = result; video = result.video.copy(thumb = result.video.thumb.ifBlank { video.thumb })
+                    if (result.streams.isEmpty() && result.externalPlayers.isNotEmpty()) {
+                        phase = null; status = "请在浏览器播放"; controls = true
+                        return@launch
+                    }
                     val preferred = store.watch(video.id, video.site)?.quality?.takeIf(String::isNotBlank) ?: store.string("quality", "720p")
                     result.streams.firstOrNull { it.label == preferred } ?: result.streams.firstOrNull { it.height <= (Regex("\\d+").find(preferred)?.value?.toIntOrNull() ?: 720) } ?: result.streams.last()
                 }
@@ -153,7 +159,7 @@ class PlayerActivity : ComponentActivity() {
         pendingError = null; failureVisible = false; phase = if (presented) "正在缓冲" else "正在校准画面"
         val engine = player ?: ExoPlayer.Builder(this)
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(8000, 50000, 400, 800).setPrioritizeTimeOverSizeThresholds(true).build())
-            .setMediaSourceFactory(DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site, sourceRoot))).build().also { exo ->
+            .build().also { exo ->
                 player = exo; engineRevision++; playerView?.player = exo
                 exo.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true); exo.setHandleAudioBecomingNoisy(true)
                 exo.addListener(object : Player.Listener {
@@ -161,6 +167,7 @@ class PlayerActivity : ComponentActivity() {
                         status = when (state) { Player.STATE_BUFFERING -> "正在缓冲…"; Player.STATE_READY -> "${stream?.label} · ${if (offline) "离线播放" else if (exo.isPlaying) "正在播放" else "已暂停"}"; Player.STATE_ENDED -> "播放完毕"; else -> "准备播放" }
                         playerView?.keepScreenOn = exo.isPlaying || state == Player.STATE_BUFFERING
                         when (state) {
+                            Player.STATE_IDLE -> Unit
                             Player.STATE_BUFFERING -> phase = if (presented) "正在缓冲" else "正在校准画面"
                             Player.STATE_READY -> { phase = null; presented = true
                                 if (exo.duration > 0 && !loop.validFor(exo.duration)) { loop = VideoLoopRange(); gestureHint("片源时长已变更，循环区间已清除") }
@@ -188,9 +195,10 @@ class PlayerActivity : ComponentActivity() {
                 })
             }
         val item = if (local != null) MediaItem.fromUri(value.url)
-            else if (cachedKey != null) MediaItem.Builder().setUri(value.url).setMediaId("${video.site}:${video.id}").setCustomCacheKey(cachedKey).build()
             else app.playback.item(video, value)
-        engine.setMediaItem(item, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
+        val hlsKey = com.r34v.r34v.playback.HlsDownloads.mime(value.url)?.let { app.playback.key(video, value.label) }
+        val mediaSource = DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site, sourceRoot, hlsKey)).createMediaSource(item)
+        engine.setMediaSource(mediaSource, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
     }
     private fun playbackError(error: Throwable) { pendingError = error; phase = null; status = "播放失败：${error.message}"; failureVisible = true; controls = true; locked = false }
     private fun restart() { refreshed = false; if (stream != null) open(stream!!, if (pendingError != null) position else 0) else load() }
@@ -199,13 +207,13 @@ class PlayerActivity : ComponentActivity() {
         SideEffect { applyFullscreen() }
         val engine = remember(engineRevision) { player }
         @Suppress("UNUSED_VARIABLE") val changed = revision
-        val config = LocalConfiguration.current
+
         Column(Modifier.fillMaxSize().background(CanvasColor).then(if (pipMode) Modifier else if (fullscreen) Modifier.displayCutoutPadding() else Modifier.safeDrawingPadding())) {
-            Box((if (fullscreen || pipMode) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(minOf(config.screenWidthDp * 9f / 16f, config.screenHeightDp * .55f).dp)).testTag("player-surface")) {
+            Box((if (fullscreen || pipMode) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(minOf(windowSizeDp().width * 9f / 16f, windowSizeDp().height * .55f).dp)).testTag("player-surface")) {
                 AndroidView(factory = { context -> PlayerView(context).also { view ->
                     playerView = view; view.useController = false; view.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER); installGestures(view); view.player = engine
                 } }, modifier = Modifier.fillMaxSize(), update = { it.player = engine }, onRelease = { it.player = null; playerView = null })
-                if (phase != null) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .75f)), contentAlignment = Alignment.Center) { Loading(phase!!) }
+                if (phase != null) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .75f)), contentAlignment = Alignment.Center) { Loading(title = phase!!) }
                 if (hint.isNotBlank()) Text(hint, Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = .8f)).padding(16.dp))
                 if (!pipMode) {
                     if (locked) Action("解锁画面", modifier = Modifier.align(Alignment.CenterStart).padding(12.dp)) { locked = false; controls = true }
@@ -229,7 +237,7 @@ class PlayerActivity : ComponentActivity() {
             GlassSurface(modifier = Modifier.fillMaxWidth().padding(8.dp), radius = 18) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     IconAction(R.drawable.ic_back, "返回") { if (fullscreen) fullscreen = false else finish() }; Spacer(Modifier.weight(1f))
-                    if (LocalConfiguration.current.screenWidthDp >= 400 && LocalConfiguration.current.fontScale <= 1.3f) {
+                    if (windowSizeDp().width >= 400 && LocalConfiguration.current.fontScale <= 1.3f) {
                     Selector(stream?.label ?: "清晰度", enabled = detail?.streams?.isNotEmpty() == true, click = ::quality)
                     Spacer(Modifier.width(6.dp)); Selector("${userRate}×", click = ::speed)
                     }
@@ -237,7 +245,7 @@ class PlayerActivity : ComponentActivity() {
                     IconAction(R.drawable.ic_fullscreen, if (fullscreen) "退出全屏" else "全屏") { fullscreen = !fullscreen }
                 }
             }
-            if (failureVisible) Action("重试", true, modifier = Modifier.align(Alignment.CenterHorizontally), click = ::restart)
+            if (failureVisible) Action("重试", primary = true, modifier = Modifier.align(Alignment.CenterHorizontally), click = ::restart)
             GlassSurface(modifier = Modifier.fillMaxWidth().padding(8.dp), radius = 18) {
                 Column {
                 if (loop.startMs >= 0) TextAction(::loopOptions, Modifier.align(Alignment.End).padding(horizontal = 8.dp)) { Text(loopLabel(), Modifier.testTag("video-loop-range")) }
@@ -275,7 +283,7 @@ class PlayerActivity : ComponentActivity() {
             val metadata = listOf(video.duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
             if (metadata.isNotBlank()) Copy(metadata)
             PlaybackStatusPill()
-            if (failureVisible) Action("重试", true, click = ::restart)
+            if (failureVisible) Action("重试", primary = true, click = ::restart)
             FlowRow(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Selector(stream?.label ?: "清晰度", enabled = detail?.streams?.isNotEmpty() == true, modifier = Modifier.semantics { contentDescription = "清晰度，当前 ${stream?.label ?: "尚未加载"}" }, click = ::quality)
                 Selector("${userRate}×", modifier = Modifier.semantics { contentDescription = "播放速度，当前 ${userRate} 倍" }, click = ::speed)
@@ -287,7 +295,11 @@ class PlayerActivity : ComponentActivity() {
                 Action(if (favorite) "已收藏" else "收藏", icon = R.drawable.ic_bookmark, selected = favorite) {
                     store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site); revision++
                 }
-                if (!offline) Action("下载", icon = R.drawable.ic_download, click = ::download)
+                if (!offline && detail?.streams?.isNotEmpty() == true) Action("下载", icon = R.drawable.ic_download, click = ::download)
+                detail?.externalPlayers?.forEach { link -> Action(link.label) {
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, link.url.toUri())) }
+                        .onFailure { toast("没有可用的浏览器") }
+                } }
             }
             SaveForLater(video, app, dialogs)
             QueueNextAction(this@PlayerActivity, video, intent.getStringExtra("queue_session"), dialogs)
@@ -425,7 +437,12 @@ class PlayerActivity : ComponentActivity() {
         val size = player?.videoSize
         val aspect = if (size != null && size.width > 0 && size.height > 0) (size.width.toFloat() / size.height).coerceIn(.42f, 2.38f) else 16f / 9f
         enteringPip = true; controls = false; locked = false; dialogs.dismiss()
-        runCatching { enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational((aspect * 1000).toInt(), 1000)).build()) }
+        val params = PictureInPictureParams.Builder().setAspectRatio(Rational((aspect * 1000).toInt(), 1000))
+        val bounds = android.graphics.Rect()
+        if (playerView?.getGlobalVisibleRect(bounds) == true) params.setSourceRectHint(bounds)
+        // PiP remains an explicit player action; leaving the app keeps the existing pause behavior.
+        if (Build.VERSION.SDK_INT >= 31) params.setAutoEnterEnabled(false)
+        runCatching { enterPictureInPictureMode(params.build()) }
             .onSuccess { if (!it) { enteringPip = false; controls = true; toast("系统未允许画中画") } }
             .onFailure { enteringPip = false; controls = true; toast("无法进入画中画：${it.message}") }
     }

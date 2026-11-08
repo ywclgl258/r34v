@@ -8,6 +8,7 @@ fun filterFields(siteId: String): Set<FilterField> = when (siteId) {
     "nhentai" -> setOf(FilterField.TAGS, FilterField.CATEGORY, FilterField.PAGES)
     "iwara" -> setOf(FilterField.TAGS, FilterField.DURATION)
     "r34v" -> setOf(FilterField.DURATION, FilterField.RATING)
+    // 番号站的标签与女优本身就是独立索引，关键词搜索已经覆盖，不再承诺全站筛选。
     else -> emptySet()
 }
 
@@ -17,5 +18,7 @@ fun filterScope(siteId: String): String = when (siteId) {
     "nhentai" -> "包含／排除标签、分类和页数由来源全站筛选；条件会保留到后续分页。"
     "iwara" -> "包含标签由来源查询；时长仅筛选已加载结果。排除标签暂不由本站支持。"
     "r34v" -> "时长与评分仅筛选本次已加载结果，不代表全站过滤。"
+    "missav", "jable", "rouvideo", "kbj", "kbjfree", "pornhub" ->
+        "当前来源没有已验证的高级筛选，关键词搜索保持可用。"
     else -> "当前来源没有已验证的高级筛选，关键词搜索保持可用。"
 }

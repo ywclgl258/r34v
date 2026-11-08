@@ -94,6 +94,7 @@ data class Detail(
     val video: Video, val streams: List<Stream>, val groups: Map<String, List<Link>>,
     val description: String, val related: List<Video>, val comments: List<Comment>,
     val downloads: List<Stream>,
+    val externalPlayers: List<Link> = emptyList(),
 )
 
 data class GalleryPageLink(val index: Int, val url: String)

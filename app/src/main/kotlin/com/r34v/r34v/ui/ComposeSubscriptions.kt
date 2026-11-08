@@ -141,7 +141,7 @@ import kotlinx.coroutines.*
                 }
             }
         } else {
-            if (busy && page == null) item("loading") { Loading("正在整理订阅内容") }
+            if (busy && page == null) item("loading") { Loading(title = "正在整理订阅内容") }
             error?.let { message -> item("error") { EmptyState("订阅加载失败", message) { reload++ } } }
             if (page != null) {
                 val data = page!!

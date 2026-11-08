@@ -34,19 +34,22 @@ class NextStageFeaturesUiTest : ComposeUiCase() {
         f.shot("next-stage-image-favorite-return")
     }
 
-    @Test fun advancedSearchCanBeSavedPinnedAndReopenedWithItsConditions() = ComposeFixture().use { f ->
-        f.app.library.switchSite("nhentai"); f.launch(); clickText("搜索"); clickText("标签与高级筛选")
+    @Test fun advancedSearchCanBeSavedPinnedAndReopenedWithItsConditions() = ComposeFixture(awaitUi = { ui.waitForIdle() }).use { f ->
+        f.app.library.switchSite("nhentai"); f.launch(); waitHome(); clickText("搜索"); clickText("标签与高级筛选")
         ui.onAllNodes(hasSetTextAction()).filterToOne(hasText("关键词")).performTextReplacement("city")
         ui.onAllNodes(hasSetTextAction()).filterToOne(hasText("原始标签或 namespace:tag")).performTextReplacement("tag:sample")
         clickText("加入包含条件")
         ui.onAllNodes(hasSetTextAction()).filterToOne(hasText("最少页数")).performTextReplacement("5")
-        clickText("应用条件"); clickText("保存搜索方案")
+        closeKeyboard(f)
+        clickText("应用条件")
+        ui.onNodeWithText("保存搜索方案").performScrollTo().assertIsDisplayed().performClick()
         ui.onAllNodes(hasSetTextAction()).onLast().performTextReplacement("周末图集"); clickText("确定")
         android.os.SystemClock.sleep(5000)
         ui.onNodeWithText("最近搜索").performScrollTo()
         ui.onNodeWithContentDescription("管理搜索 周末图集").performClick(); f.shot("api24-search-manage")
         ui.onNodeWithText("固定到发现").performScrollTo().performClick()
-        clickText("首页"); waitText("我的频道")
+        clickText("首页"); waitHome()
+        ui.onNodeWithTag("personal-home").performScrollToNode(hasText("我的频道"))
         ui.waitUntil(7000) { ui.onAllNodesWithText("已固定到首页的我的频道").fetchSemanticsNodes().isEmpty() }
         f.shot("next-stage-discovery-channels")
         clickText("周末图集")

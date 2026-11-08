@@ -1,5 +1,7 @@
 package com.r34v.r34v.data
 
+import androidx.core.content.edit
+
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -82,7 +84,7 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
     private fun persist(site: SiteContext, cookies: List<Cookie>) {
         val values = cookies.map { it.toString() }.toSet()
         if (site.mediaKind == MediaKind.GALLERY) store.saveGalleryCookies(site, values)
-        else store.prefs.edit().putStringSet("${site.id}:cookies", values).apply()
+        else store.prefs.edit { putStringSet("${site.id}:cookies", values) }
     }
     @Synchronized fun replace(site: SiteContext, cookies: List<Cookie>) {
         require(cookies.all { site.isSite(it.domain) })
@@ -96,7 +98,7 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
     /** Clears one site only. Signing out of A must never sign the user out of B. */
     @Synchronized fun clear(site: SiteContext) {
         buckets.remove(site.host)
-        store.prefs.edit().remove("${site.id}:cookies").remove("${site.id}:encrypted_cookies").apply()
+        store.prefs.edit { remove("${site.id}:cookies").remove("${site.id}:encrypted_cookies") }
         store.logout(site.id)
     }
 }
@@ -151,13 +153,15 @@ class Network(private val context: Context, private val store: LibraryStore) {
         }
     }
     suspend fun html(url: String, site: SiteContext? = null): String = withContext(Dispatchers.IO) {
-        val body = getText(Request.Builder().url(url).tag(SiteContext::class.java, site).apply {
-            if (site?.mediaKind == MediaKind.GALLERY) header("Cache-Control", "no-store")
-        }.build())
-        if (body.contains("Checking your browser", true) || body.contains("DDoS-Guard", true) && !body.contains("class=\"thumbs")) error("站点要求浏览器验证，请稍后重试或调整网络")
+        val body = SiteHtml.load(url, site) { target ->
+            getText(Request.Builder().url(target).tag(SiteContext::class.java, site).apply {
+                if (site?.mediaKind == MediaKind.GALLERY) header("Cache-Control", "no-store")
+            }.build())
+        }
         if (body.contains("id=\"login_username\"")) error("此页面需要登录，请在设置中登录")
         body
     }
+
     suspend fun body(url: String): String = html(url)
     suspend fun text(url: String, headers: Map<String, String> = emptyMap()): String = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).apply { headers.forEach { (name, value) -> header(name, value) } }.build()
@@ -202,6 +206,12 @@ object AdapterRegistry {
             SiteRegistry.EHENTAI.id, SiteRegistry.EXHENTAI.id -> com.r34v.r34v.data.adapter.EhAdapter(site, net)
             SiteRegistry.NHENTAI.id -> com.r34v.r34v.data.adapter.NhentaiAdapter(net)
             SiteRegistry.HITOMI.id -> com.r34v.r34v.data.adapter.HitomiAdapter(net)
+            SiteRegistry.MISSAV.id -> com.r34v.r34v.data.adapter.MissavAdapter(site, net)
+            SiteRegistry.JABLE.id -> com.r34v.r34v.data.adapter.JableAdapter(site, net)
+            SiteRegistry.ROUVIDEO.id -> com.r34v.r34v.data.adapter.RouVideoAdapter(site, net)
+            SiteRegistry.KBJ.id -> com.r34v.r34v.data.adapter.KbjAdapter(site, net)
+            SiteRegistry.KBJFREE.id -> com.r34v.r34v.data.adapter.KbjFreeAdapter(site, net)
+            SiteRegistry.PORNHUB.id -> com.r34v.r34v.data.adapter.PornhubAdapter(site, net)
             SiteRegistry.FOURKHD.id -> com.r34v.r34v.data.adapter.FourKhdAdapter(site, net)
             SiteRegistry.EVERIA.id -> com.r34v.r34v.data.adapter.PhotoArchiveAdapter(
                 site, net, com.r34v.r34v.data.adapter.PhotoProfiles.everia())

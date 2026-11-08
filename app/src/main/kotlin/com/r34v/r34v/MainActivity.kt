@@ -130,15 +130,15 @@ class MainActivity : ComponentActivity() {
     }
     override fun onResume() { super.onResume(); resumed = true; revision++; app.galleryDownloads.resumePending() }
     override fun onPause() { resumed = false; tutorial = false; super.onPause() }
-    override fun onSaveInstanceState(out: Bundle) {
-        out.putString("screen", screen); out.putString("navigationTab", navigationTab); out.putString("request", store.gson.toJson(request))
-        out.putString("searchQuery", searchQuery); out.putInt("searchScope", searchScope); out.putString("libraryTab", libraryTab); out.putString("favoriteTab", favoriteTab)
-        out.putBoolean("multipleSources", multipleSources)
-        out.putStringArrayList("searchSites", ArrayList(searchSites))
-        out.putString("searchCategory", searchCategory); out.putString("searchLanguages", store.gson.toJson(searchLanguages)); out.putString("searchCondition", store.gson.toJson(searchCondition))
-        out.putString("importingUri", importingUri?.toString()); out.putBoolean("importingDirectory", importingDirectory)
-        out.putStringArrayList("backScreens", ArrayList(backStack.map { it.first })); out.putStringArrayList("backRequests", ArrayList(backStack.map { store.gson.toJson(it.second) }))
-        super.onSaveInstanceState(out)
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("screen", screen); outState.putString("navigationTab", navigationTab); outState.putString("request", store.gson.toJson(request))
+        outState.putString("searchQuery", searchQuery); outState.putInt("searchScope", searchScope); outState.putString("libraryTab", libraryTab); outState.putString("favoriteTab", favoriteTab)
+        outState.putBoolean("multipleSources", multipleSources)
+        outState.putStringArrayList("searchSites", ArrayList(searchSites))
+        outState.putString("searchCategory", searchCategory); outState.putString("searchLanguages", store.gson.toJson(searchLanguages)); outState.putString("searchCondition", store.gson.toJson(searchCondition))
+        outState.putString("importingUri", importingUri?.toString()); outState.putBoolean("importingDirectory", importingDirectory)
+        outState.putStringArrayList("backScreens", ArrayList(backStack.map { it.first })); outState.putStringArrayList("backRequests", ArrayList(backStack.map { store.gson.toJson(it.second) }))
+        super.onSaveInstanceState(outState)
     }
     private fun navigate(target: String, push: Boolean = true) {
         tutorial = false; dialogs.dismiss()
@@ -300,7 +300,7 @@ class MainActivity : ComponentActivity() {
                 val video = withContext(Dispatchers.IO) { if (link.site.mediaKind == MediaKind.GALLERY) adapter.gallery(link.url).entry else adapter.detail(link.url).video }
                 dialogs.dismiss(); play(video.copy(site = link.site.id, mediaKind = link.site.mediaKind))
             } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "作品识别失败" } }
-            AlertDialog({ dialogs.dismiss() }, title = { Text("打开 ${link.site.name} 作品") }, text = { if (error == null) Loading("正在识别作品…") else Text(error.orEmpty()) },
+            AlertDialog({ dialogs.dismiss() }, title = { Text("打开 ${link.site.name} 作品") }, text = { if (error == null) Loading(title = "正在识别作品…") else Text(error.orEmpty()) },
                 confirmButton = { if (error != null) TextAction({ retry++ }) { Text("重试") } }, dismissButton = { TextAction({ dialogs.dismiss() }) { Text("取消") } })
         }
     }
@@ -316,8 +316,8 @@ class MainActivity : ComponentActivity() {
         val density = LocalDensity.current
         var sourceTopInset by remember { mutableStateOf(132.dp) }
         val immersiveHome = screen == "siteHome" && site.mediaKind == MediaKind.VIDEO
-        val landscape = LocalConfiguration.current.screenWidthDp > LocalConfiguration.current.screenHeightDp
-        val compactHeader = LocalConfiguration.current.screenWidthDp < 360 || LocalConfiguration.current.fontScale > 1.3f
+        val landscape = windowSizeDp().width > windowSizeDp().height
+        val compactHeader = windowSizeDp().width < 360 || LocalConfiguration.current.fontScale > 1.3f
         val condensedTop = immersiveHome && !languageVisible
         LaunchedEffect(notice) { notice?.let { snackbar.showSnackbar(it); notice = null } }
         fun scroll(dy: Float, top: Boolean) {
@@ -366,9 +366,9 @@ class MainActivity : ComponentActivity() {
                     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (screen in listOf("settings", "feed", "index", "subscriptions", "multiSearch", "backup", "siteHome", "updates", "searchUpdates")) IconAction(R.drawable.ic_back, "返回") { back() }
                         if (screen in listOf("home", "siteHome")) { BrandWordmark(); Spacer(Modifier.width(6.dp)) }
-                        else if (screen == "library" && libraryTab == "片库") Box(Modifier.weight(1f)) { BrandWordmark() }
-                        else Text(when (screen) { "search" -> "搜索"; "multiSearch" -> "跨站搜索"; "backup" -> "备份与恢复"; "updates", "searchUpdates" -> "更新"; "explore" -> "发现"; "library" -> "片库"; "settings" -> "设置"; "subscriptions" -> "订阅"; "feed" -> adapter.feedTitle(request); else -> "浏览索引" }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
-                        Box {
+                        else if (screen == "library" && libraryTab == "片库") Text("我的片库", Modifier.weight(1f), fontSize = 24.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                        else Text(when (screen) { "search" -> "搜索"; "multiSearch" -> "跨站搜索"; "backup" -> "备份与恢复"; "updates", "searchUpdates" -> "更新"; "explore" -> "发现"; "library" -> "片库"; "settings" -> "设置"; "subscriptions" -> "订阅"; "feed" -> adapter.feedTitle(request); else -> "浏览索引" }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = if (screen in listOf("search", "explore")) 24.sp else 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                        if (screen != "library" || libraryTab != "片库") Box {
                             TextAction({ tutorial = false; scope.launch { drawer.open() } }, Modifier.heightIn(min = 48.dp).then(if (tutorial) Modifier.background(Color.White.copy(alpha = .16f), RoundedCornerShape(14.dp)) else Modifier).semantics { contentDescription = "切换站点，当前 ${site.name}" }) {
                                 if (!compactHeader) Text(site.name, Modifier.widthIn(max = if (screen == "home") 112.dp else 100.dp), color = MutedColor, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
                                 Glyph(R.drawable.ic_chevron_down, null, Modifier.padding(start = if (compactHeader) 0.dp else 4.dp).size(if (compactHeader) 20.dp else 12.dp))
@@ -376,7 +376,7 @@ class MainActivity : ComponentActivity() {
                             DropdownMenu(tutorial, { tutorial = false }, Modifier.widthIn(max = 320.dp)) {
                                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                     Title("这里可以切换站点"); Copy("点击顶部的站点名称或小箭头，即可切换视频站和漫画站。"); Copy("收藏、历史和下载会按站点分别保存。")
-                                    Action("打开站点列表", true) { tutorial = false; scope.launch { drawer.open() } }; TextAction({ tutorial = false }) { Text("知道了") }
+                                    Action("打开站点列表", primary = true) { tutorial = false; scope.launch { drawer.open() } }; TextAction({ tutorial = false }) { Text("知道了") }
                                 }
                             }
                         }
@@ -385,7 +385,7 @@ class MainActivity : ComponentActivity() {
                         if (screen == "library") IconAction(R.drawable.ic_bookmark, "订阅") { navigate("subscriptions") }
                         if (screen != "settings") ProfileAction { navigate("settings") }
                     }
-                    if (compactHeader) Copy("${site.category.title} · ${site.name}", Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
+                    if (compactHeader && screen != "home" && !(screen == "library" && libraryTab == "片库") && !(screen == "search" && multipleSources)) Copy("${site.category.title} · ${site.name}", Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
                     if (immersiveHome && !landscape) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Choice("精选内容", selected = true) { navigate("siteHome", false) }
                         Choice("热门榜") { openFeed(FeedRequest(FeedKind.POPULAR)) }
@@ -477,27 +477,35 @@ class MainActivity : ComponentActivity() {
                 supportingText = if (error) ({ Text("请输入关键词") }) else null,
                 trailingIcon = { Row { if (searchQuery.isNotEmpty()) IconAction(R.drawable.ic_close, "清除关键词") { searchQuery = "" }; IconAction(R.drawable.ic_chevron_right, "提交搜索") { submit() } } },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { submit() }))
-            Choices(listOf("当前站点", "多个站点"), if (multipleSources) 1 else 0) { multipleSources = it == 1 }
+            ContentTabs(listOf("当前站点", "多个站点"), if (multipleSources) 1 else 0) { multipleSources = it == 1 }
             if (multipleSources) TextAction({ dialogs.searchSources(app, searchSites) { searchSites = it; store.set("cross_search_sites", it.joinToString(",")) } }) { Text("选择来源 · ${searchSites.size} 个站点") }
-            else Copy("在 ${adapter.site.name} 中搜索${if (gallery) "，寻找想看的$noun" else ""}")
             // 4KHD only has a plain keyword search, so it gets one scope instead of three chips
             // that would all quietly do the same thing.
-            if (multipleSources || adapter.site.category == SiteCategory.PHOTO) Choices(listOf("关键词"), 0) {}
-            else Choices(if (gallery) listOf(noun, "标签", adapter.creatorTitle) else listOf("视频", "标签", "作者"), searchScope) { searchScope = it }
+            if (!multipleSources && adapter.site.category != SiteCategory.PHOTO) Choices(if (gallery) listOf(noun, "标签", adapter.creatorTitle) else listOf("视频", "标签", "作者"), searchScope) { searchScope = it }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextAction({ dialogs.advancedSearch(app, searchCondition.copy(query = searchQuery), if (multipleSources) searchSites else listOf(siteId)) { value ->
                     searchCondition = value; searchQuery = value.query; revision++
                 } }) { Text("标签与高级筛选") }
                 if (multipleSources) TextAction({ dialogs.choose("漫画语言条件", GalleryLanguage.entries.map { it.title }) { selected -> searchLanguages = searchSites.filter { AdapterRegistry.adapter(SiteRegistry.byIdOrDefault(it), app.network).supportsLanguage }.associateWith { GalleryLanguage.entries[selected].name } } }) { Text("漫画语言") }
-                TextAction({ saveSearch { keyboard?.hide(); focusManager.clearFocus() } }, enabled = !searchCondition.copy(query = searchQuery).isEmpty) { Text("保存搜索方案") }
+                AnimatedVisibility(!searchCondition.copy(query = searchQuery).isEmpty) {
+                    TextAction({ saveSearch { keyboard?.hide(); focusManager.clearFocus() } }) { Text("保存搜索方案") }
+                }
             }
             val personalRevision by store.personal.changes.collectAsState()
             val saved = remember(personalRevision) { store.personal.snapshot().savedSearches }
             if (saved.isNotEmpty()) {
+                HorizontalDivider(color = RaisedColor)
                 Title("常用搜索")
-                TextAction({ navigate("searchUpdates") }) { Text("保存搜索更新与未读") }
-                saved.forEach { value -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextAction({ savedSearch(value) }, Modifier.weight(1f)) { Text(value.name) }
+                NavigationRow("保存搜索更新与未读", R.drawable.ic_updates) { navigate("searchUpdates") }
+                saved.forEach { value -> Row(Modifier.fillMaxWidth().contentPanel(8), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.weight(1f).heightIn(min = 56.dp).clickable { savedSearch(value) }.padding(12.dp), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Glyph(R.drawable.ic_search, null)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(value.name, style = MaterialTheme.typography.titleSmall)
+                            Copy(value.query.ifBlank { "${value.sources.size} 个来源 · 已保存筛选" })
+                        }
+                    }
                     IconAction(R.drawable.ic_more, "管理搜索 ${value.name}") { dialogs.choose(value.name, listOf("重命名", "固定到发现", "删除搜索方案")) { action ->
                         when (action) {
                             0 -> dialogs.edit("重命名搜索方案", value.name, validate = { if (it.isBlank() || it.length > 80) "请输入 1–80 个字" else null }) { store.personal.saveSearch(value.copy(name = it)) }
@@ -507,6 +515,7 @@ class MainActivity : ComponentActivity() {
                     } }
                 } }
             }
+            HorizontalDivider(color = RaisedColor)
             Row(verticalAlignment = Alignment.CenterVertically) { Title("最近搜索", Modifier.weight(1f)); if (store.searches().isNotEmpty()) TextAction({ store.clearSearches(); revision++ }) { Text("清空") } }
             if (store.searches().isEmpty()) Copy("搜索过的关键词会保存在这里")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { store.searches().forEach { query -> Choice(query) { searchQuery = query; submit() } } }
@@ -521,23 +530,29 @@ class MainActivity : ComponentActivity() {
                 image = { favorite -> play(favorite.video, read = true, page = favorite.page) })
             return
         }
+        if (libraryTab == "片单") {
+            Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+                ShelfScreen(app, dialogs, { MediaRouter.open(this@MainActivity, it) }, ::downloadBatch,
+                    catalog = catalog, onBack = { libraryTab = "片库" }) { navigate("search") }
+            }
+            return
+        }
         val reading = site.mediaKind == MediaKind.GALLERY
         val noun = site.category.itemNoun
         val verb = site.category.verb
-        val task = if (libraryTab == "记录") 0 else if (libraryTab in listOf("下载", "缓存")) 2 else if (libraryTab == "片单") 3 else 1
+        val task = if (libraryTab == "记录") 0 else if (libraryTab in listOf("下载", "缓存")) 2 else 1
         val creator = AdapterRegistry.adapter(site, app.network).creatorTitle
         val categories = if (reading) listOf(noun, creator, "标签") else listOf("视频", "角色", "作者", "标签")
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             TextAction({ libraryTab = "片库" }) { Text("返回我的片库") }
             if (task != 2) Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Glyph(R.drawable.ic_bookmark, null, Modifier.size(18.dp))
-                Text(if (task == 3) "我的片单" else "我的片库", Modifier.padding(start = 8.dp), fontSize = 15.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
-                Copy(if (task == 3) "全部站点" else site.name, Modifier.padding(start = 8.dp))
+                Text("我的片库", Modifier.padding(start = 8.dp), fontSize = 15.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                Copy(site.name, Modifier.padding(start = 8.dp))
             }
             Choices(if (reading) listOf(verb, "收藏", "下载", "片单") else listOf("观看", "收藏", "下载", "片单"), task) { libraryTab = when (it) { 0 -> "记录"; 2 -> "下载"; 3 -> "片单"; else -> favoriteTab } }
             if (task == 1) Choices(categories, categories.indexOf(favoriteTab)) { favoriteTab = categories[it]; libraryTab = favoriteTab }
-            if (task == 3) ShelfScreen(app, dialogs, { MediaRouter.open(this@MainActivity, it) }, ::downloadBatch, catalog = catalog) { navigate("search") }
-            else if (task == 2) DownloadCenter(app, resumed, dialogs,
+            if (task == 2) DownloadCenter(app, resumed, dialogs,
                 video = { entry, id, path -> play(entry, id, path) },
                 offline = { record -> playOffline(record) },
                 comic = { play(it, read = true, offline = true) },

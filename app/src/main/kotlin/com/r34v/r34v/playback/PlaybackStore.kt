@@ -1,6 +1,8 @@
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 package com.r34v.r34v.playback
 
+import androidx.core.net.toUri
+
 import android.app.Notification
 import android.content.Context
 import android.net.Uri
@@ -17,6 +19,7 @@ import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadManager
+import androidx.media3.exoplayer.offline.DefaultDownloadIndex
 import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.media3.exoplayer.scheduler.PlatformScheduler
@@ -59,7 +62,7 @@ class PlaybackStore(private val context: Context, private val network: Network, 
      * after a site switch, including on CDNs that check the referer.
      */
     private fun httpFor(url: String, owner: SiteContext? = null): DataSource.Factory {
-        val host = runCatching { Uri.parse(url).host.orEmpty() }.getOrDefault("")
+        val host = runCatching { url.toUri().host.orEmpty() }.getOrDefault("")
         val site = owner ?: SiteRegistry.forMediaHost(host)
         val transport = network.mediaClient.newBuilder().apply {
             if (site != null) interceptors().add(0, okhttp3.Interceptor { chain ->
@@ -94,7 +97,11 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     }
 
     val manager: DownloadManager by lazy {
-        DownloadManager(context, database, downloadCache, httpFactory(), Executors.newFixedThreadPool(3)).apply {
+        val downloader = HlsDownloads.factory(downloadCache, { request ->
+            val owner = request.id.substringBefore(':').let(SiteRegistry::byId)
+            mediaAware(httpFactory(owner), owner)
+        }, Executors.newFixedThreadPool(3))
+        DownloadManager(context, DefaultDownloadIndex(database), downloader).apply {
             maxParallelDownloads = 2
             minRetryCount = 3
             addListener(object : DownloadManager.Listener {
@@ -137,9 +144,41 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         }
     }
 
-    fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = ""): DataSource.Factory {
+    /**
+     * Wraps a factory so rou.video's PNG-wrapped manifests and segments are unwrapped before
+     * Media3 parses them. Other hosts pass through untouched: the check is per request, and a
+     * genuine cover image on the same CDN stays an image.
+     */
+    private fun mediaAware(factory: DataSource.Factory, owner: SiteContext?): DataSource.Factory = DataSource.Factory {
+        val inner = factory.createDataSource()
+        object : DataSource {
+            private var created: DataSource? = null
+            private val listeners = mutableListOf<TransferListener>()
+            override fun addTransferListener(transferListener: TransferListener) {
+                listeners += transferListener; created?.addTransferListener(transferListener)
+            }
+            override fun open(dataSpec: DataSpec): Long {
+                val source = if (owner?.id == SiteRegistry.ROUVIDEO.id) RouPng.UnwrappingDataSource(inner) else inner
+                source.addTransferListener(NoOpTransferListener)
+                created = source
+                listeners.forEach(source::addTransferListener)
+                return source.open(dataSpec)
+            }
+            override fun read(buffer: ByteArray, offset: Int, length: Int) = created?.read(buffer, offset, length) ?: -1
+            override fun getUri(): Uri? = created?.uri
+            override fun getResponseHeaders(): Map<String, List<String>> = created?.responseHeaders.orEmpty()
+            override fun close() { runCatching { created?.close() }; created = null }
+        }
+    }
+
+    fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = "", hlsKey: String? = null): DataSource.Factory {
+        val owner = siteId?.let(SiteRegistry::byId)
+        val cacheKeys = hlsKey?.let(HlsDownloads::keys) ?: androidx.media3.datasource.cache.CacheKeyFactory.DEFAULT
+        // Select a restored HLS library once, not once per segment (which would rescan every file).
+        val hlsCache by lazy { downloadCaches.readCache(hlsKey.orEmpty(), sourceRoot) }
         val streaming = CacheDataSource.Factory().setCache(streamCache)
-            .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context, httpFactory(siteId?.let(SiteRegistry::byId))))
+            .setCacheKeyFactory(cacheKeys)
+            .setUpstreamDataSourceFactory(mediaAware(DefaultDataSource.Factory(context, httpFactory(owner)), owner))
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         return DataSource.Factory {
             object : DataSource {
@@ -147,7 +186,8 @@ class PlaybackStore(private val context: Context, private val network: Network, 
                 private val listeners = mutableListOf<TransferListener>()
                 override fun addTransferListener(listener: TransferListener) { listeners += listener; impl?.addTransferListener(listener) }
                 override fun open(spec: DataSpec): Long {
-                    val created = CacheDataSource.Factory().setCache(downloadCaches.readCache(spec.key.orEmpty(), sourceRoot))
+                    val created = CacheDataSource.Factory().setCache(if (hlsKey != null) hlsCache else downloadCaches.readCache(spec.key.orEmpty(), sourceRoot))
+                        .setCacheKeyFactory(cacheKeys)
                         .setCacheWriteDataSinkFactory(null).setUpstreamDataSourceFactory(if (offline) null else streaming).createDataSource()
                     impl = created; listeners.forEach(created::addTransferListener)
                     return created.open(spec)
@@ -169,13 +209,16 @@ class PlaybackStore(private val context: Context, private val network: Network, 
      * download is gone, but the cache and its index survived on shared storage, so a fully
      * cached key still opens offline. A cache miss raises instead of silently going online.
      */
-    fun offlineItem(record: LibraryRecord): MediaItem =
-        MediaItem.Builder().setUri(record.url.takeIf { it.startsWith("http") } ?: "https://r34v.local/offline")
-            .setMediaId("${record.site}:${record.id}")
-            .setCustomCacheKey(record.cacheKey).build()
+    fun restoredStream(key: String, sourceRoot: String, fallback: String) =
+        Stream(key.substringAfterLast(':'), downloadCaches.hlsUri(key, sourceRoot) ?: fallback)
+
+    fun offlineItem(record: LibraryRecord): MediaItem = item(record.video,
+        restoredStream(record.cacheKey, record.sourceRoot, record.url.takeIf { it.startsWith("http") } ?: "https://r34v.local/offline"))
     fun item(video: Video, stream: Stream) =
         MediaItem.Builder().setUri(stream.url).setMediaId("${video.site}:${video.id}")
-            .setCustomCacheKey(key(video, stream.label)).build()
+            .apply { val mime = HlsDownloads.mime(stream.url)
+                if (mime != null) setMimeType(mime) else setCustomCacheKey(key(video, stream.label))
+            }.build()
 
     fun add(video: Video, stream: Stream) = add(video, stream, null)
     private fun add(video: Video, stream: Stream, expectedGeneration: Long?) {
@@ -190,8 +233,10 @@ class PlaybackStore(private val context: Context, private val network: Network, 
             return
         }
         if (stale()) return
-        val request = DownloadRequest.Builder(id, Uri.parse(stream.url))
-            .setCustomCacheKey(id)
+        val request = DownloadRequest.Builder(id, stream.url.toUri())
+            .apply { val mime = HlsDownloads.mime(stream.url)
+                if (mime != null) setMimeType(mime) else setCustomCacheKey(id)
+            }
             .setData(library.gson.toJson(DownloadMeta(normalized, stream.label, site.id)).toByteArray()).build()
         submitted.add(request.id)
         try {

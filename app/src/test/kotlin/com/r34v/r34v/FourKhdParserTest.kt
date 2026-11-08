@@ -124,7 +124,10 @@ class FourKhdParserTest {
     }
 
     @Test fun siteCategoriesGroupEveryRegisteredSite() {
-        assertEquals(listOf("r34v", "hanime1", "iwara"), SiteRegistry.ofCategory(SiteCategory.VIDEO).map { it.id })
+        assertEquals(
+            listOf("r34v", "hanime1", "iwara", "missav", "jable", "rouvideo", "kbj", "kbjfree", "pornhub"),
+            SiteRegistry.ofCategory(SiteCategory.VIDEO).map { it.id },
+        )
         assertEquals(listOf("ehentai", "exhentai", "nhentai", "hitomi"), SiteRegistry.ofCategory(SiteCategory.COMIC).map { it.id })
         assertTrue(SiteRegistry.ofCategory(SiteCategory.PHOTO).first().id == "4khd")
         assertEquals(SiteRegistry.all.size, SiteCategory.entries.sumOf { SiteRegistry.ofCategory(it).size })

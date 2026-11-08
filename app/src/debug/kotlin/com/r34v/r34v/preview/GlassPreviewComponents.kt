@@ -65,7 +65,7 @@ internal val PreviewMuted = Color(0xFFA9ADB4)
 internal val PreviewRed = Color(0xFFE50914)
 
 @Composable
-internal fun PreviewIcon(@DrawableRes icon: Int, description: String? = null, modifier: Modifier = Modifier) {
+internal fun PreviewIcon(@DrawableRes icon: Int, modifier: Modifier = Modifier, description: String? = null) {
     Icon(painterResource(icon), description, modifier.size(20.dp), tint = LocalContentColor.current)
 }
 
@@ -107,7 +107,7 @@ internal fun PreviewIconButton(
     Box(modifier.size(48.dp).clip(CircleShape).clickable(onClickLabel = description, onClick = onClick), contentAlignment = Alignment.Center) {
         Box(Modifier.size(34.dp).clip(CircleShape).background(Color.White.copy(alpha = .075f))
             .border(.7.dp, Color.White.copy(alpha = .13f), CircleShape), contentAlignment = Alignment.Center) {
-            PreviewIcon(icon, description, Modifier.size(18.dp))
+            PreviewIcon(icon, description = description, modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -143,7 +143,7 @@ internal fun PhysicalButton(
         androidx.compose.runtime.CompositionLocalProvider(LocalContentColor provides if (primary) Color.Black else Color.White) {
             Row(Modifier.padding(horizontal = 17.dp), verticalAlignment = Alignment.CenterVertically) {
                 Crossfade(icon, label = "icon") { current ->
-                    PreviewIcon(current, null, Modifier.size(18.dp))
+                    PreviewIcon(current, description = null, modifier = Modifier.size(18.dp))
                 }
                 Spacer(Modifier.width(7.dp))
                 Crossfade(text, label = "text") { current ->
@@ -213,7 +213,7 @@ internal fun ContinueCard(title: String, bitmap: ImageBitmap, progress: Float, o
             Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .16f)))
             GlassPanel(Modifier.align(Alignment.Center).size(38.dp), bitmap, radius = 19.dp, elevated = false) {
-                PreviewIcon(R.drawable.ic_play, null, Modifier.align(Alignment.Center).size(18.dp))
+                PreviewIcon(R.drawable.ic_play, description = null, modifier = Modifier.align(Alignment.Center).size(18.dp))
             }
         }
         LinearProgressIndicator(progress = { progress }, Modifier.fillMaxWidth().height(2.dp),
@@ -225,7 +225,7 @@ internal fun ContinueCard(title: String, bitmap: ImageBitmap, progress: Float, o
     }
 }
 
-internal data class DockItem(val key: String, val label: String, @DrawableRes val icon: Int)
+internal data class DockItem(val key: String, val label: String, @param:DrawableRes val icon: Int)
 
 @Composable
 internal fun FloatingDock(
@@ -247,7 +247,7 @@ internal fun FloatingDock(
                     Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         androidx.compose.runtime.CompositionLocalProvider(LocalContentColor provides content) {
-                            PreviewIcon(item.icon, null, Modifier.size(19.dp))
+                            PreviewIcon(item.icon, description = null, modifier = Modifier.size(19.dp))
                             Text(item.label, color = content, fontSize = 10.sp, lineHeight = 13.sp,
                                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
                         }

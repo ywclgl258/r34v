@@ -2,9 +2,13 @@
 
 package com.r34v.r34v.preview
 
+import com.r34v.r34v.ui.windowSizeDp
+
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
@@ -66,7 +70,6 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -75,16 +78,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.view.WindowCompat
 import com.r34v.r34v.R
 import kotlinx.coroutines.delay
 
 class GlassPreviewActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.statusBarColor = android.graphics.Color.TRANSPARENT
-        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         setContent {
             MaterialTheme(darkColorScheme(primary = PreviewRed, background = PreviewCanvas, surface = PreviewMatte)) {
                 Surface(Modifier.fillMaxSize(), color = PreviewCanvas) { GlassPreviewScreen() }
@@ -120,9 +121,9 @@ private fun rememberPreviewAssets(): PreviewAssets {
 private fun GlassPreviewScreen() {
     val assets = rememberPreviewAssets()
     val list = rememberLazyListState()
-    val configuration = LocalConfiguration.current
+
     val fontScale = LocalDensity.current.fontScale
-    val landscape = configuration.screenWidthDp > configuration.screenHeightDp
+    val landscape = windowSizeDp().width > windowSizeDp().height
     val dockHeight = if (landscape) 56.dp else 66.dp
     val contentDockInset = if (landscape || fontScale > 1.3f) dockHeight + 24.dp else 0.dp
     val scrolled by remember { derivedStateOf { list.firstVisibleItemIndex > 0 || list.firstVisibleItemScrollOffset > 180 } }
@@ -152,7 +153,7 @@ private fun GlassPreviewScreen() {
         LazyColumn(state = list, modifier = Modifier.fillMaxSize().padding(bottom = contentDockInset),
             verticalArrangement = Arrangement.spacedBy(24.dp)) {
             item("hero") {
-                PreviewHero(assets.hero, saved, playing, selectedFeed, configuration.screenHeightDp, fontScale,
+                PreviewHero(assets.hero, saved, playing, selectedFeed, windowSizeDp().height, fontScale,
                     onFeed = { selectedFeed = it },
                     onPlay = { playing = !playing; notify(if (playing) "开始播放" else "已暂停") },
                     onSave = { saved = !saved; notify(if (saved) "已加入我的片单" else "已移出我的片单") })
@@ -248,7 +249,7 @@ private fun PreviewTopBar(scrolled: Boolean, bitmap: ImageBitmap, onSearch: () -
             Text("R34V", color = PreviewRed, fontSize = 20.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp)
             Spacer(Modifier.width(8.dp))
             Text("Rule34Video", color = PreviewMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            PreviewIcon(R.drawable.ic_chevron_down, null, Modifier.size(11.dp))
+            PreviewIcon(R.drawable.ic_chevron_down, description = null, modifier = Modifier.size(11.dp))
             Spacer(Modifier.weight(1f))
             PreviewIconButton(R.drawable.ic_search, "搜索", onSearch)
             PreviewIconButton(R.drawable.ic_profile, "播放设置", onSettings)
@@ -324,7 +325,7 @@ private fun PlaybackPanel(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(40.dp).clip(CircleShape).background(Color.White.copy(alpha = .13f)).clickable(onClick = onPause),
                     contentAlignment = Alignment.Center) {
-                    PreviewIcon(R.drawable.ic_pause, "暂停", Modifier.size(18.dp))
+                    PreviewIcon(R.drawable.ic_pause, description = "暂停", modifier = Modifier.size(18.dp))
                 }
                 Column(Modifier.weight(1f).padding(start = 10.dp)) {
                     Text("正在播放", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
@@ -364,7 +365,7 @@ private fun QualitySheet(bitmap: ImageBitmap, selected: String, dismiss: () -> U
                         .background(if (value == selected) Color.White.copy(alpha = .09f) else Color.Transparent)
                         .clickable { choose(value) }.padding(horizontal = 13.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(value, Modifier.weight(1f), color = Color.White, fontSize = 13.sp)
-                        if (value == selected) PreviewIcon(R.drawable.ic_check, "已选择", Modifier.size(18.dp))
+                        if (value == selected) PreviewIcon(R.drawable.ic_check, description = "已选择", modifier = Modifier.size(18.dp))
                     }
                 }
                 Spacer(Modifier.height(10.dp))

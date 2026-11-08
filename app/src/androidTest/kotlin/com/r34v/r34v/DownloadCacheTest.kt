@@ -20,6 +20,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.r34v.r34v.data.LibraryStore
 import com.r34v.r34v.data.StorageRoot
 import com.r34v.r34v.playback.DownloadCaches
+import com.r34v.r34v.playback.HlsDownloads
+import com.r34v.r34v.playback.RouPng
+import androidx.media3.exoplayer.offline.DownloadRequest
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -226,5 +229,94 @@ class DownloadCacheTest {
         assertFalse(current.cached("same:video:720p", storage.layout().root.absolutePath))
         assertFalse(current.cached("same:video:720p", shared))
         assertTrue(current.cached("same:video:1080p", shared))
+    }
+
+    @Test fun hlsDownloadsResumeAndDecodeOfflineAfterMigrationAndDatabaseLoss() = hlsRoundTrip(false)
+    @Test fun pngWrappedHlsDownloadsDecodeOfflineAfterMigrationAndDatabaseLoss() = hlsRoundTrip(true)
+
+    private fun hlsRoundTrip(wrapped: Boolean) {
+        val ins = InstrumentationRegistry.getInstrumentation()
+        val manifest = "https://example.invalid/api/hls/demo"
+        val key = "rouvideo:neutral:自动"
+        val payloads = ins.context.assets.list("hls")!!.associateWith { name -> ins.context.assets.open("hls/$name").use { it.readBytes() } } +
+            ("demo" to "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nmedia.m3u8\n".toByteArray())
+        val current = owner()
+        val cache = current.cache()
+        var failOnce = true
+        val calls = mutableListOf<String>()
+        val upstream = DataSource.Factory {
+            val raw = object : DataSource {
+                var active: ByteArrayDataSource? = null
+                override fun addTransferListener(listener: androidx.media3.datasource.TransferListener) = Unit
+                override fun open(spec: DataSpec): Long {
+                    val name = spec.uri.lastPathSegment!!
+                    calls += name
+                    if (name == "segment3.ts" && failOnce) { failOnce = false; throw java.io.IOException("interrupted") }
+                    val data = payloads[name] ?: error("Unexpected resource $name")
+                    active = ByteArrayDataSource(if (wrapped) TestPng.wrap(data) else data)
+                    return active!!.open(spec)
+                }
+                override fun read(buffer: ByteArray, offset: Int, length: Int) = active!!.read(buffer, offset, length)
+                override fun getUri() = active?.uri
+                override fun close() { active?.close() }
+            }
+            if (wrapped) RouPng.UnwrappingDataSource(raw) else raw
+        }
+        val request = DownloadRequest.Builder(key, android.net.Uri.parse(manifest)).apply {
+            if (wrapped) setMimeType(HlsDownloads.mime(manifest)) else setCustomCacheKey(key)
+        }.build() // The plain case also exercises a persisted request from the previous implementation.
+        val factory = HlsDownloads.factory(cache, { upstream }, java.util.concurrent.Executor { it.run() })
+        assertTrue(runCatching { factory.createDownloader(request).download(null) }.isFailure)
+        assertFalse(current.cached(key))
+        factory.createDownloader(request).download(null)
+        assertTrue(current.cached(key))
+        assertEquals(1, calls.count { it == "segment0.ts" })
+        assertEquals(manifest, current.hlsUri(key))
+        write(cache, "other:video:720p")
+        current.copyToShared()
+        val shared = storage.layoutOf(StorageRoot.Mode.SHARED).root.absolutePath
+        assertTrue(current.cached(key, shared))
+        current.close()
+
+        val restored = owner()
+        val offline = CacheDataSource.Factory().setCache(restored.readCache(key, shared))
+            .setCacheKeyFactory(HlsDownloads.keys(key)).setCacheWriteDataSinkFactory(null).setUpstreamDataSourceFactory(null)
+        var player: ExoPlayer? = null
+        var texture: SurfaceTexture? = null
+        var surface: Surface? = null
+        try {
+            ins.runOnMainSync {
+                texture = SurfaceTexture(0); surface = Surface(requireNotNull(texture))
+                player = ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(offline)).build().apply {
+                    setVideoSurface(surface)
+                    setMediaItem(MediaItem.Builder().setUri(restored.hlsUri(key, shared)!!).setMimeType(HlsDownloads.mime(manifest)).build())
+                    prepare()
+                }
+            }
+            fun awaitReady(position: Long) {
+                val deadline = android.os.SystemClock.elapsedRealtime() + 20000
+                var ready = false
+                while (!ready && android.os.SystemClock.elapsedRealtime() < deadline) {
+                    ins.runOnMainSync {
+                        val engine = player!!
+                        assertNull(engine.playerError)
+                        ready = engine.playbackState == Player.STATE_READY && engine.videoSize.width > 0 && engine.currentPosition >= position
+                    }
+                    if (!ready) Thread.sleep(50)
+                }
+                assertTrue("HLS must decode and seek with no upstream", ready)
+            }
+            awaitReady(0)
+            ins.runOnMainSync { player!!.seekTo(2000) }
+            awaitReady(2000)
+        } finally { ins.runOnMainSync { player?.release(); surface?.release(); texture?.release() } }
+        val restoredCache = restored.readCache(key, shared)
+        val segmentKey = HlsDownloads.keys(key).buildCacheKey(DataSpec.Builder().setUri("https://example.invalid/api/hls/segment1.ts").build())
+        restoredCache.removeResource(segmentKey)
+        assertFalse("A missing segment must invalidate completion", restored.cached(key, shared))
+        restored.remove(key)
+        assertFalse(restored.cached(key))
+        assertTrue(restoredCache.keys.none { it.startsWith("$key|hls|") })
+        assertTrue(restored.cached("other:video:720p", shared))
     }
 }

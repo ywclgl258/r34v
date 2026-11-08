@@ -155,7 +155,7 @@ class GalleryActivity : ComponentActivity() {
                         finish()
                     }
                 }
-                detail == null -> Loading("正在加载${itemNoun}")
+                detail == null -> Loading(title = "正在加载${itemNoun}")
                 else -> Overview()
             }
             if (gate || error != null) QueueNextAction(this@GalleryActivity, entry, intent.getStringExtra("queue_session"), dialogs)
@@ -365,7 +365,7 @@ class GalleryActivity : ComponentActivity() {
                 Copy(if (gallery.downloadedPages.size == gallery.pageCount) "已下载整本 · ${gallery.pageCount} 页 · 离线$verb"
                     else "部分保存 · ${gallery.downloadedPages.size} / ${gallery.pageCount} 页 · 仅已存页可离线$verb")
                 Title(entry.title, large = true)
-                Action(startLabel, true, modifier = Modifier.fillMaxWidth()) { reader(startPage, startOffset) }
+                Action(startLabel, primary = true, modifier = Modifier.fillMaxWidth()) { reader(startPage, startOffset) }
             }
             if (gallery.alternativeTitle.isNotBlank() && gallery.alternativeTitle != entry.title) Copy(gallery.alternativeTitle)
             if (offlineOnly) Copy(metadata)

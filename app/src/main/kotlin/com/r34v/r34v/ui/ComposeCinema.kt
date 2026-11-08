@@ -13,6 +13,7 @@ import androidx.compose.foundation.pager.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -22,7 +23,6 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -52,17 +52,18 @@ import kotlinx.coroutines.launch
 }
 
 @Composable fun CinemaNavigation(selectedTab: String, choose: (String) -> Unit) {
-    val landscape = LocalConfiguration.current.screenWidthDp > LocalConfiguration.current.screenHeightDp
+    val landscape = windowSizeDp().width > windowSizeDp().height
     val compact = LocalUiDensity.current.compact
     val tabs = listOf(Triple("home", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore),
         Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark))
     val selectedIndex by animateFloatAsState(tabs.indexOfFirst { it.first == selectedTab }.coerceAtLeast(0).toFloat(), tween(220), label = "navigationIndicator")
     val tabHeight = ((if (compact || landscape) 52 else 64) + ((LocalDensity.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp
-    Box(Modifier.fillMaxWidth().background(CanvasColor).navigationBarsPadding(), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxWidth().background(CanvasColor).navigationBarsPadding().testTag("primary-navigation"), contentAlignment = Alignment.Center) {
+        Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(1.dp).background(SurfaceColor))
         BoxWithConstraints(Modifier.widthIn(max = 620.dp).fillMaxWidth()) {
             val tabWidth = maxWidth / 4
-            Box(Modifier.offset(x = tabWidth * selectedIndex + (tabWidth - 20.dp) / 2).width(20.dp).height(2.dp).background(BrandColor))
-            Row(Modifier.fillMaxWidth().height(tabHeight)) {
+            Box(Modifier.offset { androidx.compose.ui.unit.IntOffset((tabWidth * selectedIndex + (tabWidth - 20.dp) / 2).roundToPx(), 0) }.width(20.dp).height(2.dp).background(BrandColor))
+            Row(Modifier.fillMaxWidth().height(tabHeight).selectableGroup()) {
             tabs.forEach { (key, name, icon) ->
                 val selected = selectedTab == key
                 val content by animateColorAsState(if (selected) Color.White else MutedColor, label = "tabContent")
@@ -131,7 +132,7 @@ import kotlinx.coroutines.launch
                 }
             }
         }
-        if (busy) item("loading") { Loading("正在加载下一页") }
+        if (busy) item("loading") { Loading(title = "正在加载下一页") }
         if (hasNext && !automatic && !busy && error == null) item("continue-empty") { Action("继续加载") { load() } }
         if (error != null) item("error") { EmptyState("下一页加载失败", error, click = load) }
         if (videos.isEmpty() && !busy && error == null) item("empty") {
@@ -243,12 +244,12 @@ import kotlinx.coroutines.launch
             delay(6500); pager.animateScrollToPage((pager.currentPage + 1) % entries.size)
         }
     }
-    val configuration = LocalConfiguration.current
+
     val fontScale = LocalDensity.current.fontScale
     val compact = LocalUiDensity.current.compact
-    val landscape = configuration.screenWidthDp > configuration.screenHeightDp
-    val heroHeight = if (landscape && fontScale <= 1.3f) (configuration.screenHeightDp - if (compact) 156 else 100).dp.coerceAtLeast(280.dp)
-        else (configuration.screenHeightDp * .59f).dp.coerceAtLeast(if (fontScale > 1.3f) 620.dp else 420.dp)
+    val landscape = windowSizeDp().width > windowSizeDp().height
+    val heroHeight = if (landscape && fontScale <= 1.3f) (windowSizeDp().height - if (compact) 156 else 100).dp.coerceAtLeast(280.dp)
+        else (windowSizeDp().height * .59f).dp.coerceAtLeast(if (fontScale > 1.3f) 620.dp else 420.dp)
     Column(Modifier.testTag("home-carousel")) {
         HorizontalPager(pager, Modifier.fillMaxWidth().semantics { contentDescription = "首页精选轮播" },
             key = { "${entries[it].first.site}:${entries[it].first.id}:$it" }) { index ->

@@ -38,6 +38,7 @@ class DownloadCaches(@Suppress("UNUSED_PARAMETER") context: Context, private val
         }?.let { cache(layout.root.absolutePath) }
 
     private fun complete(cache: SimpleCache, key: String): Boolean {
+        if (HlsDownloads.uri(cache, key) != null) return HlsDownloads.complete(cache, key)
         val length = ContentMetadata.getContentLength(cache.getContentMetadata(key))
         return length > 0 && cache.isCached(key, 0, length) && cache.getCachedSpans(key)
             .filter { it.position < length }.all { span -> span.file?.let { it.isFile && it.length() == span.length } == true }
@@ -50,8 +51,10 @@ class DownloadCaches(@Suppress("UNUSED_PARAMETER") context: Context, private val
     fun readCache(key: String, sourceRoot: String = ""): SimpleCache = layouts(sourceRoot)
         .mapNotNull(::existing).firstOrNull { complete(it, key) } ?: cache(sourceRoot)
 
+    fun hlsUri(key: String, sourceRoot: String = ""): String? = HlsDownloads.uri(readCache(key, sourceRoot), key)
+
     fun remove(key: String) {
-        storage.readableLayouts().mapNotNull(::existing).forEach { it.removeResource(key) }
+        layouts("").mapNotNull(::existing).forEach { HlsDownloads.remove(it, key) }
     }
 
     /** Merge media by cache key, preserving a pre-existing shared library and its index/UID. */
@@ -74,6 +77,12 @@ class DownloadCaches(@Suppress("UNUSED_PARAMETER") context: Context, private val
             }
             if (length > 0) target.applyContentMetadataMutations(key,
                 ContentMetadataMutations.setContentLength(ContentMetadataMutations(), length))
+            val metadata = source.getContentMetadata(key)
+            val saved = metadata.get(HlsDownloads.METADATA, "").orEmpty()
+            val mutations = ContentMetadataMutations()
+            if (saved.isNotBlank()) mutations.set(HlsDownloads.METADATA, saved)
+            ContentMetadata.getRedirectedUri(metadata)?.let { ContentMetadataMutations.setRedirectedUri(mutations, it) }
+            target.applyContentMetadataMutations(key, mutations)
         }
     }
 

@@ -9,7 +9,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NextResponsiveUiTest : ComposeUiCase() {
-    @Test fun homeLibraryAndCollectionKeepPrimaryActionsReachable() = ComposeFixture(cinematic = true).use { f ->
+    @Test fun homeLibraryAndCollectionKeepPrimaryActionsReachable() = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
         f.app.library.prefs.edit().putString(PersonalStore.KEY, f.app.library.gson.toJson(PersonalLibrary())).commit()
         val video = f.video(); f.app.library.personal.add(video); f.app.library.personal.add(f.video("ehentai"))
         f.app.library.saveWatch(Watch(video.id, video.title, video.thumb, video.url, 42, 600, site = video.site))

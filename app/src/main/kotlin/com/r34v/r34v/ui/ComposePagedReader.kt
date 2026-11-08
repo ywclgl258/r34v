@@ -15,7 +15,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
@@ -28,9 +27,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage, toggle: () -> Unit,
     position: (Int, GalleryImage?, Int) -> Unit, attachSave: ((() -> Unit)?) -> Unit,
     fit: ReaderFit = ReaderFit.WIDTH, cropPercent: Int = 0, combineCover: Boolean = true, currentPage: Int = jump.page) {
-    val config = LocalConfiguration.current
+
     val readingPage by rememberUpdatedState(currentPage)
-    val spread = if (mode == ReaderMode.SPREAD && config.screenWidthDp > config.screenHeightDp) 2 else 1
+    val spread = if (mode == ReaderMode.SPREAD && windowSizeDp().width > windowSizeDp().height) 2 else 1
     key(spread, mode, combineCover) {
         val scope = rememberCoroutineScope()
         val buffer = remember { ReaderBuffer(count, scope, load) }

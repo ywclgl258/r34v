@@ -1,12 +1,15 @@
 package com.r34v.r34v.data
 
+import androidx.core.content.edit
+
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 
 val Video.entryKey: String get() = if (site == SiteRegistry.IWARA.id && mediaKind == MediaKind.GALLERY) "$site:gallery:$id" else "$site:$id"
 data class ShelfEntry(val video: Video, val completed: Boolean = false, val at: Long = System.currentTimeMillis(), val addedAt: Long = at)
-data class Shelf(val id: String = UUID.randomUUID().toString(), val name: String, val entries: List<ShelfEntry> = emptyList())
+data class Shelf(val id: String = UUID.randomUUID().toString(), val name: String = "", val entries: List<ShelfEntry> = emptyList(),
+    val note: String = "", val pinned: Boolean = false, val coverKey: String = "", val modifiedAt: Long = 0)
 data class PageBookmark(val video: Video, val page: Int, val offset: Int = 0, val at: Long = System.currentTimeMillis()) {
     val key get() = "${video.entryKey}:$page"
 }
@@ -82,7 +85,7 @@ class PersonalStore(private val library: LibraryStore) {
         val previous = snapshot(); val next = block(previous)
         if (next != previous) {
             val raw = library.gson.toJson(next); cachedRaw = raw; cachedSnapshot = next
-            library.prefs.edit().putString(KEY, raw).apply()
+            library.prefs.edit { putString(KEY, raw) }
         }
     }
     fun shelves() = snapshot().shelves
@@ -120,7 +123,10 @@ class PersonalStore(private val library: LibraryStore) {
     }
     fun renameShelf(id: String, name: String) {
         require(id != PersonalLibrary.WATCH_LATER && name.trim().isNotEmpty() && name.trim().length <= 80)
-        change { data -> data.copy(shelves = data.shelves.map { if (it.id == id) it.copy(name = name.trim()) else it }) }
+        change { data -> data.copy(shelves = data.shelves.map { if (it.id == id) it.edited(name = name) else it }) }
+    }
+    fun updateShelf(id: String, name: String, note: String, pinned: Boolean, coverKey: String) = change { data ->
+        data.copy(shelves = data.shelves.map { if (it.id == id) it.edited(name, note, pinned, coverKey) else it })
     }
     fun removeShelf(id: String) {
         require(id != PersonalLibrary.WATCH_LATER)
@@ -134,7 +140,10 @@ class PersonalStore(private val library: LibraryStore) {
         }) }
     }
     fun remove(video: Video, shelf: String = PersonalLibrary.WATCH_LATER) = change { data ->
-        data.copy(shelves = data.shelves.map { if (it.id == shelf) it.copy(entries = it.entries.filter { e -> e.video.entryKey != video.entryKey }) else it })
+        data.copy(shelves = data.shelves.map { value -> if (value.id == shelf) {
+            val next = if (value.coverKey == video.entryKey) value.edited(coverKey = "") else value
+            next.copy(entries = value.entries.filter { e -> e.video.entryKey != video.entryKey })
+        } else value })
     }
     fun complete(video: Video, shelf: String, completed: Boolean) = change { data ->
         data.copy(shelves = data.shelves.map { if (it.id == shelf) it.copy(entries = it.entries.map { e -> if (e.video.entryKey == video.entryKey) e.copy(completed = completed, at = System.currentTimeMillis(), addedAt = e.addedAt.takeIf { time -> time > 0 } ?: e.at) else e }) else it })

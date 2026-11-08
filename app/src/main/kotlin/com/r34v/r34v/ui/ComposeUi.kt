@@ -23,7 +23,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -69,7 +68,7 @@ data class UiDensity(val compact: Boolean, val controlHeight: androidx.compose.u
 val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 24.dp, 18.dp, 12.dp) }
 
 @Composable fun R34Theme(content: @Composable () -> Unit) {
-    val compact = LocalConfiguration.current.screenWidthDp >= 840 && LocalDensity.current.fontScale <= 1.3f
+    val compact = windowSizeDp().width >= 840 && LocalDensity.current.fontScale <= 1.3f
     val density = UiDensity(compact, if (compact) 40.dp else 48.dp, if (compact) 12.dp else 16.dp,
         if (compact) 18.dp else 24.dp, if (compact) 16.dp else 18.dp, if (compact) 10.dp else 12.dp)
     val base = Typography()
@@ -122,7 +121,7 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
         contentPadding = PaddingValues(horizontal = if (compact) 12.dp else 16.dp, vertical = if (compact) 8.dp else 12.dp),
         colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = MutedColor.copy(alpha = .5f)), content = content)
 }
-@Composable fun Action(text: String, primary: Boolean = false, enabled: Boolean = true, modifier: Modifier = Modifier,
+@Composable fun Action(text: String, modifier: Modifier = Modifier, primary: Boolean = false, enabled: Boolean = true,
     icon: Int? = null, selected: Boolean = false, click: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -163,7 +162,7 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
         Text(label, Modifier.weight(1f).padding(end = 8.dp))
     }
 }
-@Composable fun Selector(text: String, enabled: Boolean = true, modifier: Modifier = Modifier, click: () -> Unit) {
+@Composable fun Selector(text: String, modifier: Modifier = Modifier, enabled: Boolean = true, click: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val compact = LocalUiDensity.current.compact
@@ -179,7 +178,7 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
         values.forEachIndexed { i, text -> Choice(text, i == selected) { choose(i) } }
     }
 }
-@Composable fun Loading(title: String = "正在加载内容", modifier: Modifier = Modifier) {
+@Composable fun Loading(modifier: Modifier = Modifier, title: String = "正在加载内容") {
     Column(modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
         CircularProgressIndicator(color = BrandColor, modifier = Modifier.size(28.dp)); Copy(title)
     }

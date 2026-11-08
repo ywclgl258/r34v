@@ -43,6 +43,12 @@ data class SiteContext(
     val mediaKind: MediaKind = MediaKind.VIDEO,
     val category: SiteCategory = SiteCategory.VIDEO,
     val accessNote: String = "",
+    /**
+     * Same-site mirrors, tried in order when [base] answers a Cloudflare challenge or is
+     * unreachable. Only hosts that serve the identical markup may be listed here; a clone that
+     * merely resembles the site belongs in its own [SiteContext].
+     */
+    val mirrors: List<String> = emptyList(),
 ) {
     fun absolute(raw: String): String {
         val value = raw.trim()
@@ -51,7 +57,9 @@ data class SiteContext(
         return runCatching { URI(base).resolve(value).toString() }.getOrDefault("")
     }
 
-    fun isSite(hostname: String) = hostname == host || hostname == "www.$host"
+    fun isSite(hostname: String) =
+        hostname == host || hostname == "www.$host" ||
+            mirrors.any { hostname == it || hostname == "www.$it" }
 
     companion object {
         const val DEFAULT_UA =
@@ -167,8 +175,64 @@ object SiteRegistry {
         accent = 0xFFFF6B9A.toInt(),
     )
 
+    /**
+     * MissAV — 番号式 JAV 站（`/dldss-584`）。站群按地区轮换域名，.ws 目前被 Cloudflare
+     * 直接挑战，.media 返回同样结构，因此把 .media 作为镜像写入 [mirrors]。
+     */
+    val MISSAV = SiteContext(
+        id = "missav", name = "MissAV", base = "https://missav.ws", host = "missav.ws",
+        mirrors = listOf("missav.media"),
+        mediaDomains = setOf("mrstcdn.store"),
+        accent = 0xFFE23E57.toInt(),
+        accessNote = "主域名被拦截时自动改用镜像",
+    )
+
+    /**
+     * Jable — 番号式 JAV 站。jable.tv 长期处在 Cloudflare 托管挑战下，浏览器之外取不到页面；
+     * jable.vip 是同一内容库的 MacCMS 前端，结构稳定，因此以它为基址，jable.tv 作为可识别镜像。
+     */
+    val JABLE = SiteContext(
+        id = "jable", name = "Jable", base = "https://jable.vip", host = "jable.vip",
+        mirrors = listOf("jable.tv"),
+        mediaDomains = setOf("senlin2026.com", "sl260204.top"),
+        accent = 0xFFFFB020.toInt(),
+    )
+
+    /**
+     * rou.video — 短视频/短剧站。SSR 由 TanStack Start 输出，播放地址藏在 `ev` 载荷里
+     * （base64 + 逐字节偏移），解析后指向 `/api/hls/<id>` 的 302 清单。
+     */
+    val ROUVIDEO = SiteContext(
+        id = "rouvideo", name = "rou.video", base = "https://rou.video", host = "rou.video",
+        mediaDomains = setOf("rn221.xyz", "rn252.xyz"),
+        accent = 0xFFFF7A45.toInt(),
+    )
+
+    /** kbj.im — 韩国 BJ 录播聚合，一个帖子一集，播放器是站外 iframe，只做外链与信息展示。 */
+    val KBJ = SiteContext(
+        id = "kbj", name = "KBJ", base = "https://kbj.im", host = "kbj.im",
+        mediaDomains = setOf("i1.wp.com"),
+        accent = 0xFFF59E0B.toInt(),
+        accessNote = "播放器由第三方托管，需在浏览器打开",
+    )
+
+    /** kbjfree.com — Next.js 版 BJ 录播站，列表数据在 RSC payload，播放地址是 CDN 上的 mp4。 */
+    val KBJFREE = SiteContext(
+        id = "kbjfree", name = "KBJFree", base = "https://kbjfree.com", host = "kbjfree.com",
+        mediaDomains = setOf("marshlecdn.com"),
+        accent = 0xFF22D3EE.toInt(),
+    )
+
+    /** pornhub.com — 综合视频站，卡片 `.pcVideoListItem`，播放源来自 flashvars 的 mediaDefinitions。 */
+    val PORNHUB = SiteContext(
+        id = "pornhub", name = "Pornhub", base = "https://www.pornhub.com", host = "www.pornhub.com",
+        mirrors = listOf("pornhub.com"),
+        mediaDomains = setOf("phncdn.com"),
+        accent = 0xFFFF9000.toInt(),
+    )
+
     val all: List<SiteContext> get() = listOf(
-        R34V, HANIME1, IWARA,
+        R34V, HANIME1, IWARA, MISSAV, JABLE, ROUVIDEO, KBJ, KBJFREE, PORNHUB,
         EHENTAI, EXHENTAI, NHENTAI, HITOMI,
         FOURKHD, EVERIA, FOURKUP, GALLERYEPIC, COSPLAYTELE,
     )

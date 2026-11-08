@@ -1,5 +1,7 @@
 package com.r34v.r34v.data
 
+import androidx.core.net.toUri
+
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -234,7 +236,7 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
 
     /** The system screen that unlocks `<shared>/R34V`. Null before Android 11: use a runtime prompt. */
     fun permissionIntent(): Intent? = if (Build.VERSION.SDK_INT >= 30) {
-        Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}"))
+        Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, "package:${context.packageName}".toUri())
             .takeIf { it.resolveActivity(context.packageManager) != null }
             ?: Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
     } else null

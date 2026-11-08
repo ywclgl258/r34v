@@ -105,7 +105,11 @@ data class ReaderJump(val serial: Int, val page: Int, val offset: Int = 0)
             val number = index + 1; val rendered = buffer.pages[number]; val error = buffer.errors[number]
             val ratio = buffer.ratios[number] ?: (2f / 3f)
             var zoom by remember(number) { mutableFloatStateOf(1f) }; var pan by remember(number) { mutableStateOf(Offset.Zero) }
-            LaunchedEffect(list.firstVisibleItemIndex) { if (number != list.firstVisibleItemIndex + 1) { zoom = 1f; pan = Offset.Zero } }
+            LaunchedEffect(list, number) {
+                snapshotFlow { list.firstVisibleItemIndex }.distinctUntilChanged().collect { first ->
+                    if (number != first + 1) { zoom = 1f; pan = Offset.Zero }
+                }
+            }
             Box(Modifier.fillMaxWidth().aspectRatio(ratio).clipToBounds().background(CanvasColor).testTag("reader-page-$number").semantics { stateDescription = "缩放 $zoom" }
                 .pointerInput(number) { detectTapGestures(onTap = { currentToggle() }, onDoubleTap = { zoom = if (zoom > 1f) 1f else 2f; pan = Offset.Zero }) }
                 .pointerInput(number) { awaitEachGesture {

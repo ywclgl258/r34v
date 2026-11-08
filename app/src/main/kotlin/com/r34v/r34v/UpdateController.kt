@@ -1,5 +1,9 @@
 package com.r34v.r34v
 
+import androidx.core.net.toUri
+
+import androidx.core.content.edit
+
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -33,7 +37,7 @@ class UpdateController(private val activity: ComponentActivity, private val app:
                     JsonParser.parseString(body).asJsonObject
                 }
             }
-            app.library.prefs.edit().putLong("update_checked_at", System.currentTimeMillis()).apply()
+            app.library.prefs.edit { putLong("update_checked_at", System.currentTimeMillis()) }
             val version = release["tag_name"].asString
             if (!newer(version, BuildConfig.VERSION_NAME)) { if (!silent) activity.toast("当前已是最新版本"); return }
             val assets = release.getAsJsonArray("assets").map { it.asJsonObject }
@@ -68,7 +72,7 @@ class UpdateController(private val activity: ComponentActivity, private val app:
     }
     private fun install(file: File) {
         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
-            activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")))
+            activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${activity.packageName}".toUri()))
             activity.toast("允许安装后，再点检查更新即可重新安装")
             return
         }
