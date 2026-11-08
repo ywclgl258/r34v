@@ -61,7 +61,7 @@ class GalleryUiTest : ComposeUiCase() {
         f.app.library.switchSite("ehentai"); f.brokenPage = 1; f.launchGallery(read = true); waitText("重试此页")
         f.brokenPage = 0; clickText("重试此页"); ui.waitUntil(15000) { f.app.library.reading(f.video("ehentai").id)?.page == 1 }
         back(f); f.app.library.switchSite("exhentai"); assertFalse(f.app.network.session.hasGallerySession(SiteRegistry.EXHENTAI))
-        f.launch(); openSourceHome(); f.shot("12-ex-login-gate"); waitText("ExHentai 必须登录")
+        f.launch(); waitText("ExHentai 必须登录"); ui.onNodeWithText("首页").assertIsSelected(); f.shot("12-ex-login-gate")
         clickText("官方网页登录"); waitText("ExHentai 官方登录"); clickText("验证登录"); waitText("尚未取得登录会话，请先在官方页面完成登录。")
         ui.runOnIdle {
             val auth = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED).filterIsInstance<SiteAuthActivity>().single()
