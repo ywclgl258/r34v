@@ -1,6 +1,7 @@
 package com.r34v.r34v
 
 import androidx.compose.ui.test.*
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.gson.Gson
 import com.r34v.r34v.data.*
@@ -53,9 +54,22 @@ class ShelfOrganizationUiTest : ComposeUiCase() {
         f.shot("shelf-settings")
         ui.onNodeWithText("合集备注").performTextReplacement("不保存的草稿"); closeKeyboard(f); clickText("取消")
         assertEquals(saved, f.app.library.personal.shelves().last())
-        ui.onNodeWithContentDescription("返回我的片库").performClick(); waitText("已置顶")
+        ui.onNodeWithContentDescription("返回我的片库").performClick()
+        val list = ui.onNodeWithTag("library-hub")
+        list.performScrollToNode(hasText("留给周末的作品")); waitText("已置顶")
         ui.onNodeWithText("留给周末的作品").assertIsDisplayed()
-        assertTrue(ui.onNodeWithText(custom.name).fetchSemanticsNode().boundsInRoot.top < ui.onNodeWithText("稍后看").fetchSemanticsNode().boundsInRoot.top)
+        list.performScrollToNode(hasText(custom.name))
+        val pinnedBounds = ui.onNodeWithText(custom.name).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val pinnedScroll = list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        // LazyColumn need not compose the next shelf on a short screen. Compare scroll position
+        // as well as visible bounds, so the same ordering assertion works across viewports.
+        list.performScrollToNode(hasText("稍后看"))
+        val laterBounds = ui.onNodeWithText("稍后看").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val laterScroll = list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        assertTrue("Pinned shelf must precede Watch Later", laterScroll > pinnedScroll ||
+            laterScroll == pinnedScroll && (laterBounds.top > pinnedBounds.top ||
+                laterBounds.top == pinnedBounds.top && laterBounds.left > pinnedBounds.left))
+        list.performScrollToNode(hasText(custom.name))
         f.shot("shelf-pinned-cover-note")
         validateBackup(Gson().fromJson(Gson().toJson(LibraryBackup(personal = f.app.library.personal.snapshot())), LibraryBackup::class.java))
     }
