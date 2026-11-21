@@ -463,9 +463,28 @@ class GalleryActivity : ComponentActivity() {
         val gallery = detail ?: error("${itemNoun}信息尚未载入")
         val remembered = store.reading(entry.id, site.id)?.takeIf { it.page == target }?.pageUrl
         val cached = withContext(Dispatchers.IO) { app.galleries.cachedPageUrl(entry, target, sourceRoot) }
-        val url = cached ?: images[target]?.pageUrl ?: images[target - 1]?.nextUrl ?: images[target + 1]?.previousUrl ?: remembered
-            ?: if (offlineOnly) error("下载图页目录缺失，请重新下载") else AdapterRegistry.adapter(site, app.network).galleryPageLink(gallery, target)
-        return app.galleries.page(site, url, force, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly, sourceRoot = sourceRoot).also { images[target] = it.image }
+        val fallback = if (offlineOnly) error("下载图页目录缺失，请重新下载")
+        else AdapterRegistry.adapter(site, app.network).galleryPageLink(gallery, target)
+        val url = cached ?: images[target]?.pageUrl ?: images[target - 1]?.nextUrl ?: images[target + 1]?.previousUrl ?: remembered ?: fallback
+        return try {
+            app.galleries.page(site, url, force, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly, sourceRoot = sourceRoot)
+                .also { images[target] = it.image }
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            // 旧缓存/旧进度里存了失效页地址：丢弃映射，改用站点重新解析的地址重试一次。
+            // 下载目录里已有该页时（离线阅读）不走自愈，避免把已下载内容判成可重新下载。
+            val staleAdvice = error.message.orEmpty()
+            if (offlineOnly || cached == null && remembered == null && url == fallback) throw error
+            withContext(Dispatchers.IO) { app.galleries.forgetPageLinks(entry, sourceRoot) }
+            if (fallback.isBlank()) throw error
+            try {
+                app.galleries.page(site, fallback, true, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly, sourceRoot = sourceRoot)
+                    .also { images[target] = it.image }
+            } catch (retry: Exception) {
+                if (retry is CancellationException) throw retry
+                throw IllegalStateException("${staleAdvice.ifBlank { retry.message.orEmpty() }}（已重新解析页地址仍失败）", retry)
+            }
+        }
     }
     @Composable private fun ExportHost() {
         LaunchedEffect(exports.message) {

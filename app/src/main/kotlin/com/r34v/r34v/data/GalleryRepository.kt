@@ -95,6 +95,19 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         File(directory(SiteRegistry.byIdOrDefault(entry.site)), "${key(entry.url)}.links.json"), KnownPages::class.java
     )?.links?.get(page)
 
+    /**
+     * 丢弃某本书缓存的页地址映射（`links.json`）。
+     *
+     * 写真与 KVS 类站点的页地址会随站点改版、CDN 轮换与内容重排失效；旧映射一旦
+     * 存进缓存或下载目录，之后每次打开都拿着过期地址去解析，最终报“无法识别图片地址”。
+     * 阅读器在解析失败时调用它以立刻自愈，下一轮重新从站点解析。
+     */
+    fun forgetPageLinks(entry: Video, sourceRoot: String = "") {
+        listOf(File(bookDirectory(entry, sourceRoot), "links.json"),
+            File(directory(SiteRegistry.byIdOrDefault(entry.site)), "${key(entry.url)}.links.json"))
+            .forEach { file -> runCatching { if (file.isFile) file.delete() } }
+    }
+
     @Synchronized private fun rememberDownloadPage(entry: Video, image: GalleryImage) {
         val file = File(bookDirectory(entry, write = true), "links.json")
         val links = read(file, KnownPages::class.java)?.links.orEmpty() + (image.index to image.pageUrl)
