@@ -7,10 +7,29 @@ import java.io.IOException
 
 /** Retry only registered same-site mirrors; cancellation and ordinary page errors stay terminal. */
 internal object SiteHtml {
+    /**
+     * 是否为“被拦截”页面，而不是正常内容页。
+     *
+     * `challenge-platform` 有两种形态：拦截页（整页只有挑战脚本）和正常内容页里的
+     * Cloudflare 被动 JS 检测注入（`/cdn-cgi/challenge-platform/scripts/jsd/main.js`）。
+     * 4KHD 每页都带后者，旧判定只看关键词和长度，把整站误判成挑战页。
+     * 现在必须有“这是挑战页”的明确证据才拦截：标题级提示、cf-mitigated 标记，
+     * 或既无内容语义、也没有任何正文结构的极短响应。
+     */
     fun challenge(body: String) = body.contains("Checking your browser", true) ||
         body.contains("Just a moment", true) || body.contains("cf-mitigated", true) ||
         (body.contains("DDoS-Guard", true) && !body.contains("class=\"thumbs")) ||
-        (body.contains("challenge-platform", true) && body.length < 120_000 && !body.contains("</video"))
+        (body.contains("challenge-platform", true) && !hasPageContent(body))
+
+    /** 正常内容页的证据：媒体元素、站点列表结构，或常见 CMS 的内容容器。 */
+    private fun hasPageContent(body: String): Boolean =
+        body.contains("</video") || body.contains("class=\"thumbs") ||
+            CONTENT_MARKERS.any { body.contains(it, true) }
+
+    private val CONTENT_MARKERS = listOf(
+        "entry-title", "generate-columns", "post-thumbnail", "wp-content",
+        "<main", "<article", "id=\"content", "class=\"content", "video-card",
+    )
 
     /**
      * 429 的同址退避：站点对短时间内的连续请求会直接返回限流，等一拍再敲同一个地址通常就过，

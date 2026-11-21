@@ -8,6 +8,21 @@ import org.junit.Test
 import java.io.IOException
 
 class SiteHtmlTest {
+    @Test fun passiveCloudflareInjectionOnARealPageIsNotAChallenge() {
+        // 4KHD 的正常内容页：带 Cloudflare 被动 JSD 注入，但正文完整。
+        val page = "<html><head><title>4KHD</title></head><body>" +
+            "<script>var u='/cdn-cgi/challenge-platform/scripts/jsd/main.js?ray=abc';</script>" +
+            "<article class='post'><h2 class='entry-title'>Maid PPV</h2><div class='generate-columns'>x</div></article>" +
+            "</body></html>"
+        assertFalse(SiteHtml.challenge(page))
+        // 真实拦截页：只有挑战脚本，没有内容结构。
+        val blocked = "<html><head><title>Just a moment...</title></head><body>" +
+            "<script src='/cdn-cgi/challenge-platform/scripts/jsd/main.js'></script></body></html>"
+        assertTrue(SiteHtml.challenge(blocked))
+        // 只有关键词和空壳：仍然拦截。
+        assertTrue(SiteHtml.challenge("<html><body><script src='/cdn-cgi/challenge-platform/x'></script></body></html>"))
+    }
+
     @Test fun failedPrimaryUsesTheMirrorAndPreservesPathAndQuery() = runBlocking {
         for (status in listOf(403, 503)) {
             val calls = mutableListOf<String>()
