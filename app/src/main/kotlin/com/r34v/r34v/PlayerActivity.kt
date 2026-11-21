@@ -394,6 +394,24 @@ class PlayerActivity : ComponentActivity() {
             Text(status, color = if (playing) MatchColor else MutedColor, fontSize = 11.sp, lineHeight = 15.sp)
         }
     }
+    /** 详情页工具条上的图标+文字紧凑按钮；触控区仍不小于 44dp。 */
+    @Composable private fun CompactTool(icon: Int, label: String, active: Boolean = false, click: () -> Unit) {
+        Row(Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(8.dp))
+            .background(if (active) ActiveControlColor else ControlColor)
+            .clickable(onClick = click)
+            .padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Glyph(icon, null, Modifier.size(16.dp))
+            Text(label, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+        }
+    }
+    private fun shelfOptions() { dialogs.choose("稍后看与合集", listOf("加入 / 移出稍后看", "加入合集")) { index ->
+        val personal = app.library.personal
+        when (index) {
+            0 -> if (personal.contains(video)) personal.remove(video) else personal.add(video)
+            else -> dialogs.addToShelf(personal, video)
+        }
+    } }
+
     @Composable private fun Details() {
         @Suppress("UNUSED_VARIABLE") val changed = revision
         Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(SurfaceColor.copy(alpha = .42f), CanvasColor)))
@@ -405,24 +423,26 @@ class PlayerActivity : ComponentActivity() {
             if (metadata.isNotBlank()) Copy(metadata)
             PlaybackStatusPill()
             if (failureVisible) Action("重试", primary = true, click = ::restart)
-            FlowRow(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 一行工具条：档位、倍速、收藏、下载、更多。原来是三行 48dp 大按钮，
+            // 在手机上吃掉近半屏；现在主操作一行放得下，次要项进“更多”。
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Selector(stream?.label ?: "清晰度", enabled = detail?.streams?.isNotEmpty() == true, modifier = Modifier.semantics { contentDescription = "清晰度，当前 ${stream?.label ?: "尚未加载"}" }, click = ::quality)
                 Selector("${userRate}×", modifier = Modifier.semantics { contentDescription = "播放速度，当前 ${userRate} 倍" }, click = ::speed)
+                val favorite = store.isFavorite("video", video.id, video.site)
+                CompactTool(R.drawable.ic_bookmark, if (favorite) "已收藏" else "收藏", active = favorite) {
+                    store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site); revision++
+                }
+                if (!offline && detail?.streams?.isNotEmpty() == true) CompactTool(R.drawable.ic_download, "下载") { download() }
                 Spacer(Modifier.weight(1f))
                 IconAction(R.drawable.ic_more, "更多播放操作", click = ::playbackOptions)
             }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                val favorite = store.isFavorite("video", video.id, video.site)
-                Action(if (favorite) "已收藏" else "收藏", icon = R.drawable.ic_bookmark, selected = favorite) {
-                    store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site); revision++
-                }
-                if (!offline && detail?.streams?.isNotEmpty() == true) Action("下载", icon = R.drawable.ic_download, click = ::download)
-                detail?.externalPlayers?.forEach { link -> Action(link.label) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                detail?.externalPlayers?.forEach { link -> TextAction({
                     runCatching { startActivity(Intent(Intent.ACTION_VIEW, link.url.toUri())) }
                         .onFailure { toast("没有可用的浏览器") }
-                } }
+                }) { Text(link.label) } }
+                TextAction({ shelfOptions() }) { Text("稍后看 / 合集") }
             }
-            SaveForLater(video, app, dialogs)
             QueueNextAction(this@PlayerActivity, video, intent.getStringExtra("queue_session"), dialogs)
             if (timerRemaining > 0) TextAction(::sleepTimer) { Text("将在 ${timeText(timerRemaining)} 后暂停") }
             detail?.let { data ->

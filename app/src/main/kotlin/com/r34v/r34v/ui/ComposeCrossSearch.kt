@@ -3,12 +3,17 @@ package com.r34v.r34v.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -101,45 +106,64 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
     play: (Video) -> Unit, favorite: (Video) -> Unit, rulesVersion: Int, initialCategory: String = "", languages: Map<String, String> = emptyMap(),
     categoryChanged: (String) -> Unit = {}, save: (() -> Unit)? = null, condition: SearchCondition? = null) {
     var category by rememberSaveable(initialCategory) { mutableIntStateOf(SiteCategory.entries.indexOfFirst { it.name == initialCategory } + 1) }
+    // 来源筛选：空集=全部来源。分组标题会让同一关键词的结果被切成十几段，
+    // 混合瀑布流更接近“一次搜索看全部来源”的预期。
+    var only by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(query, sites, rulesVersion, languages, condition) { state.search(app, query, sites, languageOverrides = languages, condition = condition) }
     val columns = when {
-        windowSizeDp().width >= 1280 -> 4
-        windowSizeDp().width >= 840 -> 3
+        LocalConfiguration.current.fontScale > 1.5f && windowSizeDp().width < 400 -> 1
+        windowSizeDp().width >= 1280 -> 6
+        windowSizeDp().width >= 1024 -> 5
+        windowSizeDp().width >= 840 -> 4
+        windowSizeDp().width >= 600 -> 3
         else -> 2
     }
-    LazyColumn(Modifier.fillMaxSize().testTag("cross-search-results"), contentPadding = PaddingValues(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap)) {
-        item {
-            Title(if (query.isBlank()) "高级条件搜索" else "搜索：$query")
-            if (condition != null && !condition.isEmpty) Copy("已应用组合条件；各来源的实际筛选范围如下。")
-            Choices(listOf("全部") + SiteCategory.entries.map { it.title }, category) { category = it; categoryChanged(if (it == 0) "" else SiteCategory.entries[it - 1].name) }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextAction({ state.search(app, query, sites, force = true, languageOverrides = languages, condition = condition) }) { Text("刷新全部来源") }
-                if (save != null) TextAction(save) { Text("保存搜索方案") }
+    val visible = sites.filter { category == 0 || SiteRegistry.byIdOrDefault(it).category == SiteCategory.entries[category - 1] }
+    val merged = remember(state.buckets, visible, only) {
+        visible.filter { only.isBlank() || only == it }
+            .flatMap { id -> (state.buckets[id]?.videos.orEmpty()).map { it.copy(site = id) } }
+            .distinctBy { it.entryKey }
+    }
+    val failures = visible.mapNotNull { id -> state.buckets[id]?.takeIf { it.error != null }?.let { SiteRegistry.byIdOrDefault(id).name to it } }
+    val busy = visible.any { state.buckets[it]?.busy == true }
+    val density = LocalUiDensity.current
+    val grid = rememberScrollState()
+    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().testTag("cross-search-results"),
+        contentPadding = PaddingValues(start = density.pagePadding, end = density.pagePadding, top = 12.dp, bottom = 120.dp),
+        horizontalArrangement = Arrangement.spacedBy(density.cardGap), verticalItemSpacing = 10.dp) {
+        item(span = StaggeredGridItemSpan.FullLine, key = "head") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Title(if (query.isBlank()) "高级条件搜索" else "搜索：$query")
+                if (condition != null && !condition.isEmpty) Copy("已应用组合条件；各来源的实际筛选范围如下。")
+                Choices(listOf("全部") + SiteCategory.entries.map { it.title }, category) { category = it; categoryChanged(if (it == 0) "" else SiteCategory.entries[it - 1].name) }
+                if (visible.size > 1) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Choice("全部来源 · ${visible.sumOf { state.buckets[it]?.videos?.size ?: 0 }}", only.isBlank()) { only = "" }
+                    visible.forEach { id ->
+                        val bucket = state.buckets[id]
+                        Choice("${SiteRegistry.byIdOrDefault(id).name} · ${bucket?.videos?.size ?: 0}", only == id) { only = if (only == id) "" else id }
+                    }
+                }
+                Copy("结果按来源混合排列；点上方站点只显示该站。")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextAction({ state.search(app, query, sites, force = true, languageOverrides = languages, condition = condition) }) { Text("刷新全部来源") }
+                    if (save != null) TextAction(save) { Text("保存搜索方案") }
+                }
+                if (failures.isNotEmpty()) failures.forEach { (name, bucket) -> Copy("$name：${bucket.error}") }
             }
         }
-        sites.filter { category == 0 || SiteRegistry.byIdOrDefault(it).category == SiteCategory.entries[category - 1] }.forEach { id ->
-            val site = SiteRegistry.byIdOrDefault(id)
-            val bucket = state.buckets[id] ?: SearchBucket(busy = true)
-            item(key = "$id:title") {
-                Title("${site.name} · ${bucket.videos.size} 项")
-                if (condition != null && !condition.isEmpty) Copy(filterScope(id))
-                if (bucket.cached) Copy("离线缓存结果")
-            }
-            items(bucket.videos.chunked(columns), key = { "$id:${it.first().id}" }) { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap)) {
-                    row.forEach { video -> MediaCard(video, Modifier.weight(1f), menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) } }
-                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+        items(merged.size, key = { merged[it].entryKey }, contentType = { "result" }) { index ->
+            val video = merged[index]
+            MediaCard(video, menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) }
+        }
+        item(span = StaggeredGridItemSpan.FullLine, key = "status") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (busy) Loading(title = "正在搜索 ${visible.size} 个来源")
+                if (!busy && merged.isEmpty() && failures.isEmpty()) Copy("当前条件下暂无结果")
+                if (!busy) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    visible.filter { only.isBlank() || only == it }
+                        .filter { state.buckets[it]?.more == true && state.buckets[it]?.busy != true && state.buckets[it]?.error == null }
+                        .forEach { id -> Action("加载 ${SiteRegistry.byIdOrDefault(id).name} 更多") { state.load(app, query, id) } }
                 }
-            }
-            item(key = "$id:status") {
-                when {
-                    bucket.busy -> Loading(title = "正在搜索 ${site.name}")
-                    bucket.error != null -> { Copy(bucket.error); Action("重试 ${site.name}") {
-                        if (bucket.more) state.load(app, query, id) else state.refreshSource(app, query, id)
-                    } }
-                    bucket.videos.isEmpty() -> Copy("当前条件下暂无结果")
-                }
-                if (!bucket.busy && bucket.error == null && bucket.more) Action("加载 ${site.name} 下一页") { state.load(app, query, id) }
             }
         }
     }

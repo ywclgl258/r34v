@@ -17,6 +17,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.shape.CircleShape
@@ -283,6 +284,43 @@ class GalleryActivity : ComponentActivity() {
             }
         }
     }
+    /** 详情页主操作：与旧版整块按钮逻辑一致，只是从纵向堆叠挪到一行。 */
+    private fun downloadAction(download: GalleryDownload?) {
+        if (download?.state == GalleryDownloadState.COMPLETED && download.partial != true) { offlineOnly = true; load(true); return }
+        if (download?.state == GalleryDownloadState.REMOVING) return
+        lifecycleScope.launch { try {
+            if (download?.state in listOf(GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED)) app.galleryDownloads.pause(download!!.id)
+            else {
+                if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                    requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 42)
+                app.galleryDownloads.add(entry); toast("已加入下载，可在统一下载中心查看")
+            }
+        } catch (e: Exception) { if (e is CancellationException) throw e; showError(e) } }
+    }
+
+    private fun galleryMoreOptions(download: GalleryDownload?) {
+        val options = buildList {
+            add("页面缩略图总览" to { thumbnails = true })
+            add("图片保存、分享与 CBZ" to { exportOptions() })
+            add("加入合集" to { dialogs.addToShelf(app.library.personal, entry) })
+            if (entry.site != SiteRegistry.LOCAL.id) {
+                add("管理下载" to { startActivity(Intent(this@GalleryActivity, MainActivity::class.java).putExtra("downloads", true)) })
+                add("选择页码下载" to { selectPages() })
+            }
+        }
+        dialogs.choose("更多图集操作", options.map { it.first }) { index -> options[index].second() }
+    }
+
+    /** 与播放器详情页同款的紧凑按钮：图标 + 文字，触控高度 44dp。 */
+    @Composable private fun CompactAction(label: String, icon: Int, active: Boolean = false, click: () -> Unit) {
+        Row(Modifier.heightIn(min = 44.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .background(if (active) ActiveControlColor else ControlColor).clickable(onClick = click)
+            .padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Glyph(icon, null, Modifier.size(16.dp))
+            Text(label, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+        }
+    }
+
     private fun readingBehaviorOptions() {
         // 条目=(文案, 是否打开子对话框, 动作)：子对话框自己负责收尾，其余动作执行后重开本菜单。
         val items = mutableListOf(
@@ -375,7 +413,7 @@ class GalleryActivity : ComponentActivity() {
             }
             if (gallery.alternativeTitle.isNotBlank() && gallery.alternativeTitle != entry.title) Copy(gallery.alternativeTitle)
             if (offlineOnly) Copy(metadata)
-            Action(if (store.isFavorite("gallery", entry.id, site.id)) "已收藏$noun" else "收藏$noun", modifier = Modifier.fillMaxWidth()) { store.toggleFavorite(Favorite("gallery", entry.id, entry.title, entry.url, entry.thumb, entry.duration, site = site.id), site.id); revision++ }
+
             if (!offlineOnly && gallery.embeddedVideos.isNotEmpty()) {
                 if (gallery.embeddedVideos.size > 1) Title("文章内视频 · ${gallery.embeddedVideos.size} 个")
                 gallery.embeddedVideos.forEach { media ->
@@ -386,33 +424,29 @@ class GalleryActivity : ComponentActivity() {
                     }
                 }
             }
-            SaveForLater(entry, app, dialogs)
             QueueNextAction(this@GalleryActivity, entry, intent.getStringExtra("queue_session"), dialogs)
-            Action("页面缩略图总览") { thumbnails = true }
-            Action("图片保存、分享与 CBZ", click = ::exportOptions)
-            if (entry.site != SiteRegistry.LOCAL.id) {
-            Action(when (download?.state) {
-                GalleryDownloadState.COMPLETED -> if (download.partial) "继续保存所选页" else "离线$verb"
-                GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED -> "暂停下载 · ${download.pages} / ${download.total} 页"
-                GalleryDownloadState.PAUSED -> "继续下载"
-                GalleryDownloadState.RETRY_WAIT -> "等待限流 · 点击继续"
-                GalleryDownloadState.FAILED -> "重试下载"
-                GalleryDownloadState.REMOVING -> "正在删除下载"
-                null -> if (entry.mediaKind == MediaKind.GALLERY && site.category != SiteCategory.COMIC) "下载全部图片" else "下载整本"
-            }, enabled = download?.state != GalleryDownloadState.REMOVING, modifier = Modifier.fillMaxWidth()) {
-                if (download?.state == GalleryDownloadState.COMPLETED && download.partial != true) { offlineOnly = true; load(true) }
-                else lifecycleScope.launch { try {
-                    if (download?.state in listOf(GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED)) app.galleryDownloads.pause(download!!.id)
-                    else {
-                        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-                            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 42)
-                        app.galleryDownloads.add(entry); toast("已加入下载，可在统一下载中心查看")
-                    }
-                } catch (e: Exception) { if (e is CancellationException) throw e; showError(e) } }
+            // 详情动作收成两行：收藏 / 稍后看 / 下载 是主操作，其余进“更多”。
+            // 原来 7 个纵向按钮（多个全宽）在手机上占满整屏。
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                val favorite = store.isFavorite("gallery", entry.id, site.id)
+                CompactAction(if (favorite) "已收藏" else "收藏$noun", R.drawable.ic_bookmark, favorite) {
+                    store.toggleFavorite(Favorite("gallery", entry.id, entry.title, entry.url, entry.thumb, entry.duration, site = site.id), site.id); revision++
+                }
+                val saved = app.library.personal.contains(entry)
+                CompactAction(if (saved) "已稍后看" else "稍后看", R.drawable.ic_updates, saved) {
+                    if (saved) app.library.personal.remove(entry) else app.library.personal.add(entry)
+                }
+                if (entry.site != SiteRegistry.LOCAL.id) CompactAction(
+                    when (download?.state) {
+                        GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED, GalleryDownloadState.PAUSED, GalleryDownloadState.RETRY_WAIT -> "下载中"
+                        GalleryDownloadState.COMPLETED -> if (download.partial) "继续所选页" else "已离线"
+                        else -> if (site.category != SiteCategory.COMIC) "下载全部" else "下载整本"
+                    }, R.drawable.ic_download) { downloadAction(download) }
+                Spacer(Modifier.weight(1f))
+                IconAction(R.drawable.ic_more, "更多图集操作") { galleryMoreOptions(download) }
             }
-            TextAction({ startActivity(Intent(this@GalleryActivity, MainActivity::class.java).putExtra("downloads", true)) }) { Glyph(R.drawable.ic_download, null); Spacer(Modifier.width(8.dp)); Text("管理下载") }
-            TextAction(::selectPages) { Text("选择页码下载") }
-            if (download?.state == GalleryDownloadState.FAILED) Copy(download.error)
+            if (entry.site != SiteRegistry.LOCAL.id) {
+            if (download?.state == GalleryDownloadState.FAILED) Copy(download.error.orEmpty())
             }
             if (gallery.cached && !offlineOnly) Copy("当前使用已保存的$noun 信息；已保存图页可离线$verb，整本下载可在下载中心查看。")
             Copy(gallery.description)

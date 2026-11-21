@@ -53,7 +53,7 @@ fun mediaCountOrDuration(video: Video): String = video.duration.takeUnless {
                 }
             }
             if (compact) Title(video.title, maxLines = 3)
-            Action(action, primary = true, icon = actionIcon, modifier = Modifier.fillMaxWidth()) { play(video) }
+            Action(action, primary = true, icon = actionIcon) { play(video) }
         }
     } else if (wide) {
         Row(Modifier.fillMaxWidth().contentPanel(12).testTag(if (site.category == SiteCategory.PHOTO) "photo-stage" else "video-stage"),
@@ -65,19 +65,17 @@ fun mediaCountOrDuration(video: Video): String = video.duration.takeUnless {
             }
         }
     } else if (!compact) {
-        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceColor)
-            .testTag(if (site.category == SiteCategory.PHOTO) "photo-stage" else "video-stage")) {
-            SiteImage(video.thumb, site, Modifier.matchParentSize())
-            Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-                0f to Color.Transparent, .35f to Color.Black.copy(alpha = .05f), .65f to Color.Black.copy(alpha = .65f), 1f to SurfaceColor)))
-            Column(Modifier.fillMaxWidth().heightIn(min = 340.dp).padding(20.dp),
-                verticalArrangement = Arrangement.Bottom) {
+        // 手机上的续看卡改成紧凑横排：原来满屏 Hero（min 340dp + 全宽主按钮）把
+        // 瀑布流挤到第一屏之外，进站看不到任何封面。
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceColor).padding(10.dp)
+            .testTag(if (site.category == SiteCategory.PHOTO) "photo-stage" else "video-stage"),
+            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            SiteImage(video.thumb, site, Modifier.width(88.dp).aspectRatio(if (site.category == SiteCategory.PHOTO) 0.78f else 16f / 9f).clip(RoundedCornerShape(8.dp)), fit = true)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Copy(status)
-                Spacer(Modifier.height(6.dp))
-                Title(video.title, large = true, maxLines = 3)
-                Spacer(Modifier.height(18.dp))
-                Action(action, primary = true, icon = actionIcon, modifier = Modifier.fillMaxWidth()) { play(video) }
+                Title(video.title, maxLines = 2)
             }
+            Action(action, primary = true, icon = actionIcon) { play(video) }
         }
     } else {
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(SurfaceColor)
