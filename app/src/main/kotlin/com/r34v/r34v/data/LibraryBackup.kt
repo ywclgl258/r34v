@@ -58,7 +58,7 @@ object BackupCodec {
     }
 }
 
-internal val backupBooleans = setOf("translate_tags", "auto_fullscreen", "auto_download", "auto_update", "download_unmetered", "reduce_transparency", "stream_cache")
+internal val backupBooleans = setOf("translate_tags", "auto_fullscreen", "auto_download", "auto_update", "download_unmetered", "reduce_transparency", "stream_cache", "seek_cache")
 internal val backupStrings = setOf("quality", "native_speed", "cross_search_sites")
 
 fun validateBackup(value: LibraryBackup) {

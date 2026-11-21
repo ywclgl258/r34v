@@ -273,7 +273,10 @@ class PlayerActivity : ComponentActivity() {
             else app.playback.item(video, value)
         val hlsKey = HlsDownloads.mime(value.url)?.let { app.playback.key(video, value.label) }
         val streamingCache = store.bool("stream_cache")
-        val mediaSource = DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site, sourceRoot, hlsKey, streamingCache)).createMediaSource(item)
+        // 会话 seek 缓存：只服务在线渐进流（离线/下载/本地文件/HLS 各自有更快的本地路径）。
+        val sessionKey = if (local == null && !offline && offlineId == null && cachedKey == null && hlsKey == null && store.bool("seek_cache", true))
+            "${video.site}:${video.id}:${value.label}" else null
+        val mediaSource = DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site, sourceRoot, hlsKey, streamingCache, sessionKey)).createMediaSource(item)
         engine.setMediaSource(mediaSource, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
     }
     private fun playbackError(error: Throwable) { pendingError = error; phase = null; status = "播放失败：${error.message}"; failureVisible = true; controls = true; locked = false }

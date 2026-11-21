@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 7.0 的出厂信任库没有 ISRG Root X1，媒体 CDN（Let's Encrypt 证书）会报
+     Trust anchor not found。补充公开的 ISRG 根（指纹见 docs），不改其他信任策略：
+     仍然只信系统根 + 该根，不信任用户安装的证书，明文流量继续禁止。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/isrg_root_x1" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

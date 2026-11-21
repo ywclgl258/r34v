@@ -38,6 +38,14 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     private val downloadCaches = DownloadCaches(context, storage, database)
     private val downloadCache get() = downloadCaches.cache()
     private val streamCache by lazy { SimpleCache(File(context.cacheDir, "streams"), LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024), database) }
+
+    /**
+     * 会话级 seek 缓存：只为当前播放的视频保留最近 64 MB。在线播放向后 seek 时，
+     * 已读过的字节直接命中本地，不再重走“站点 302 → CDN”重新拉流；换视频时清掉
+     * 上一部的条目，总量由 LRU 封顶，不复制全局 512 MB 写路径的老问题。
+     */
+    private val seekCache by lazy { SimpleCache(File(context.cacheDir, "seeks"), LeastRecentlyUsedCacheEvictor(64L * 1024 * 1024), database) }
+    @Volatile private var seekKey: String? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val refreshed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val refreshJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
@@ -173,7 +181,7 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     }
 
     fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = "", hlsKey: String? = null,
-                      cacheStreaming: Boolean = false): DataSource.Factory {
+                      cacheStreaming: Boolean = false, sessionKey: String? = null): DataSource.Factory {
         val owner = siteId?.let(SiteRegistry::byId)
         val cacheKeys = hlsKey?.let(HlsDownloads::keys) ?: androidx.media3.datasource.cache.CacheKeyFactory.DEFAULT
         // Select a restored HLS library once, not once per segment (which would rescan every file).
@@ -192,9 +200,22 @@ class PlaybackStore(private val context: Context, private val network: Network, 
                 private val listeners = mutableListOf<TransferListener>()
                 override fun addTransferListener(listener: TransferListener) { listeners += listener; impl?.addTransferListener(listener) }
                 override fun open(spec: DataSpec): Long {
-                    val created = CacheDataSource.Factory().setCache(if (hlsKey != null) hlsCache else downloadCaches.readCache(spec.key.orEmpty(), sourceRoot))
+                    var factory: DataSource.Factory = CacheDataSource.Factory().setCache(if (hlsKey != null) hlsCache else downloadCaches.readCache(spec.key.orEmpty(), sourceRoot))
                         .setCacheKeyFactory(cacheKeys)
-                        .setCacheWriteDataSinkFactory(null).setUpstreamDataSourceFactory(if (offline) null else streaming).createDataSource()
+                        .setCacheWriteDataSinkFactory(null).setUpstreamDataSourceFactory(if (offline) null else streaming)
+                    if (sessionKey != null && spec.length != 0L) {
+                        if (seekKey != sessionKey) {
+                            seekKey = sessionKey
+                            seekCache.keys.filter { it != sessionKey }.forEach { key -> runCatching { seekCache.removeResource(key) } }
+                        }
+                        // 会话层键只用 sessionKey（同一视频同一档位字节相同，令牌刷新不影响命中）。
+                        factory = CacheDataSource.Factory().setCache(seekCache)
+                            .setCacheKeyFactory { sessionKey }
+                            .setCacheWriteDataSinkFactory(CacheDataSink.Factory().setCache(seekCache))
+                            .setUpstreamDataSourceFactory(factory)
+                            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                    }
+                    val created = factory.createDataSource()
                     impl = created; listeners.forEach(created::addTransferListener)
                     return created.open(spec)
                 }
