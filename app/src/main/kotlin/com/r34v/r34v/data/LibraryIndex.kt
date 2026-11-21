@@ -104,8 +104,13 @@ class LibraryIndex(private val context: android.content.Context, private val sto
         val temporary = File(file.parentFile, "${file.name}.${System.nanoTime()}.part")
         try {
             temporary.writeText(text)
-            if (file.exists()) file.delete()
-            check(temporary.renameTo(file)) { "无法写入下载索引" }
+            // 直接 rename 覆盖：POSIX 上 rename 是原子的，中间不存在“正式文件已删、新文件未就位”
+            // 的窗口（旧实现先 delete 再 rename，进程在那里被杀就丢掉了整份索引）。
+            // java.nio.file.Files 需要 API 26，本项目 minSdk 24，因此走 renameTo 覆盖。
+            if (!temporary.renameTo(file)) {
+                if (file.exists()) file.delete()
+                check(temporary.renameTo(file)) { "无法写入下载索引" }
+            }
             invalidate()
         } finally { temporary.delete() }
     }

@@ -186,6 +186,9 @@ object IwaraProtocol {
         return parts.getOrNull(1)?.takeIf { parts.firstOrNull() == "image" && Regex("[A-Za-z0-9_-]+").matches(it) }
     }
 
+    /** 单个作品链接是否为图库（`/image/<id>`）。Iwara 一个站点同时承载视频与图库，不能只看站点默认类型。 */
+    fun isGalleryUrl(site: SiteContext, url: String): Boolean = imageId(site, url) != null
+
     fun linkRequest(site: SiteContext, url: String): FeedRequest? {
         val parsed = url.toHttpUrlOrNull() ?: return null
         if (!site.isSite(parsed.host)) return null

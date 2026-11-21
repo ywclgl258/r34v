@@ -106,6 +106,11 @@ class LiveDownloadAudit {
             val detail = adapter.detail(video.url)
             row["streams"] = detail.streams.map { it.label }
             row["officialDownloadQualities"] = detail.downloads.map { it.label }
+            if (detail.streams.isEmpty() && detail.externalPlayers.isNotEmpty()) {
+                row["externalPlayerHosts"] = detail.externalPlayers.mapNotNull { it.url.toHttpUrlOrNull()?.host }.distinct()
+                row["stage"] = "external_player_link"
+                return
+            }
             val stream = detail.streams.lastOrNull() ?: error("No playable source")
             row["stage"] = "media_range"
             val method = PlaybackStore::class.java.getDeclaredMethod("httpFor", String::class.java, SiteContext::class.java).apply { isAccessible = true }

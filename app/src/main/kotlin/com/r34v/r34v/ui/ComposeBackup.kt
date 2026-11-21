@@ -1,5 +1,6 @@
 package com.r34v.r34v.ui
 
+import android.net.Uri
 import androidx.core.net.toUri
 
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,6 +44,11 @@ private fun InputStream.readBackup(): ByteArray {
     var pending by rememberSaveable { mutableStateOf<String?>(null) }
     var sourceUri by rememberSaveable { mutableStateOf<String?>(null) }
     var preview by remember { mutableStateOf<LibraryBackup?>(null) }
+    // 当前持有持久授权的文档；换文件或离开页面时释放，避免无限累积授权。
+    var previousUri by remember { mutableStateOf<Uri?>(null) }
+    fun releasePersisted(uri: Uri) {
+        runCatching { app.contentResolver.releasePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+    }
     val scope = rememberCoroutineScope()
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         val source = pending?.let { File(app.cacheDir, "library-backups/$it") }; pending = null
@@ -60,10 +66,16 @@ private fun InputStream.readBackup(): ByteArray {
         busy = false
         if (uri == null) status = "已取消选择"
         else {
+            // 上一次选择的文档授权要释放：反复换文件会让应用持续持有旧文件的访问权，
+            // 并占用系统的持久 URI 授权配额。
+            previousUri?.takeIf { it != uri }?.let { releasePersisted(it) }
             runCatching { app.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            previousUri = uri
             sourceUri = uri.toString(); preview = null; status = "已选择备份文件，请输入密码"
         }
     }
+    // 预览被清空/组件离开时释放授权，恢复完成后不再占着文件。
+    DisposableEffect(Unit) { onDispose { previousUri?.let(::releasePersisted); previousUri = null } }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         if (!busy) Choices(listOf("导出备份", "恢复备份"), mode) { mode = it; preview = null; status = null; password = ""; confirmation = "" }
         Copy("备份包含收藏、标签订阅、观看与阅读进度、片单、书签、屏蔽词和设置。下载文件仍由下载中心管理，恢复后请重新登录站点账号。")

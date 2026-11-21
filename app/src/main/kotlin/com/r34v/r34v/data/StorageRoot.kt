@@ -324,8 +324,14 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
                 sourceComplete -> completeCopies.add(Pair(from, to))
                 destinationFiles.isNotEmpty() -> {
                     val sourceNames = sourceFiles.map { it.relativeTo(from).path }.toSet()
-                    val destinationNames = destinationFiles.map { it.relativeTo(to).path }.toSet()
-                    check(sourceNames == destinationNames && sourceFiles.all { same(it, File(to, it.relativeTo(from).path)) }) {
+                    // 目标可能只是上次迁移中断留下的部分副本：只要每个已存在的目标文件都与来源
+                    // 逐字节一致（且没有来源里不存在的文件），就按“未完成迁移”继续，而不是判成冲突。
+                    // 只有内容真的不同才停下来，避免覆盖另一份不同的未完成图集。
+                    val compatible = destinationFiles.all { file ->
+                        val path = file.relativeTo(to).path
+                        path in sourceNames && same(File(from, path), file)
+                    }
+                    check(compatible) {
                         "同一图集有不同的未完成副本，已停止迁移并保留两边文件：$relative"
                     }
                 }

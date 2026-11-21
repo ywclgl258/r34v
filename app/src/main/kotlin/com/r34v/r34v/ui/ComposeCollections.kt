@@ -121,9 +121,14 @@ fun ComposeDialogs.selectVideos(videos: List<Video>, action: (List<Video>) -> Un
                 if (!queryEditing && entries.isNotEmpty()) TextAction({ preparing = true }) { Text("准备离线片单") }
             }
         val unfinished = entries.filterNot { it.completed }.map { it.video }
+        // 防重入必须在创建队列之前：两次点击会先各写一份队列，后一份覆盖前一份，
+        // 而 open() 里的拦截又让第二次不打开，最终页面拿到的是已被覆盖的令牌，“下一项”消失。
+        var starting by remember(shelf.id) { mutableStateOf(false) }
         if (!queryEditing && unfinished.isNotEmpty()) Action("按顺序观看 / 阅读", primary = true, modifier = Modifier.fillMaxWidth()) {
-            runCatching { val queue = app.queue.start(shelf.name, shelf.id, unfinished); MediaRouter.open(context, unfinished.first(), queue.id) }
-                .onFailure { dialogs.message("无法开始片单", it.message.orEmpty()) }
+            if (starting) return@Action
+            starting = true
+            runCatching { val queue = app.queue.start(shelf.name, shelf.id, unfinished); MediaRouter.open(context, unfinished.first(), queue.id, opened = { starting = false }, failed = { starting = false }) }
+                .onFailure { starting = false; dialogs.message("无法开始片单", it.message.orEmpty()) }
         }
         if (entries.isEmpty()) {
             if (view.filtered) EmptyState("没有匹配的作品", "搜索与筛选只作用于当前片单。", "清空条件") {

@@ -31,13 +31,19 @@ internal object DuplicateScan {
 
     private data class Measured(val book: DuplicateBook, val pages: Int, val sizeBytes: Long, val fingerprint: String)
 
-    fun scan(books: List<DuplicateBook>): List<DuplicateGroup> =
+    /**
+     * [shouldStop] 由调用方提供（通常是协程取消检查）：大库扫描可能持续很久，
+     * 对话框关闭后必须能停下来，而不是继续读完整个磁盘再往已销毁的界面状态写结果。
+     */
+    fun scan(books: List<DuplicateBook>, shouldStop: () -> Boolean = { false }): List<DuplicateGroup> =
         books.mapNotNull { book ->
+            if (shouldStop()) return@mapNotNull null
             val files = pageFiles(book.dir)
             if (files.isEmpty()) return@mapNotNull null
-            val fingerprint = fingerprint(files).takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val fingerprint = fingerprint(files, shouldStop).takeIf { it.isNotBlank() } ?: return@mapNotNull null
             Measured(book, files.size, files.sumOf { it.length() }, fingerprint)
         }
+        .also { if (shouldStop()) return emptyList() }
         .groupBy { it.pages to it.sizeBytes }
         .values
         .filter { it.size > 1 }
@@ -51,15 +57,19 @@ internal object DuplicateScan {
         .sortedByDescending { it.wastedBytes }
 
     /** 指纹 = 自然页序逐页内容摘要串联再摘要；目录缺页或读不到内容时返回空串。 */
-    internal fun fingerprint(files: List<File>): String {
+    internal fun fingerprint(files: List<File>, shouldStop: () -> Boolean = { false }): String {
         if (files.isEmpty()) return ""
         val digest = MessageDigest.getInstance("SHA-256")
         files.forEach { file ->
+            if (shouldStop()) return ""
             val page = MessageDigest.getInstance("SHA-256")
-            file.inputStream().use { input ->
-                val buffer = ByteArray(64 * 1024)
-                while (true) { val read = input.read(buffer); if (read < 0) break; page.update(buffer, 0, read) }
-            }
+            // 文件可能在扫描期间被删除/移除，读失败只代表“这本算不同”，不能让整次扫描崩掉。
+            runCatching {
+                file.inputStream().use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) { val read = input.read(buffer); if (read < 0) break; page.update(buffer, 0, read) }
+                }
+            }.onFailure { return "" }
             digest.update(page.digest())
         }
         return digest.digest().joinToString("") { "%02x".format(it) }

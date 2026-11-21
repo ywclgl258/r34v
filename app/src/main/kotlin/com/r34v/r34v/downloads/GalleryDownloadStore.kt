@@ -42,6 +42,12 @@ class GalleryDownloadStore(private val context: Context, private val repository:
         changes.update { it + 1 }
     }
     @Synchronized private fun update(id: String, change: (GalleryDownload) -> GalleryDownload) { task(id)?.let { write(change(it)) } }
+    /** 条件写：只有当前记录仍满足 [whenRecord] 时才应用变更，避免定时器把用户刚做的暂停覆盖掉。 */
+    @Synchronized private fun updateIf(id: String, whenRecord: (GalleryDownload) -> Boolean, change: (GalleryDownload) -> GalleryDownload): Boolean {
+        val current = task(id) ?: return false
+        if (!whenRecord(current)) return false
+        write(change(current)); return true
+    }
 
     suspend fun add(entry: Video, pages: Collection<Int>? = null, group: String? = null): GalleryDownload = withContext(Dispatchers.IO) {
         repository.checkDownloadsAllowed()
@@ -54,10 +60,13 @@ class GalleryDownloadStore(private val context: Context, private val repository:
             val previous = task(id)
             check(previous?.state != GalleryDownloadState.REMOVING) { "图集正在删除，请稍后再下载" }
             if (previous?.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING)) previous!!
-            else if (previous?.state == GalleryDownloadState.COMPLETED && !previous.partial && repository.isDownloaded(entry)) previous
+            // 只有“不带页码的整本下载”才把已完成任务当成无需重做；带页码说明是补页（修复），必须真的跑。
+            else if (selection == null && previous?.state == GalleryDownloadState.COMPLETED && !previous.partial && repository.isDownloaded(entry)) previous
             else (previous ?: GalleryDownload(id, entry.copy(mediaKind = MediaKind.GALLERY))).copy(
                 state = GalleryDownloadState.QUEUED, error = "", failure = null, retryAt = 0,
-                selectedPages = selection ?: previous?.selectedPages, group = group?.trim()?.takeIf { it.isNotEmpty() } ?: previous?.group,
+                // 不带页码即“整本”：必须清掉上次的部分选页，否则永远只补原选页、完成不了整本。
+                // 已完成页集合保留，恢复下载时仍然跳过磁盘上已存在的页。
+                selectedPages = selection, group = group?.trim()?.takeIf { it.isNotEmpty() } ?: previous?.group,
             ).also(::write)
         }
         if (value.state != GalleryDownloadState.COMPLETED && networkAllowed()) startService()
@@ -80,16 +89,21 @@ class GalleryDownloadStore(private val context: Context, private val repository:
     }
 
     private fun scheduleRetry(record: GalleryDownload) {
-        if (retryJobs.contains(record.id)) return
+        // ConcurrentHashMap.contains 是 containsValue 语义，对 String 键恒为 false；必须用 containsKey 去重。
+        if (retryJobs.containsKey(record.id)) return
         val delayMs = (record.retryAt - System.currentTimeMillis()).coerceAtLeast(0L)
-        retryJobs[record.id] = maintenance.launch {
+        val job = maintenance.launch(start = CoroutineStart.LAZY) {
             delay(delayMs)
-            retryJobs.remove(record.id)
-            val current = task(record.id) ?: return@launch
-            if (current.state != GalleryDownloadState.RETRY_WAIT || current.retryAt != record.retryAt) return@launch
-            update(record.id) { it.copy(state = GalleryDownloadState.QUEUED, retryAt = 0, error = "") }
-            if (networkAllowed() && repository.downloadsAllowed) runCatching { startService(keepQueued = true) }
+            // 只有任务仍在等这一次重试时才改状态：用户期间暂停或被删除都不能被定时器覆盖。
+            val resumed = updateIf(record.id, { it.state == GalleryDownloadState.RETRY_WAIT && it.retryAt == record.retryAt }) {
+                it.copy(state = GalleryDownloadState.QUEUED, retryAt = 0, error = "")
+            }
+            if (resumed && networkAllowed() && repository.downloadsAllowed) runCatching { startService(keepQueued = true) }
         }
+        retryJobs[record.id] = job
+        // 用完成回调回收，避免依赖 Job 实例身份（取消、未启动即取消都会触发）。
+        job.invokeOnCompletion { retryJobs.remove(record.id, job) }
+        job.start()
     }
 
     val canRun get() = repository.downloadsAllowed && networkAllowed()
@@ -169,11 +183,11 @@ class GalleryDownloadStore(private val context: Context, private val repository:
         val record = tasks().filter { it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING) && !active.containsKey(it.id) }
             .sortedWith(compareByDescending<GalleryDownload> { it.priority }.thenBy { it.addedAt }).firstOrNull() ?: return null
         write(record.copy(state = GalleryDownloadState.DOWNLOADING, error = "", failure = null, stage = GalleryDownloadStage.PREPARING, retryAt = 0))
-        val job = scope.launch(start = CoroutineStart.LAZY) {
-            try { download(record) }
-            finally { active.remove(record.id) }
-        }
+        val job = scope.launch(start = CoroutineStart.LAZY) { download(record) }
+        // 协程体从未执行就被取消时 finally 不会跑，active 会残留一个 Job 让整条队列永久停摆。
+        // invokeOnCompletion 对“未启动即取消”同样触发，用它统一回收。
         active[record.id] = job
+        job.invokeOnCompletion { active.remove(record.id, job) }
         job.start()
         return job
     }

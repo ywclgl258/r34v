@@ -452,7 +452,12 @@ class PlayerActivity : ComponentActivity() {
                     val translated = if (store.bool("translate_tags", true)) TagNames.lookup(this@PlayerActivity, link.slug) else null
                     Box(Modifier.combinedClickable(onClick = { startActivity(Intent(this@PlayerActivity, MainActivity::class.java).putExtra("link", link.url)) }, onLongClick = {
                         val kind = when (name) { "角色" -> "character"; "作者" -> "model"; else -> "tag" }
-                        dialogs.choose(link.label, if (name == "标签") listOf("收藏 / 取消收藏", "屏蔽 / 取消屏蔽") else listOf("收藏 / 取消收藏")) { i -> if (i == 1) store.toggleBlocked(link.slug) else store.toggleFavorite(Favorite(kind, link.slug, link.label, link.url, link.thumb, site = video.site), video.site); revision++ }
+                        dialogs.choose(link.label, if (name == "标签") listOf("收藏 / 取消收藏", "屏蔽 / 取消屏蔽") else listOf("收藏 / 取消收藏")) { i ->
+                            // 跨站搜索打开的视频不属于当前浏览站点：收藏与屏蔽都必须写在视频自己的站点上。
+                            if (i == 1) store.toggleBlocked(link.slug, video.site)
+                            else store.toggleFavorite(Favorite(kind, link.slug, link.label, link.url, link.thumb, site = video.site), video.site)
+                            revision++
+                        }
                     }).heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).background(Color.White.copy(alpha = .05f)).padding(horizontal = 12.dp, vertical = 8.dp)) {
                         Text(translated ?: link.label, fontSize = 12.sp)
                     }
@@ -606,7 +611,17 @@ class PlayerActivity : ComponentActivity() {
         store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000, quality = stream?.label.orEmpty(), site = video.site))
     }
     override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); outState.putBoolean("fullscreen", fullscreen); outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied); outState.putBoolean("resumePlay", player?.playWhenReady ?: resumePlay); outState.putBoolean("locked", locked); outState.putLong("pauseAt", pauseAt); outState.putLong("loopA", loop.startMs); outState.putLong("loopB", loop.endMs); super.onSaveInstanceState(outState) }
-    override fun onResume() { super.onResume(); window.decorView.post { if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && player == null && stream != null) open(stream!!, position, resumePlay) } }
+    override fun onResume() {
+        super.onResume()
+        window.decorView.post {
+            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || stream == null) return@post
+            val engine = player
+            // 引擎存在说明只经历了暂停/恢复（例如上面盖了半透明界面而未 onStop）：
+            // 此时 onPause 已经把播放停掉了，必须显式续播，否则画面一直停着。
+            if (engine == null) open(stream!!, position, resumePlay)
+            else if (resumePlay && !pipMode && !engine.isPlaying && engine.playbackState != Player.STATE_ENDED) engine.play()
+        }
+    }
     override fun onPause() { resumePlay = player?.playWhenReady ?: resumePlay; savePosition(); if (!pipMode && !enteringPip) player?.pause(); super.onPause() }
     override fun onStop() { savePosition(); playerView?.player = null; player?.release(); player = null; appliedPlan = null; engineRevision++; super.onStop() }
     private fun gestureHint(value: String) { hintJob?.cancel(); hint = value; hintJob = lifecycleScope.launch { delay(1000); hint = "" } }

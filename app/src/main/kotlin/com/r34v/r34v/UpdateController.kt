@@ -44,18 +44,27 @@ class UpdateController(private val activity: ComponentActivity, private val app:
             val filename = UpgradePackages.select(assets.map { it["name"].asString }, UpgradePackages.needsCompatibility(activity)) ?: error("此版本缺少适配当前安装签名的 APK，请稍后重试")
             val asset = assets.first { it["name"].asString == filename }
             if (activity.isFinishing || activity.isDestroyed) return
+            // 上一次已经下好并校验过的同一个安装包直接复用：授予安装权限返回后按提示再点一次
+            // 不该重新下载整个 APK（弱网下第一次成功、授权回来反而装不上）。
+            val pending = pendingFile()
+            if (pending.exists() && pending.length() == asset["size"].asLong && runCatching { withContext(Dispatchers.IO) { UpgradePackages.validate(activity, pending) } }.isSuccess) {
+                dialogs.confirm("新版本 $version", "安装", "安装包已下载并通过校验，可直接安装。") { install(pending) }
+                return
+            }
             dialogs.confirm("新版本 $version", "下载", release["body"]?.asString.orEmpty().take(1800)) {
                 activity.lifecycleScope.launch { download(asset["browser_download_url"].asString, asset["size"].asLong) }
             }
         } catch (error: Exception) { if (error is CancellationException) throw error; if (!silent) activity.showError(error) }
     }
+    private fun pendingFile() = File(activity.cacheDir, "updates/r34v-update.apk")
+
     private suspend fun download(url: String, expectedSize: Long) {
         var progress by mutableStateOf<Float?>(null)
         dialogs.content = { AlertDialog({}, title = { Text("正在下载更新") }, text = {
             val amount = progress
             if (amount == null) LinearProgressIndicator() else LinearProgressIndicator(progress = { amount })
         }, confirmButton = {}) }
-        val file = File(activity.cacheDir, "updates/r34v-update.apk")
+        val file = pendingFile()
         try {
             var lastUpdate = 0L
             downloadUpgrade(app.network.client, url, file, expectedSize) { received ->
@@ -73,7 +82,7 @@ class UpdateController(private val activity: ComponentActivity, private val app:
     private fun install(file: File) {
         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
             activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${activity.packageName}".toUri()))
-            activity.toast("允许安装后，再点检查更新即可重新安装")
+            activity.toast("允许安装后返回，再点“检查更新”即可直接安装，无需重新下载")
             return
         }
         val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)

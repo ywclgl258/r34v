@@ -94,4 +94,29 @@ class DuplicateScanTest {
         assertEquals(2, groups[1].copies.size)
         assertEquals(3L, groups[1].wastedBytes)
     }
+
+    @Test fun aCancelledScanStopsWithoutResults() {
+        val a = temp.newFolder("a"); val b = temp.newFolder("b")
+        val pages = listOf("1.image" to same(), "2.image" to same())
+        book(a, pages); book(b, pages)
+        val books = listOf(DuplicateBook("local", "a", "A", "本地", a), DuplicateBook("local", "b", "B", "本地", b))
+        // 关闭对话框后扫描必须立刻停下：两本书都在读完页之前被跳过，不会继续读整个库。
+        var calls = 0
+        assertTrue(DuplicateScan.scan(books) { ++calls > 0 }.isEmpty())
+        assertTrue("cancelled scan must stop early, calls=$calls", calls <= 4)
+        // 未取消时仍应正常成组。
+        assertEquals(1, DuplicateScan.scan(books) { false }.size)
+    }
+
+    @Test fun unreadablePageSkipsTheBookInsteadOfFailing() {
+        val a = temp.newFolder("a"); val b = temp.newFolder("b")
+        book(a, listOf("1.image" to same()))
+        book(b, listOf("1.image" to same()))
+        // 扫描期间文件被移除：读失败只代表这本算不同，不能让整次扫描抛异常。
+        File(a, "1.image").delete()
+        val groups = DuplicateScan.scan(listOf(
+            DuplicateBook("local", "a", "A", "本地", a),
+            DuplicateBook("local", "b", "B", "本地", b)))
+        assertTrue(groups.isEmpty())
+    }
 }

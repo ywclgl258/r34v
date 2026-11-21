@@ -118,7 +118,7 @@ data class GalleryDetail(
 }
 /** [originalUrl] 是站点的原图地址（如 E-Hentai 的 fullimg.php）；空串表示图源不区分显示图与原图。 */
 data class GalleryImage(val index: Int, val pageUrl: String, val imageUrl: String, val previousUrl: String?, val nextUrl: String?, val reloadUrl: String? = null,
-    val originalUrl: String = "", val originalSize: String = "")
+    val originalUrl: String? = "", val originalSize: String? = "", val imageReferer: String? = null, val imageStripCount: Int = 0)
 data class ReadingProgress(val entry: Video, val page: Int, val pages: Int, val pageUrl: String, val at: Long = System.currentTimeMillis(), val offset: Int = 0)
 
 data class Watch(

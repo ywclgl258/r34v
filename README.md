@@ -1,9 +1,10 @@
 # R34V
 
-支持视频、漫画与写真共 18 个站点的 Kotlin 原生 Android 客户端，包括 Rule34Video、Hanime1、Iwara、MissAV、Jable、rou.video、KBJ、KBJFree、Pornhub、E-Hentai、ExHentai、nhentai、Hitomi、4KHD、Everia、4KUp、GalleryEpic 和 Cosplaytele。界面使用 Jetpack Compose + Material 3，包括浏览、片库、设置、视频控件和条漫阅读器。Media3 播放画面与仅用于 EH/EX 官方认证的 WebView 通过 AndroidView 接入；不依赖 Flutter。迁移说明见 [Compose 重构](docs/dev/compose-migration.md)。
+支持视频、漫画与写真共 21 个站点的 Kotlin 原生 Android 客户端，包括 Rule34Video、Hanime1、Iwara、MissAV、Jable、rou.video、KBJ、KBJFree、Pornhub、Netflav、E-Hentai、ExHentai、nhentai、Hitomi、WNACG、JMComic、4KHD、Everia、4KUp、GalleryEpic 和 Cosplaytele。界面使用 Jetpack Compose + Material 3，包括浏览、片库、设置、视频控件和条漫阅读器。Media3 播放画面与仅用于 EH/EX 官方认证的 WebView 通过 AndroidView 接入；不依赖 Flutter。迁移说明见 [Compose 重构](docs/dev/compose-migration.md)。
 
 ## 功能
 
+- Netflav 支持浏览、搜索与作品详情，播放入口打开原站。WNACG 和 JMComic 使用原生漫画阅读器及图集下载。JMComic 按当前系统网络和代理实际连通性选择公开镜像，作品与下载记录使用固定的站点标识。
 - **2.7.1 首页修正**：启动和底部“首页”直接展示当前站点的精选、榜单与最新内容；观看进度、稍后看、订阅更新和个人频道移至“我的”。切站后保持“首页”选中，返回与页面重建保持导航一致。
 - **2.7.0 新增**：接入 MissAV、Jable、rou.video、KBJ、KBJFree 和 Pornhub，完善镜像切换、搜索／分页／排序、HLS 下载与离线播放；KBJ 提供浏览器线路入口，KBJFree 仅公开预览。见 [站点适配与验证边界](docs/dev/av-sites-adapters.md)。
 - **2.7.0 片库与界面**：个人首页增加媒体类型筛选，片库分区与搜索层级简化；片单内按标题／来源检索，结合加入时间、类型和完成状态筛选，并按标题或加入时间排序。合集支持备注、置顶和从已有作品选择封面，信息随加密备份恢复。见 [片库增强](docs/dev/shelf-features-2026-11-08.md) 与 [2.7.0 发布验收](docs/dev/verification-2.7.0.md)。

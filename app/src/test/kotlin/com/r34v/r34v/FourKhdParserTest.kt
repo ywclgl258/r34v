@@ -125,10 +125,10 @@ class FourKhdParserTest {
 
     @Test fun siteCategoriesGroupEveryRegisteredSite() {
         assertEquals(
-            listOf("r34v", "hanime1", "iwara", "missav", "jable", "rouvideo", "kbj", "kbjfree", "pornhub"),
+            listOf("r34v", "hanime1", "iwara", "missav", "jable", "rouvideo", "kbj", "kbjfree", "pornhub", "netflav"),
             SiteRegistry.ofCategory(SiteCategory.VIDEO).map { it.id },
         )
-        assertEquals(listOf("ehentai", "exhentai", "nhentai", "hitomi"), SiteRegistry.ofCategory(SiteCategory.COMIC).map { it.id })
+        assertEquals(listOf("ehentai", "exhentai", "nhentai", "hitomi", "wnacg", "jmcomic"), SiteRegistry.ofCategory(SiteCategory.COMIC).map { it.id })
         assertTrue(SiteRegistry.ofCategory(SiteCategory.PHOTO).first().id == "4khd")
         assertEquals(SiteRegistry.all.size, SiteCategory.entries.sumOf { SiteRegistry.ofCategory(it).size })
         assertEquals("写真集", SiteRegistry.FOURKHD.category.itemNoun)
@@ -141,6 +141,7 @@ class FourKhdParserTest {
         assertEquals(SiteRegistry.FOURKHD, SiteRegistry.forMediaHost("i0.wp.com"))
         assertEquals(SiteRegistry.FOURKHD, SiteRegistry.forMediaHost("pic.4khd.com"))
         assertEquals(SiteRegistry.FOURKHD, SiteRegistry.forHost("www.4khd.com"))
-        assertNull(SiteRegistry.forHost("18comic.vip"))
+        assertEquals(SiteRegistry.JMCOMIC, SiteRegistry.forHost("18comic.vip"))
+        assertNull(SiteRegistry.forHost("18comic.vip.example.invalid"))
     }
 }

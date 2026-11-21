@@ -35,7 +35,7 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
         val restored = mutableListOf<Cookie>()
         ((if (site.mediaKind == MediaKind.GALLERY) store.galleryCookies(site) else null)
             ?: store.prefs.getStringSet("${site.id}:cookies", null))?.forEach { raw ->
-            Cookie.parse(site.base.toHttpUrl(), raw)?.let(restored::add)
+            decodeCookie(site, raw)?.let(restored::add)
         }
         // Legacy: the pre-multi-site jar carried a single unnamed bucket plus anti-bot cookies.
         if (restored.isEmpty() && site.id == SiteRegistry.R34V.id) {
@@ -60,6 +60,30 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
         restored
     }
 
+    /**
+     * Cookie 序列化。
+     *
+     * `Cookie.toString()` 对 host-only cookie 不输出 Domain，重启后按站点主域解析会把镜像
+     * （missav.media 之类）签发的 cookie 绑到主域上，既发给错误主机也收不到原镜像的会话。
+     * 这里显式带上来源主机；没有前缀的旧数据仍按原逻辑解析。
+     */
+    private fun encodeCookie(cookie: Cookie): String =
+        if (cookie.hostOnly) "h\u0001${cookie.domain}\u0001$cookie" else "d\u0001$cookie"
+
+    private fun decodeCookie(site: SiteContext, raw: String): Cookie? {
+        if (!raw.startsWith("h\u0001") && !raw.startsWith("d\u0001")) return Cookie.parse(site.base.toHttpUrl(), raw)
+        val parts = raw.split('\u0001', limit = 3)
+        val header = parts.getOrNull(2) ?: return null
+        return when (parts[0]) {
+            "h" -> {
+                val host = parts.getOrNull(1).orEmpty()
+                val base = if (host.isNotBlank() && site.isSite(host)) host else site.host
+                Cookie.parse("https://$base/".toHttpUrl(), header)
+            }
+            else -> Cookie.parse(site.base.toHttpUrl(), header)
+        }
+    }
+
     @Synchronized override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         val site = SiteRegistry.forHost(url.host) ?: return
         if (!registered(url.host)) return
@@ -82,7 +106,7 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
     }
 
     private fun persist(site: SiteContext, cookies: List<Cookie>) {
-        val values = cookies.map { it.toString() }.toSet()
+        val values = cookies.map(::encodeCookie).toSet()
         if (site.mediaKind == MediaKind.GALLERY) store.saveGalleryCookies(site, values)
         else store.prefs.edit { putStringSet("${site.id}:cookies", values) }
     }
@@ -152,9 +176,14 @@ internal class MediaRedirectCache(
 
     private fun expired(entry: Resolved) = entry.expiresAt <= System.currentTimeMillis()
 
+    /**
+     * 回填解析结果。过期项必须真正删除：只跳过不删会让旧键一直占位，
+     * `putIfAbsent` 永远写不进去，同一媒体之后的每次打开都会重新请求站点主域。
+     */
     private fun cacheIfAbsent(key: String, url: okhttp3.HttpUrl) {
         if (resolved.size > 256) resolved.values.removeAll { expired(it) }
-        resolved.putIfAbsent(key, Resolved(url, System.currentTimeMillis() + ttlMs))
+        val fresh = Resolved(url, System.currentTimeMillis() + ttlMs)
+        resolved.compute(key) { _, existing -> if (existing == null || expired(existing)) fresh else existing }
     }
 
     /**
@@ -286,8 +315,29 @@ class Network(private val context: Context, private val store: LibraryStore) {
             applyMediaShape(shaped, chain.request().url.host)
             chain.proceed(shaped.build())
         }.build()
-    @Synchronized fun invalidate() { current?.connectionPool?.evictAll(); current = null }
+
+    /**
+     * 图页专用客户端：沿用页面客户端的 Cookie、站点形态头与节流，但去掉整次调用时限。
+     *
+     * 单页最大 24 MiB，页面客户端的 25 秒 callTimeout 会把“慢但一直在传”的图页在传输中途掐断，
+     * 整本下载于是从头重试同一页，慢链路上既费流量又永远下不完。这里保留读超时（卡住仍会失败），
+     * 只去掉总时限。
+     */
+    val imageClient: OkHttpClient get() = client.newBuilder()
+        .callTimeout(0, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).cache(null)
+        .build()
+    @Volatile private var routeGeneration = 0L
+    @Synchronized fun invalidate() {
+        current?.connectionPool?.evictAll()
+        current = null
+        routeGeneration++
+    }
     fun routeDescription(url: String = SiteRegistry.current.base) = systemRoutes.describe(url.toHttpUrl().toUri())
+
+    internal fun systemRouteKey(urls: List<String>): String {
+        val network = context.getSystemService(android.net.ConnectivityManager::class.java)?.activeNetwork
+        return listOf(network?.networkHandle, routeGeneration, urls.map(::routeDescription)).toString()
+    }
     private fun build(): OkHttpClient {
         return OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
             .callTimeout(25, TimeUnit.SECONDS).cookieJar(session)
@@ -392,10 +442,17 @@ class Network(private val context: Context, private val store: LibraryStore) {
     suspend fun statusOrNull(url: String): Int? = withContext(Dispatchers.IO) {
         runCatching { client.newCall(Request.Builder().url(url).build()).execute().use { it.code } }.getOrNull()
     }
-    suspend fun login(username: String, password: String) = withContext(Dispatchers.IO) {
+    /**
+     * 密码登录。
+     *
+     * [site] 必须由调用方（登录对话框持有的站点）显式传入：进程级 `SiteRegistry.current`
+     * 可能已被另一个 Activity 实例切走，用它决定收件方会把账号密码提交给错误的站点。
+     */
+    suspend fun login(site: SiteContext, username: String, password: String) = withContext(Dispatchers.IO) {
         require(username.isNotBlank() && password.isNotEmpty()) { "请填写用户名和密码" }
-        val site = SiteRegistry.current
-        AdapterRegistry.adapter(site).login(this@Network, username, password)
+        AdapterRegistry.adapter(site, this@Network).login(this@Network, username, password)
+        // Cookie 类登录（KVS / Hanime 等）不产生 JWT，只有写下用户名后设置页才认得出已登录并允许退出。
+        store.setUsername(username.trim(), site.id)
     }
 }
 
@@ -419,6 +476,9 @@ object AdapterRegistry {
             SiteRegistry.KBJ.id -> com.r34v.r34v.data.adapter.KbjAdapter(site, net)
             SiteRegistry.KBJFREE.id -> com.r34v.r34v.data.adapter.KbjFreeAdapter(site, net)
             SiteRegistry.PORNHUB.id -> com.r34v.r34v.data.adapter.PornhubAdapter(site, net)
+            SiteRegistry.NETFLAV.id -> com.r34v.r34v.data.adapter.NetflavAdapter(site, net)
+            SiteRegistry.WNACG.id -> com.r34v.r34v.data.adapter.WnacgAdapter(site, net)
+            SiteRegistry.JMCOMIC.id -> com.r34v.r34v.data.adapter.JmcomicAdapter(site, net)
             SiteRegistry.FOURKHD.id -> com.r34v.r34v.data.adapter.FourKhdAdapter(site, net)
             SiteRegistry.EVERIA.id -> com.r34v.r34v.data.adapter.PhotoArchiveAdapter(
                 site, net, com.r34v.r34v.data.adapter.PhotoProfiles.everia())
@@ -454,7 +514,11 @@ class Repository(private val network: Network, private val library: LibraryStore
             try {
                 val page = adapter.feed(request)
                 if (request.kind != FeedKind.FOR_YOU) runCatching {
-                    val temp = File(folder, "$name.part"); temp.writeText(com.google.gson.Gson().toJson(page)); temp.renameTo(file)
+                    val temp = File(folder, "$name.part")
+                    // 关注动态/个人列表带账号身份：快照里只有页码与条数，切号后会回放上一账号的内容。
+                    // 这类页面不写快照，避免不同账号之间串数据。
+                    if (request.kind == FeedKind.SUBSCRIPTIONS) return@runCatching
+                    temp.writeText(com.google.gson.Gson().toJson(page)); temp.renameTo(file)
                     folder.listFiles()?.sortedByDescending { it.lastModified() }?.drop(40)?.forEach { it.delete() }
                 }
                 page

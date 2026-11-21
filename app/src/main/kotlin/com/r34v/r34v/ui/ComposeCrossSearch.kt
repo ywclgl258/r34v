@@ -119,8 +119,11 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
         else -> 2
     }
     val visible = sites.filter { category == 0 || SiteRegistry.byIdOrDefault(it).category == SiteCategory.entries[category - 1] }
-    val merged = remember(state.buckets, visible, only) {
-        visible.filter { only.isBlank() || only == it }
+    // 切换内容分类后，旧的来源选择可能已不在当前分类里：那样会把所有结果与“加载更多”都过滤掉，
+    // 而来源选择器又只在 visible.size > 1 时显示，用户就看不到任何清除入口。
+    val activeOnly = only.takeIf { it.isNotBlank() && it in visible }.orEmpty()
+    val merged = remember(state.buckets, visible, activeOnly) {
+        visible.filter { activeOnly.isBlank() || activeOnly == it }
             .flatMap { id -> (state.buckets[id]?.videos.orEmpty()).map { it.copy(site = id) } }
             .distinctBy { it.entryKey }
     }
@@ -136,11 +139,11 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
                 Title(if (query.isBlank()) "高级条件搜索" else "搜索：$query")
                 if (condition != null && !condition.isEmpty) Copy("已应用组合条件；各来源的实际筛选范围如下。")
                 Choices(listOf("全部") + SiteCategory.entries.map { it.title }, category) { category = it; categoryChanged(if (it == 0) "" else SiteCategory.entries[it - 1].name) }
-                if (visible.size > 1) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Choice("全部来源 · ${visible.sumOf { state.buckets[it]?.videos?.size ?: 0 }}", only.isBlank()) { only = "" }
+                if (visible.size > 1 || activeOnly.isNotBlank()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Choice("全部来源 · ${visible.sumOf { state.buckets[it]?.videos?.size ?: 0 }}", activeOnly.isBlank()) { only = "" }
                     visible.forEach { id ->
                         val bucket = state.buckets[id]
-                        Choice("${SiteRegistry.byIdOrDefault(id).name} · ${bucket?.videos?.size ?: 0}", only == id) { only = if (only == id) "" else id }
+                        Choice("${SiteRegistry.byIdOrDefault(id).name} · ${bucket?.videos?.size ?: 0}", activeOnly == id) { only = if (activeOnly == id) "" else id }
                     }
                 }
                 Copy("结果按来源混合排列；点上方站点只显示该站。")
@@ -160,7 +163,7 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
                 if (busy) Loading(title = "正在搜索 ${visible.size} 个来源")
                 if (!busy && merged.isEmpty() && failures.isEmpty()) Copy("当前条件下暂无结果")
                 if (!busy) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    visible.filter { only.isBlank() || only == it }
+                    visible.filter { activeOnly.isBlank() || activeOnly == it }
                         .filter { state.buckets[it]?.more == true && state.buckets[it]?.busy != true && state.buckets[it]?.error == null }
                         .forEach { id -> Action("加载 ${SiteRegistry.byIdOrDefault(id).name} 更多") { state.load(app, query, id) } }
                 }

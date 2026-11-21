@@ -52,6 +52,19 @@ class EhContractTest {
         assertThrows(IllegalArgumentException::class.java) { EhProtocol.resolve(site, FeedRequest(cursor = "https://example.invalid/?next=1")) }
         assertThrows(IllegalArgumentException::class.java) { EhProtocol.resolve(site, FeedRequest(cursor = "https://e-hentai.org/s/a1/8888-1")) }
     }
+    @Test fun cursorPaginationKeepsTheQueryButDoesNotGrowIt() {
+        // 原站翻页链接自带上一页的 f_search（含语言与标签）。带着相同条件继续翻页时，
+        // 查询式必须保持原文，而不是每页再追加一次。
+        val cursor = "${site.base}/?next=42&f_search=city+language%3Achinese%24"
+        val request = FeedRequest(FeedKind.SEARCH, "city", language = GalleryLanguage.CHINESE)
+        val first = EhProtocol.resolve(site, request.copy(page = 2, cursor = cursor)).toHttpUrl()
+        assertEquals("city language:chinese$", first.queryParameter("f_search"))
+        val second = EhProtocol.resolve(site, request.copy(page = 3, cursor = first.toString())).toHttpUrl()
+        assertEquals(first.queryParameter("f_search"), second.queryParameter("f_search"))
+        // 首页/分类页没有查询式时，游标里的原查询必须保留（否则翻页会丢掉原搜索）。
+        val carry = EhProtocol.resolve(site, FeedRequest(page = 2, cursor = cursor)).toHttpUrl()
+        assertEquals("city language:chinese$", carry.queryParameter("f_search"))
+    }
     @Test fun listCardsAreGalleriesAndDeduplicateByGalleryId() {
         val entry = EhProtocol.feed(fixture("list.html"), site.base, site, 1).videos.single()
         assertEquals("8888", entry.id); assertEquals("City sketchbook", entry.title)

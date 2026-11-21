@@ -75,7 +75,8 @@ class MainActivity : ComponentActivity() {
     private var resumed by mutableStateOf(false)
     private var tutorial by mutableStateOf(false)
     private var notice by mutableStateOf<String?>(null)
-    private val backStack = ArrayDeque<Pair<String, FeedRequest>>()
+    /** 返回栈项带上当时的站点：从 A 站跳到 B 站页面后返回，不能用 B 站的适配器解释 A 站的请求。 */
+    private val backStack = ArrayDeque<Triple<String, FeedRequest, String>>()
     private fun showNotice(text: String) { notice = text }
     private val dialogs = ComposeDialogs()
     private val archivePicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> uri?.let { importingDirectory = false; importingVideo = false; importingUri = it } }
@@ -104,8 +105,16 @@ class MainActivity : ComponentActivity() {
             searchCondition = runCatching { store.gson.fromJson(savedInstanceState.getString("searchCondition"), SearchCondition::class.java) }.getOrNull() ?: SearchCondition(searchQuery)
             importingUri = savedInstanceState.getString("importingUri")?.let(Uri::parse); importingDirectory = savedInstanceState.getBoolean("importingDirectory"); importingVideo = savedInstanceState.getBoolean("importingVideo")
             libraryTab = savedInstanceState.getString("libraryTab") ?: "片库"; favoriteTab = savedInstanceState.getString("favoriteTab") ?: "视频"
-            savedInstanceState.getStringArrayList("backScreens").orEmpty().zip(savedInstanceState.getStringArrayList("backRequests").orEmpty()).forEach { (route, json) ->
-                runCatching { store.gson.fromJson(json, FeedRequest::class.java) }.getOrNull()?.let { backStack.addLast(route to it) }
+            run {
+                val screens = savedInstanceState.getStringArrayList("backScreens").orEmpty()
+                val requests = savedInstanceState.getStringArrayList("backRequests").orEmpty()
+                val sites = savedInstanceState.getStringArrayList("backSites").orEmpty()
+                screens.indices.forEach { index ->
+                    val json = requests.getOrNull(index) ?: return@forEach
+                    val owner = sites.getOrNull(index).orEmpty().ifBlank { siteId }
+                    runCatching { store.gson.fromJson(json, FeedRequest::class.java) }.getOrNull()
+                        ?.let { backStack.addLast(Triple(screens[index], it, owner)) }
+                }
             }
         } else intent.getStringExtra("link")?.let { link ->
             val site = link.toHttpUrlOrNull()?.host?.let(SiteRegistry::forHost)
@@ -140,18 +149,26 @@ class MainActivity : ComponentActivity() {
         outState.putStringArrayList("searchSites", ArrayList(searchSites))
         outState.putString("searchCategory", searchCategory); outState.putString("searchLanguages", store.gson.toJson(searchLanguages)); outState.putString("searchCondition", store.gson.toJson(searchCondition))
         outState.putString("importingUri", importingUri?.toString()); outState.putBoolean("importingDirectory", importingDirectory); outState.putBoolean("importingVideo", importingVideo)
-        outState.putStringArrayList("backScreens", ArrayList(backStack.map { it.first })); outState.putStringArrayList("backRequests", ArrayList(backStack.map { store.gson.toJson(it.second) }))
+        outState.putStringArrayList("backScreens", ArrayList(backStack.map { it.first }))
+        outState.putStringArrayList("backRequests", ArrayList(backStack.map { store.gson.toJson(it.second) }))
+        outState.putStringArrayList("backSites", ArrayList(backStack.map { it.third }))
         super.onSaveInstanceState(outState)
     }
     private fun navigate(target: String, push: Boolean = true) {
         tutorial = false; dialogs.dismiss()
-        if (push && screen != target) backStack.addLast(screen to request)
+        if (push && screen != target) backStack.addLast(Triple(screen, request, siteId))
         screen = target
         if (target in listOf("siteHome", "home", "explore", "search", "library")) navigationTab = target
     }
     private fun back() {
-        if (backStack.isNotEmpty()) { val previous = backStack.removeLast(); request = previous.second; navigate(previous.first, false) }
-        else if (screen != "siteHome") navigate("siteHome", false) else finish()
+        if (backStack.isNotEmpty()) {
+            val (route, previous, owner) = backStack.removeLast()
+            // 回到别的站点的页面时，先把全局当前站点切回去，否则会用错的适配器加载列表。
+            if (owner.isNotBlank() && owner != siteId && SiteRegistry.byId(owner) != null) {
+                store.switchSite(owner); siteId = owner
+            }
+            request = previous; navigate(route, false)
+        } else if (screen != "siteHome") navigate("siteHome", false) else finish()
     }
     private fun switchSite(site: SiteContext) {
         if (site.id == siteId) return
@@ -160,12 +177,12 @@ class MainActivity : ComponentActivity() {
         navigate("siteHome", false); showNotice("已切换到 ${site.name}")
     }
     private fun openFeed(value: FeedRequest) {
-        backStack.addLast(screen to request)
+        backStack.addLast(Triple(screen, request, siteId))
         val section = AdapterRegistry.adapter(SiteRegistry.byIdOrDefault(siteId), app.network).indexSection(value)
         request = if (section == null) value else FeedRequest(target = section)
         navigate(if (section == null) "feed" else "index", false)
     }
-    private fun browse(segment: String) { backStack.addLast(screen to request); request = FeedRequest(target = segment); navigate("index", false) }
+    private fun browse(segment: String) { backStack.addLast(Triple(screen, request, siteId)); request = FeedRequest(target = segment); navigate("index", false) }
     private fun play(video: Video, offlineId: String? = null, localPath: String? = null, read: Boolean = false, offline: Boolean = false, sourceRoot: String = "", page: Int = 0) {
         if (video.site == SiteRegistry.LOCAL.id) {
             if (video.mediaKind == MediaKind.VIDEO) {
@@ -310,8 +327,12 @@ class MainActivity : ComponentActivity() {
         dialogs.content = {
             var error by remember { mutableStateOf<String?>(null) }; var retry by remember { mutableIntStateOf(0) }
             LaunchedEffect(link.url, retry) { error = null; try {
-                val video = withContext(Dispatchers.IO) { if (link.site.mediaKind == MediaKind.GALLERY) adapter.gallery(link.url).entry else adapter.detail(link.url).video }
-                dialogs.dismiss(); play(video.copy(site = link.site.id, mediaKind = link.site.mediaKind))
+                // 分派不能只看站点默认媒体类型：Iwara 同时有视频与图库，/image/ 作品链接
+                // 送进只认视频的 detail() 会在识别阶段直接失败。
+                val gallery = link.site.mediaKind == MediaKind.GALLERY ||
+                    (link.site.id == SiteRegistry.IWARA.id && com.r34v.r34v.data.adapter.IwaraProtocol.isGalleryUrl(link.site, link.url))
+                val video = withContext(Dispatchers.IO) { if (gallery) adapter.gallery(link.url).entry else adapter.detail(link.url).video }
+                dialogs.dismiss(); play(video.copy(site = link.site.id, mediaKind = if (gallery) MediaKind.GALLERY else video.mediaKind))
             } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "作品识别失败" } }
             AlertDialog({ dialogs.dismiss() }, title = { Text("打开 ${link.site.name} 作品") }, text = { if (error == null) Loading(title = "正在识别作品…") else Text(error.orEmpty()) },
                 confirmButton = { if (error != null) TextAction({ retry++ }) { Text("重试") } }, dismissButton = { TextAction({ dialogs.dismiss() }) { Text("取消") } })
@@ -473,7 +494,9 @@ class MainActivity : ComponentActivity() {
                     val dir = File(app.localLibrary.rootDirectory(), video.id)
                     val file = File(dir, book.files.first())
                     val thumb = book.thumb.takeIf { it.isNotBlank() }?.let { File(dir, it).absolutePath }.orEmpty()
-                    app.library.addLocalVideo(LocalVideo(video.id, video.title, file.absolutePath, thumb, site = SiteRegistry.LOCAL.id))
+                    // 第二个参数决定写入哪个站点分区：本地导入必须落在 local 分区，
+                    // 否则播放登记会写到当前浏览站点，play() 在 local 分区查不到而报文件不存在。
+                    app.library.addLocalVideo(LocalVideo(video.id, video.title, file.absolutePath, thumb, site = SiteRegistry.LOCAL.id), SiteRegistry.LOCAL.id)
                 }
             }
             play(video, read = true)
@@ -627,10 +650,14 @@ class MainActivity : ComponentActivity() {
                 if (app.network.session.hasGallerySession(site)) Setting("退出本站会话") { dialogs.confirm("清除 ${site.name} 的账号会话？") { app.network.session.clear(site); revision++ } }
             } else if (Capability.LOGIN in adapter.capabilities) {
                 // JWT 会话（如 Iwara）没有用户名记录：登录态看令牌，退出同步清令牌。
+                // 用户名按站点读：在别的站点登录成功后，当前站点不应该显示为已登录。
                 val token = app.network.authToken(site.id)
-                val loggedIn = store.username.isNotBlank() || token != null
-                Setting(if (loggedIn) "退出登录" else "登录站点账户", store.username.ifBlank { if (token != null) "已登录" else "" }) {
-                    if (!loggedIn) credentials(site, false) else dialogs.confirm("退出当前账户？") { app.network.clearAuthToken(site.id); app.network.session.clear(site); revision++ }
+                val account = store.username(site.id)
+                val loggedIn = account.isNotBlank() || token != null
+                Setting(if (loggedIn) "退出登录" else "登录站点账户", account.ifBlank { if (token != null) "已登录" else "" }) {
+                    if (!loggedIn) credentials(site, false) else dialogs.confirm("退出当前账户？") {
+                        app.network.clearAuthToken(site.id); app.network.session.clear(site); store.setUsername("", site.id); revision++
+                    }
                 }
             } else Copy("${site.name} 当前支持公开浏览，无需登录。")
             Title("播放")
@@ -681,18 +708,27 @@ class MainActivity : ComponentActivity() {
                 }
             }
             LaunchedEffect(Unit) {
-                withContext(Dispatchers.IO) {
-                    val refs = buildList {
-                        app.galleryDownloads.tasks().filter { it.state == GalleryDownloadState.COMPLETED }.forEach { record ->
-                            runCatching { add(DuplicateBook("download", record.id, record.entry.title, record.entry.site, app.galleries.downloadDirectory(record.entry))) }
+                val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
+                try {
+                    withContext(Dispatchers.IO) {
+                        val refs = buildList {
+                            app.galleryDownloads.tasks().filter { it.state == GalleryDownloadState.COMPLETED }.forEach { record ->
+                                runCatching { add(DuplicateBook("download", record.id, record.entry.title, record.entry.site, app.galleries.downloadDirectory(record.entry))) }
+                            }
+                            val localRoot = app.localLibrary.rootDirectory()
+                            app.localLibrary.books().forEach { book -> add(DuplicateBook("local", book.id, book.title, "本地", File(localRoot, book.id))) }
                         }
-                        val localRoot = app.localLibrary.rootDirectory()
-                        app.localLibrary.books().forEach { book -> add(DuplicateBook("local", book.id, book.title, "本地", File(localRoot, book.id))) }
+                        progress = "正在比对 ${refs.size} 本内容指纹…"
+                        // 对话框关闭即取消：扫描会把整个库读一遍，不能让它跑向已离开的界面。
+                        groups = DuplicateScan.scan(refs) { stopped.get() || !isActive }
                     }
-                    progress = "正在比对 ${refs.size} 本内容指纹…"
-                    groups = DuplicateScan.scan(refs)
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    progress = error.message ?: "扫描失败"
+                } finally {
+                    stopped.set(true)
+                    scanning = false
                 }
-                scanning = false
             }
             val wasted = groups.sumOf { it.wastedBytes }
             AlertDialog({ if (busyId == null) dialogs.dismiss() }, title = { Text("重复文件检查") }, text = {
@@ -810,7 +846,7 @@ class MainActivity : ComponentActivity() {
                     if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error); if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
             }, confirmButton = { TextAction({ busy = true; error = ""; scope.launch {
-                try { if (importing) withContext(Dispatchers.IO) { AdapterRegistry.adapter(site, app.network).importSession(secret) } else app.network.login(username, secret)
+                try { if (importing) withContext(Dispatchers.IO) { AdapterRegistry.adapter(site, app.network).importSession(secret) } else app.network.login(site, username, secret)
                     secret = ""; dialogs.dismiss(); revision++; if (importing) navigate("home", false); showNotice("登录成功")
                 } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "登录失败" } finally { busy = false }
             } }, enabled = !busy && secret.isNotBlank() && (importing || username.isNotBlank())) { Text(if (importing) "验证并导入" else "登录") } }, dismissButton = { TextAction({ dialogs.dismiss() }, enabled = !busy) { Text("取消") } })

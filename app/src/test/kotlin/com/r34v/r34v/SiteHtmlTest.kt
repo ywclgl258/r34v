@@ -66,9 +66,12 @@ class SiteHtmlTest {
     @Test fun retryAfterHeaderWinsWithinTheCap() {
         assertEquals(5_000L, SiteHtml.retryWaitMs("5"))
         assertEquals(0L, SiteHtml.retryWaitMs("0"))
-        assertEquals(15_000L, SiteHtml.retryWaitMs("300"))
+        // 站点要求的等待期尊重到 120 秒，不再 15 秒就回去继续撞。
+        assertEquals(120_000L, SiteHtml.retryWaitMs("300"))
         assertEquals(SiteHtml.rateLimitBackoffMs, SiteHtml.retryWaitMs(null))
-        assertEquals(SiteHtml.rateLimitBackoffMs, SiteHtml.retryWaitMs("Wed, 21 Oct 2015 07:28:00 GMT"))
+        // HTTP-date：过期时间已过去就不必再等。
+        assertEquals(0L, SiteHtml.retryWaitMs("Wed, 21 Oct 2015 07:28:00 GMT"))
+        assertEquals(SiteHtml.rateLimitBackoffMs, SiteHtml.retryWaitMs("not-a-date"))
     }
 
     @Test fun secondRateLimitResponseOnTheSameUrlGivesUpTheSameUrl() = runBlocking {

@@ -141,12 +141,43 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         File(folder, "${hash(url.substringBefore('?'))}.image").writeBytes(byteArrayOf(1, 2, 3))
         val audit = runBlocking { f.app.galleryDownloads.inspect(task(f)!!.id) }
         assertEquals(listOf(2), audit.corruptPages)
-        val untouched = f.imageRequests.filter { it.first == "ehentai" && it.second != 2 }.size
+        val repairedPage = "ehentai" to 2
+        val beforeRepair = f.imageRequests.count { it == repairedPage }
+        val untouched = f.imageRequests.count { it.first == "ehentai" && it != repairedPage }
         runBlocking { f.app.galleryDownloads.repair(task(f)!!.id) }; done(f)
         assertTrue(f.app.galleries.isDownloaded(entry))
-        assertEquals(1, f.imageRequests.count { it.first == "ehentai" && it.second == 2 })
+        assertEquals(beforeRepair + 1, f.imageRequests.count { it == repairedPage })
         assertEquals(untouched, f.imageRequests.filter { it.first == "ehentai" && it.second != 2 }.size)
         assertFalse(task(f)!!.partial)
+    }
+
+    @Test fun downloadsReuseLegacyReaderPagesAndRefreshDamagedBookMetadata() = ComposeFixture().use { f ->
+        for (site in listOf(SiteRegistry.COSPLAYTELE, SiteRegistry.EHENTAI)) {
+            val entry = f.video(site.id)
+            val gallery = runBlocking { f.app.galleries.detail(entry) }
+            val url = gallery.pageLinks.first().url
+            runBlocking { f.app.galleries.originalPage(site, url, galleryUrl = entry.url) }
+            val hash = java.security.MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
+            val cached = File(f.app.filesDir, "gallery-cache/${site.id}/$hash.page.json")
+            val pageJson = com.google.gson.JsonParser.parseString(cached.readText()).asJsonObject
+            pageJson.remove("originalUrl")
+            pageJson.remove("originalSize")
+            cached.writeText(pageJson.toString())
+            val downloadFolder = f.app.galleries.downloadDirectory(entry).apply { mkdirs() }
+            File(downloadFolder, "book.json").writeText("""{"pageCount":8,"entry":null,"pageLinks":null}""")
+
+            val requests = f.imageRequests.size
+            val prepared = runBlocking { f.app.galleries.prepareDownload(entry) }
+            assertEquals(entry.id, prepared.entry.id)
+            val (image, bytes) = runBlocking { f.app.galleries.downloadPage(entry, 1, url) }
+            assertEquals(url, image.pageUrl)
+            assertTrue(bytes > 0)
+            assertEquals(requests, f.imageRequests.size)
+            f.app.galleries.forgetCachedPageLink(entry, 1, url)
+            val audit = runBlocking { f.app.galleries.auditDownload(entry) }
+            assertEquals(listOf(1), audit.validPages)
+            assertEquals(url, f.app.galleries.cachedPageUrl(entry, 1))
+        }
     }
 
     @Test fun queuePriorityAndGroupsSurviveStoreRecreation() = ComposeFixture().use { f ->

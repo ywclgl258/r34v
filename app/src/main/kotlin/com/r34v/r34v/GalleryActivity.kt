@@ -46,6 +46,8 @@ class GalleryActivity : ComponentActivity() {
     private var reading by mutableStateOf(false)
     private var controlsVisible by mutableStateOf(true)
     private var page by mutableIntStateOf(1)
+    /** 页码已由 Bundle/Intent/已保存进度确定后固定，不再被“从首页/末页开始”的偏好覆盖。 */
+    private var pinnedPage = false
     private var stripOffset = 0
     private var jump by mutableStateOf(ReaderJump(0, 1))
     private var revision by mutableIntStateOf(0)
@@ -67,10 +69,17 @@ class GalleryActivity : ComponentActivity() {
         exports.save(it, tree = true)
     }
     private val progressSaver by lazy { ReadingProgressSaver(lifecycleScope, store::saveReading) }
+    /** 打开时从历史恢复的位置。仅浏览详情未翻页时，不要把它写回历史。 */
+    private var restoredPage = 0
+    private var restoredOffset = 0
     private fun saveProgress() {
         saveReader?.invoke()
-        detail?.let { gallery ->
-            progressSaver.record(ReadingProgress(entry, page.coerceIn(1, gallery.pageCount), gallery.pageCount,
+        val gallery = detail
+        if (gallery != null) {
+            val target = page.coerceIn(1, gallery.pageCount)
+            // 只打开详情就离开时 page 仍是恢复值，此时写回会覆盖原有阅读进度。
+            val untouched = !reading && target == restoredPage && stripOffset == restoredOffset
+            if (!untouched) progressSaver.record(ReadingProgress(entry, target, gallery.pageCount,
                 images[page]?.pageUrl.orEmpty(), offset = stripOffset))
         }
         progressSaver.flush()
@@ -84,8 +93,14 @@ class GalleryActivity : ComponentActivity() {
         readingBehavior = store.personal.readingBehavior(site.id)
         readerMode = ReaderMode.entries.firstOrNull { it.name == readerPreferences.mode } ?: store.personal.readerMode(site.id)
         store.personal.markRead(site.id, setOf(entry.entryKey))
-        page = savedInstanceState?.getInt("page") ?: intent.getIntExtra("page", 0).takeIf { it > 0 } ?: store.reading(entry.id, site.id)?.page ?: 1
-        stripOffset = savedInstanceState?.getInt("stripOffset") ?: store.reading(entry.id, site.id)?.offset ?: 0
+        val savedReading = store.reading(entry.id, site.id)
+        val savedInstanceStatePage = savedInstanceState?.getInt("page")
+        val intentPage = intent.getIntExtra("page", 0).takeIf { it > 0 }
+        page = savedInstanceStatePage ?: intentPage ?: savedReading?.page ?: 1
+        pinnedPage = savedInstanceStatePage != null || intentPage != null
+        stripOffset = savedInstanceState?.getInt("stripOffset") ?: savedReading?.offset ?: 0
+        restoredPage = savedReading?.page ?: 0
+        restoredOffset = savedReading?.offset ?: 0
         reading = savedInstanceState?.getBoolean("reading") ?: intent.getBooleanExtra("read", false)
         offlineOnly = savedInstanceState?.getBoolean("offline") ?: intent.getBooleanExtra("offline", false)
         sourceRoot = intent.getStringExtra("root").orEmpty()
@@ -102,7 +117,8 @@ class GalleryActivity : ComponentActivity() {
         pageJob = lifecycleScope.launch { try {
             val gallery = if (entry.site == SiteRegistry.LOCAL.id) withContext(Dispatchers.IO) { app.localLibrary.detail(entry) } else app.galleries.detail(entry, offlineOnly, sourceRoot)
             detail = gallery; entry = gallery.entry
-            page = if (intent.getIntExtra("page", 0) > 0) page.coerceIn(1, gallery.pageCount) else when (readerPreferences.start) {
+            // 恢复的页码（Bundle / Intent / 已保存进度）优先；只有在没有恢复值时，阅读起页偏好才生效。
+            page = if (pinnedPage || restoredPage > 0) page.coerceIn(1, gallery.pageCount) else when (readerPreferences.start) {
                 ReaderStart.FIRST -> 1
                 ReaderStart.LAST -> gallery.pageCount
                 ReaderStart.RESUME -> page.coerceIn(1, gallery.pageCount)
@@ -463,22 +479,24 @@ class GalleryActivity : ComponentActivity() {
         val gallery = detail ?: error("${itemNoun}信息尚未载入")
         val remembered = store.reading(entry.id, site.id)?.takeIf { it.page == target }?.pageUrl
         val cached = withContext(Dispatchers.IO) { app.galleries.cachedPageUrl(entry, target, sourceRoot) }
-        val fallback = if (offlineOnly) error("下载图页目录缺失，请重新下载")
+        // 站点现解析的地址必须按需取：离线阅读与命中已存映射时都不联网，
+        // 否则每一页都会多打一次预览页请求（EH 等站点尤其明显）。
+        suspend fun resolve() = if (offlineOnly) error("下载图页目录缺失，请重新下载")
         else AdapterRegistry.adapter(site, app.network).galleryPageLink(gallery, target)
-        val url = cached ?: images[target]?.pageUrl ?: images[target - 1]?.nextUrl ?: images[target + 1]?.previousUrl ?: remembered ?: fallback
+        val known = cached ?: images[target]?.pageUrl ?: images[target - 1]?.nextUrl ?: images[target + 1]?.previousUrl ?: remembered
+        val url = known ?: resolve()
         return try {
             app.galleries.page(site, url, force, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly, sourceRoot = sourceRoot)
                 .also { images[target] = it.image }
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            // 旧缓存/旧进度里存了失效页地址：丢弃映射，改用站点重新解析的地址重试一次。
-            // 下载目录里已有该页时（离线阅读）不走自愈，避免把已下载内容判成可重新下载。
+            // 旧缓存/旧进度里的页地址随站点改版或 CDN 轮换失效：丢弃映射，用站点重新解析的地址重试一次。
+            // 离线阅读不走自愈；纯网络 IO 失败也不删映射，避免一次抖动就丢掉全部页地址。
+            if (offlineOnly || known == null || error is java.io.IOException) throw error
             val staleAdvice = error.message.orEmpty()
-            if (offlineOnly || cached == null && remembered == null && url == fallback) throw error
-            withContext(Dispatchers.IO) { app.galleries.forgetPageLinks(entry, sourceRoot) }
-            if (fallback.isBlank()) throw error
+            withContext(Dispatchers.IO) { app.galleries.forgetCachedPageLink(entry, target, url) }
             try {
-                app.galleries.page(site, fallback, true, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly, sourceRoot = sourceRoot)
+                app.galleries.page(site, resolve(), true, galleryUrl = entry.url, entry = entry, offlineOnly = offlineOnly, sourceRoot = sourceRoot)
                     .also { images[target] = it.image }
             } catch (retry: Exception) {
                 if (retry is CancellationException) throw retry

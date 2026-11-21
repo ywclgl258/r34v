@@ -231,9 +231,33 @@ object SiteRegistry {
         accent = 0xFFFF9000.toInt(),
     )
 
+    val NETFLAV = SiteContext(
+        id = "netflav", name = "Netflav", base = "https://netflav.com", host = "netflav.com",
+        accessNote = "播放通过原站打开",
+    )
+
+    val WNACG = SiteContext(
+        id = "wnacg", name = "WNACG", base = "https://www.wnacg.com", host = "wnacg.com",
+        // The desktop and mobile layouts have different catalogue and reader markup.
+        userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        mediaDomains = setOf("t2.wnimg1.ru", "t3.wnimg1.ru", "img2.wnimg1.ru", "img5.wnimg1.ru", "t4.qy0.ru", "img5.qy0.ru"),
+        mediaKind = MediaKind.GALLERY, category = SiteCategory.COMIC,
+    )
+
+    val JMCOMIC = SiteContext(
+        id = "jmcomic", name = "JMComic", base = "https://jmcomic-zzz.one", host = "jmcomic-zzz.one",
+        mirrors = listOf("18comic.ink", "jmcomic-zzz.org", "18comic.vip"),
+        mediaDomains = setOf(
+            "cdn-msp.18comic.ink", "cdn-msp2.18comic.ink", "cdn-msp3.18comic.ink",
+            "cdn-msp.jmcomic-zzz.one", "cdn-msp2.jmcomic-zzz.one", "cdn-msp3.jmcomic-zzz.one",
+        ),
+        mediaKind = MediaKind.GALLERY, category = SiteCategory.COMIC,
+        accessNote = "按当前网络自动选择镜像",
+    )
+
     val all: List<SiteContext> get() = listOf(
-        R34V, HANIME1, IWARA, MISSAV, JABLE, ROUVIDEO, KBJ, KBJFREE, PORNHUB,
-        EHENTAI, EXHENTAI, NHENTAI, HITOMI,
+        R34V, HANIME1, IWARA, MISSAV, JABLE, ROUVIDEO, KBJ, KBJFREE, PORNHUB, NETFLAV,
+        EHENTAI, EXHENTAI, NHENTAI, HITOMI, WNACG, JMCOMIC,
         FOURKHD, EVERIA, FOURKUP, GALLERYEPIC, COSPLAYTELE,
     )
 

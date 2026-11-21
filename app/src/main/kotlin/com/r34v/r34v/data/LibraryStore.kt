@@ -173,14 +173,26 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         return !exists
     }
 
-    fun readings(siteId: String = this.siteId) = list("$siteId:reading_history_v1", ReadingProgress::class.java).filter { it.entry.id.isNotBlank() }.sortedByDescending { it.at }
+    /**
+     * 阅读历史。
+     *
+     * 单条记录损坏（缺 `entry`、字段类型不符）只跳过该条：Gson 会把缺失的非空字段填成 null，
+     * 一旦让异常冒到列表层，整站历史都读不出来——而保存新进度也要先读旧列表，等于后续进度也存不下。
+     */
+    @Synchronized fun readings(siteId: String = this.siteId): List<ReadingProgress> = runCatching {
+        val array = JsonParser.parseString(prefs.getString("$siteId:reading_history_v1", "[]")).asJsonArray
+        array.mapNotNull { raw -> runCatching { gson.fromJson(raw, ReadingProgress::class.java)?.takeIf { it.entry.id.isNotBlank() } }.getOrNull() }
+            .sortedByDescending { it.at }
+    }.getOrDefault(emptyList())
     fun reading(id: String, siteId: String = this.siteId) = readings(siteId).firstOrNull { it.entry.id == id }
     @Synchronized fun saveReading(progress: ReadingProgress) {
         val siteId = progress.entry.site
         require(SiteRegistry.byId(siteId) != null && progress.entry.mediaKind == MediaKind.GALLERY)
         check(prefs.edit().putString("$siteId:reading_history_v1", gson.toJson((listOf(progress) + readings(siteId).filter { it.entry.id != progress.entry.id }).take(500))).commit()) { "无法保存阅读进度" }
     }
-    fun removeReading(id: String) = write(k("reading_history_v1"), readings().filter { it.entry.id != id })
+    /** 读改写必须在同一把锁内完成，否则后台进度写入会被这次回写覆盖。 */
+    @Synchronized fun removeReading(id: String, siteId: String = this.siteId) =
+        write("$siteId:reading_history_v1", readings(siteId).filter { it.entry.id != id })
     fun clearReadings() = prefs.edit { remove(k("reading_history_v1")) }
 
     fun galleryCookies(site: SiteContext): Set<String>? = prefs.getString("${site.id}:encrypted_cookies", null)?.let { encoded ->
@@ -196,7 +208,10 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     fun clearSearches() = prefs.edit { remove(k("native_search_history")) }
 
     fun blockedTags(siteId: String = this.siteId) = list("$siteId:blocked_tags", String::class.java)
-    fun toggleBlocked(slug: String) { val tags = blockedTags(); write(k("blocked_tags"), if (slug in tags) tags - slug else tags + slug) }
+    fun toggleBlocked(slug: String, siteId: String = this.siteId) {
+        val tags = blockedTags(siteId)
+        write("$siteId:blocked_tags", if (slug in tags) tags - slug else tags + slug)
+    }
     fun allowed(video: Video) = allowed(video, siteId)
     fun allowed(video: Video, siteId: String) = blockedTags(siteId).none { slug ->
         val needle = slug.replace('-', ' ')
@@ -274,10 +289,17 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     }
 
     var username: String
-        get() = prefs.getString("$siteId:native_username", null) ?: runCatching {
-            JsonParser.parseString(prefs.getString("$siteId:auth_session_v1", "{}")).asJsonObject["u"]?.asString.orEmpty()
-        }.getOrDefault("")
-        set(value) { prefs.edit { putString("$siteId:native_username", value) } }
+        get() = username(siteId)
+        set(value) = setUsername(value, siteId)
+
+    /** 指定站点的已登录用户名；登录常发生在非当前浏览站点，因此不能只读 [siteId]。 */
+    fun username(siteId: String): String = prefs.getString("$siteId:native_username", null) ?: runCatching {
+        JsonParser.parseString(prefs.getString("$siteId:auth_session_v1", "{}")).asJsonObject["u"]?.asString.orEmpty()
+    }.getOrDefault("")
+
+    fun setUsername(value: String, siteId: String = this.siteId) {
+        prefs.edit { putString("$siteId:native_username", value) }
+    }
 
     fun legacyCookies(siteId: String = this.siteId): Map<String, String> = runCatching {
         JsonParser.parseString(prefs.getString("$siteId:auth_session_v1", "{}")).asJsonObject["c"].asJsonObject

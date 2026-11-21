@@ -170,7 +170,9 @@ class LocalLibrary(private val context: Context) {
                 retriever.setDataSource(target.absolutePath)
                 runCatching { retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC) }.getOrNull()?.let { frame ->
                     val file = File(staging, "thumb.png")
-                    if (runCatching { frame.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, file.outputStream()) }.getOrDefault(false)) thumb = "thumb.png"
+                    // compress 不负责关闭调用方的流：不 close 时连续导入会累积 FD 直到 GC。
+                    val saved = runCatching { file.outputStream().use { out -> frame.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, out) } }.getOrDefault(false)
+                    if (saved) thumb = "thumb.png"
                 }
             } finally { retriever.release() }
             val digest = MessageDigest.getInstance("SHA-256")

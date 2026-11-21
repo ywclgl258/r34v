@@ -111,12 +111,15 @@ object EhProtocol {
                 FeedKind.MODEL -> "uploader:\"${request.target.replace("\"", "\\\"")}\""
                 else -> ""
             }
-            val query = requested.ifBlank { url.build().queryParameter("f_search").orEmpty() }
+            // 原站翻页链接自带上一页的 f_search（已含当时的语言与标签）。它必须保留，
+            // 否则按游标翻页会丢掉原查询；但也不能再次追加同一批条件——那会让查询串逐页增长。
+            val base = requested.ifBlank { url.build().queryParameter("f_search").orEmpty() }
             val languages = request.language.languages.joinToString(" ") {
                 (if (request.language.languages.size > 1) "~" else "") + "language:$it$"
             }
-            val terms = listOf(query, languages) + request.includeTags + request.excludeTags.map { "-$it" }
-            url.setQueryParameter("f_search", terms.filter { it.isNotBlank() }.joinToString(" "))
+            val terms = (base.split(' ') + listOf(languages) + request.includeTags + request.excludeTags.map { "-$it" })
+                .map(String::trim).filter(String::isNotBlank).distinct()
+            url.setQueryParameter("f_search", terms.joinToString(" "))
             if (request.language != GalleryLanguage.ALL) url.setQueryParameter("f_sfl", "on")
             if (request.filter.minPages > 0) url.setQueryParameter("f_spf", request.filter.minPages.toString())
             if (request.filter.maxPages > 0) url.setQueryParameter("f_spt", request.filter.maxPages.toString())

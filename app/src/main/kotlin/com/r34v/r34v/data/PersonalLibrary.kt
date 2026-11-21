@@ -77,9 +77,20 @@ class PersonalStore(private val library: LibraryStore) {
     fun snapshot(): PersonalLibrary = synchronized(library) {
         val raw = library.prefs.getString(KEY, null)
         if (cachedSnapshot != null && raw == cachedRaw) return@synchronized cachedSnapshot!!
-        (raw?.let { runCatching { library.gson.fromJson(it, PersonalLibrary::class.java) }.getOrNull() } ?: PersonalLibrary()).also {
+        val parsed = raw?.let { runCatching { library.gson.fromJson(it, PersonalLibrary::class.java) }.getOrNull() }
+        // 解析失败时不能静默当作空库：那会在下一次编辑时把片单、书签、收藏整体覆盖掉。
+        // 先把原始内容另存为损坏快照，再返回空库继续可用，用户仍可从备份键里找回。
+        if (raw != null && parsed == null) preserveCorrupt(raw)
+        (parsed ?: PersonalLibrary()).also {
             cachedRaw = raw; cachedSnapshot = it
         }
+    }
+    private fun preserveCorrupt(raw: String) {
+        val backup = "$KEY.corrupt.${System.currentTimeMillis()}"
+        library.prefs.edit { putString(backup, raw) }
+        // 只保留最近三份损坏快照，避免历史坏数据无限堆积。
+        library.prefs.all.keys.filter { it.startsWith("$KEY.corrupt.") }.sortedDescending().drop(3)
+            .forEach { key -> library.prefs.edit { remove(key) } }
     }
     private fun change(block: (PersonalLibrary) -> PersonalLibrary) = synchronized(library) {
         val previous = snapshot(); val next = block(previous)

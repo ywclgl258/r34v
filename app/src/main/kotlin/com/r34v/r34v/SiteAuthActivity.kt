@@ -39,11 +39,17 @@ class SiteAuthActivity : ComponentActivity() {
     private var openedTarget = false
     private var verifying = false
     private var verificationMessage = false
+    /** 只有全新进入时才清空临时 Cookie；Activity 重建时保留正在进行的登录会话。 */
+    private var freshEntry = true
 
     @SuppressLint("SetJavaScriptEnabled") // Required by the official login and browser challenge; no JS bridge is exposed.
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         site = SiteRegistry.byId(intent.getStringExtra("site").orEmpty())?.takeIf { it.id == "ehentai" || it.id == "exhentai" } ?: run { finish(); return }
+        // 系统回收重建时不能清 Cookie：那样正在进行的论坛登录与目标站权限验证会全部作废。
+        freshEntry = savedInstanceState == null
+        openedTarget = savedInstanceState?.getBoolean("openedTarget") ?: false
+        verificationMessage = savedInstanceState?.getBoolean("verificationMessage") ?: false
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent { R34Theme {
@@ -67,7 +73,8 @@ class SiteAuthActivity : ComponentActivity() {
     private fun createBrowser(): WebView? {
         try {
             browser = WebView(this).apply {
-                isSaveEnabled = false
+                // 保留 WebView 自身状态：重建后回到同一登录页，而不是从空白开始。
+                isSaveEnabled = true
                 settings.javaScriptEnabled = true; settings.domStorageEnabled = true
                 settings.allowFileAccess = false; settings.allowContentAccess = false
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
@@ -92,7 +99,8 @@ class SiteAuthActivity : ComponentActivity() {
                 }
             }
             cookies = CookieManager.getInstance().apply { setAcceptCookie(true); setAcceptThirdPartyCookies(browser!!, false) }
-            cookies!!.removeAllCookies { browser?.loadUrl(EhLogin.officialUrl) }
+            if (freshEntry) cookies!!.removeAllCookies { browser?.loadUrl(EhLogin.officialUrl) }
+            else browser?.loadUrl(EhLogin.officialUrl)
         } catch (_: RuntimeException) {
             status = "系统 WebView 不可用，请更新 WebView，或用浏览器完成官方登录后导入 Cookie。"
         }
@@ -129,8 +137,16 @@ class SiteAuthActivity : ComponentActivity() {
     }
     private fun releaseBrowser() {
         browser?.apply { stopLoading(); (parent as? android.view.ViewGroup)?.removeView(this); clearHistory(); clearCache(true); destroy() }; browser = null
-        val manager = cookies; cookies = null
-        manager?.removeAllCookies { manager.flush() }
+        // Cookie 只在 Activity 真正结束时清；配置变更/系统的 onRelease 不能打断正在进行的登录。
+        if (isFinishing) {
+            val manager = cookies; cookies = null
+            manager?.removeAllCookies { manager.flush() }
+        }
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("openedTarget", openedTarget)
+        outState.putBoolean("verificationMessage", verificationMessage)
+        super.onSaveInstanceState(outState)
     }
     override fun onDestroy() { releaseBrowser(); super.onDestroy() }
 }
