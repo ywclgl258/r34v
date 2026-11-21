@@ -47,6 +47,10 @@ import androidx.media3.exoplayer.*
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.r34v.r34v.data.*
+import com.r34v.r34v.playback.BufferPlan
+import com.r34v.r34v.playback.HlsDownloads
+import com.r34v.r34v.playback.StallPolicy
+import com.r34v.r34v.playback.StreamSelection
 import com.r34v.r34v.ui.*
 import kotlinx.coroutines.*
 
@@ -89,6 +93,16 @@ class PlayerActivity : ComponentActivity() {
     private var loop by mutableStateOf(VideoLoopRange())
     private val dialogs = ComposeDialogs()
 
+    /** 起播档位与自动降档的状态；见 [StreamSelection] 与 [StallPolicy]。 */
+    private var bufferingSince = 0L
+    private var stallWindowStart = 0L
+    private var stallsInWindow = 0
+    private var autoDowngrades = 0
+    private var lastDowngradeAt = 0L
+    private var appliedPlan: String? = null
+    /** 等首帧之后才入队的自动下载；见 [startPendingAutoDownload]。 */
+    private var pendingAutoDownload: Stream? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         video = runCatching { store.gson.fromJson(intent.getStringExtra("video"), Video::class.java) }.getOrNull()?.takeIf { it.id.isNotBlank() } ?: run { finish(); return }
@@ -117,12 +131,14 @@ class PlayerActivity : ComponentActivity() {
             timerRemaining = if (pauseAt > 0) (pauseAt - SystemClock.elapsedRealtime()).coerceAtLeast(0) else 0
             if (pauseAt > 0 && timerRemaining == 0L) { pauseAt = 0; resumePlay = false; player?.pause(); savePosition(); hint = "定时暂停已生效"; controls = true }
             player?.let { if (loop.shouldRepeat(it.currentPosition, it.isPlaying)) it.seekTo(loop.startMs) }
+            maybeDowngrade()
             delay(if (loop.active) 100 else 500)
         } }
     }
     private fun load() {
         if (opening) return
         opening = true; failureVisible = false; phase = if (offline) "正在打开离线片源" else "正在连接放映厅"; pendingError = null
+        autoDowngrades = 0; stallsInWindow = 0; stallWindowStart = 0; bufferingSince = 0; lastDowngradeAt = 0
         lifecycleScope.launch { try {
             stream = when {
                 local != null -> { check(store.localVideos(video.site).any { it.id == video.id && it.path == local }) { "离线文件不存在" }; Stream("本地", Uri.fromFile(java.io.File(local!!)).toString()) }
@@ -145,63 +161,163 @@ class PlayerActivity : ComponentActivity() {
                         return@launch
                     }
                     val preferred = store.watch(video.id, video.site)?.quality?.takeIf(String::isNotBlank) ?: store.string("quality", "720p")
-                    result.streams.firstOrNull { it.label == preferred } ?: result.streams.firstOrNull { it.height <= (Regex("\\d+").find(preferred)?.value?.toIntOrNull() ?: 720) } ?: result.streams.last()
+                    chosenStream(result.streams, preferred)
                 }
             }
             open(stream!!, position, resumePlay)
-            if (!offline && store.bool("auto_download")) runCatching { app.playback.add(video, stream!!) }
-                .onFailure { toast("自动下载未开始：${it.message}") }
+            // 自动下载改到首帧之后入队：以前在取到地址的同一刻就开始下载，正好把起播要用的
+            // 那条连接和带宽对半分，弱网下等于自己给自己制造缓冲。
+            if (!offline && store.bool("auto_download")) pendingAutoDownload = stream
         } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } finally { opening = false } }
     }
+    /**
+     * 起播档位。
+     *
+     * 以前是“标签精确匹配，匹配不到就取 ≤720 的最后一档”，于是站点默认给 720p、链路又喂不动时，
+     * 播放器只会永远转圈。现在先看链路实测：已知速度就按预算选，未知就先测 1 MB 真实媒体再选，
+     * 测速本身失败（断网、被拦）时退回用户设置，行为和以前一致。
+     */
+    private suspend fun chosenStream(streams: List<Stream>, preferred: String): Stream {
+        if (streams.isEmpty()) error("详情页没有播放地址，可能需要登录或站点已改版")
+        val local = app.linkSpeed.estimateKbps()
+        if (local > 0) return noteChoice(StreamSelection.pick(streams, preferred, local), preferred, local, measured = false)
+        phase = "正在测试链路速度"
+        val sample = StreamSelection.preferred(streams, preferred) ?: streams.first()
+        val measured = runCatching { app.mediaProbe.measure(SiteRegistry.byIdOrDefault(video.site), sample).kbps }.getOrNull() ?: 0
+        if (measured > 0) app.linkSpeed.seed(measured)
+        return noteChoice(StreamSelection.pick(streams, preferred, measured), preferred, measured, measured = true)
+    }
+
+    /** 选了比用户设置更低的档位时说明原因，避免用户以为设置没生效。 */
+    private fun noteChoice(choice: Stream, preferred: String, kbps: Int, measured: Boolean): Stream {
+        val wanted = StreamSelection.preferred(detail?.streams.orEmpty().ifEmpty { listOf(choice) }, preferred) ?: choice
+        if (choice.label != wanted.label && kbps > 0) {
+            gestureHint(if (measured) "链路约 ${kbps / 1000} Mbps，已用 ${choice.label}" else "当前网速下自动使用 ${choice.label}")
+        }
+        return choice
+    }
+
+    /** 当前档位的缓冲窗口；档位或链路换了就重建引擎，因为 LoadControl 建好后不能改。 */
+    private fun bufferPlanFor(value: Stream) = StreamSelection.bufferPlan(
+        StreamSelection.requiredKbps(value), app.linkSpeed.estimateKbps())
+
+    /**
+     * 取（必要时重建）播放引擎。
+     *
+     * Media3 的 `LoadControl` 建好之后不能改，所以缓冲窗口变化只能重建引擎。旧引擎在新引擎
+     * 就位后才释放：降档路径可能正好在旧的 `Player.Listener` 回调里执行，先建后放不会把正在
+     * 上报状态的引擎在回调中抽走。
+     */
+    private fun ensureEngine(plan: BufferPlan): ExoPlayer {
+        val previous = player
+        if (previous != null && appliedPlan == plan.signature) return previous
+        val created = ExoPlayer.Builder(this)
+            .setLoadControl(DefaultLoadControl.Builder()
+                .setBufferDurationsMs(plan.minMs, plan.maxMs, plan.forPlaybackMs, plan.afterRebufferMs)
+                .setPrioritizeTimeOverSizeThresholds(true).build())
+            // 同一个带宽表用于选档：真实播放的载荷统计是下一次判断最可信的依据。
+            .setBandwidthMeter(app.linkSpeed.meter)
+            .build()
+        appliedPlan = plan.signature
+        player = created; engineRevision++; playerView?.player = created
+        previous?.let { old -> playerView?.player = created; runCatching { old.stop(); old.release() } }
+        created.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
+        created.setHandleAudioBecomingNoisy(true)
+        created.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                status = when (state) { Player.STATE_BUFFERING -> "正在缓冲…"; Player.STATE_READY -> "${stream?.label} · ${if (offline) "离线播放" else if (created.isPlaying) "正在播放" else "已暂停"}"; Player.STATE_ENDED -> "播放完毕"; else -> "准备播放" }
+                playerView?.keepScreenOn = created.isPlaying || state == Player.STATE_BUFFERING
+                when (state) {
+                    Player.STATE_IDLE -> Unit
+                    Player.STATE_BUFFERING -> {
+                        phase = if (presented) "正在缓冲" else "正在校准画面"
+                        if (bufferingSince == 0L) { bufferingSince = SystemClock.elapsedRealtime(); countStall() }
+                    }
+                    Player.STATE_READY -> { phase = null; presented = true; bufferingSince = 0
+                        if (created.duration > 0 && !loop.validFor(created.duration)) { loop = VideoLoopRange(); gestureHint("片源时长已变更，循环区间已清除") }
+                        if (!autoFullscreenApplied && store.bool("auto_fullscreen")) { autoFullscreenApplied = true; fullscreen = true }
+                        startPendingAutoDownload() }
+                    Player.STATE_ENDED -> { phase = null; bufferingSince = 0
+                        if (loop.active && created.playWhenReady) { created.seekTo(loop.startMs); created.play() }
+                        else { controls = true; locked = false; savePosition() } }
+                }
+            }
+            override fun onIsPlayingChanged(playing: Boolean) { playerView?.keepScreenOn = playing; revision++; if (created.playbackState == Player.STATE_READY) status = "${stream?.label} · ${if (playing) { if (offline) "离线播放" else "正在播放" } else "已暂停"}" }
+            override fun onVideoSizeChanged(videoSize: VideoSize) { if (fullscreen) applyFullscreen() }
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK && !loop.contains(newPosition.positionMs)) {
+                    loop = VideoLoopRange(); gestureHint("已跳出循环区间，循环已清除")
+                }
+            }
+            override fun onPlayerError(error: PlaybackException) {
+                savePosition()
+                if (!offline && !refreshed) { refreshed = true; phase = "正在刷新播放地址"; lifecycleScope.launch { try {
+                    val fresh = app.repository.detail(video.url); detail = fresh
+                    open(fresh.streams.firstOrNull { it.label == stream?.label } ?: fresh.streams.last(), position,
+                        player?.playWhenReady ?: resumePlay)
+                } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } } } else playbackError(error)
+            }
+        })
+        return created
+    }
+
     private fun open(value: Stream, start: Long, autoplay: Boolean = true) {
         stream = value; position = start
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         pendingError = null; failureVisible = false; phase = if (presented) "正在缓冲" else "正在校准画面"
-        val engine = player ?: ExoPlayer.Builder(this)
-            .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(8000, 50000, 400, 800).setPrioritizeTimeOverSizeThresholds(true).build())
-            .build().also { exo ->
-                player = exo; engineRevision++; playerView?.player = exo
-                exo.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true); exo.setHandleAudioBecomingNoisy(true)
-                exo.addListener(object : Player.Listener {
-                    override fun onPlaybackStateChanged(state: Int) {
-                        status = when (state) { Player.STATE_BUFFERING -> "正在缓冲…"; Player.STATE_READY -> "${stream?.label} · ${if (offline) "离线播放" else if (exo.isPlaying) "正在播放" else "已暂停"}"; Player.STATE_ENDED -> "播放完毕"; else -> "准备播放" }
-                        playerView?.keepScreenOn = exo.isPlaying || state == Player.STATE_BUFFERING
-                        when (state) {
-                            Player.STATE_IDLE -> Unit
-                            Player.STATE_BUFFERING -> phase = if (presented) "正在缓冲" else "正在校准画面"
-                            Player.STATE_READY -> { phase = null; presented = true
-                                if (exo.duration > 0 && !loop.validFor(exo.duration)) { loop = VideoLoopRange(); gestureHint("片源时长已变更，循环区间已清除") }
-                                if (!autoFullscreenApplied && store.bool("auto_fullscreen")) { autoFullscreenApplied = true; fullscreen = true } }
-                            Player.STATE_ENDED -> { phase = null
-                                if (loop.active && exo.playWhenReady) { exo.seekTo(loop.startMs); exo.play() }
-                                else { controls = true; locked = false; savePosition() } }
-                        }
-                    }
-                    override fun onIsPlayingChanged(playing: Boolean) { playerView?.keepScreenOn = playing; revision++; if (exo.playbackState == Player.STATE_READY) status = "${stream?.label} · ${if (playing) { if (offline) "离线播放" else "正在播放" } else "已暂停"}" }
-                    override fun onVideoSizeChanged(videoSize: VideoSize) { if (fullscreen) applyFullscreen() }
-                    override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-                        if (reason == Player.DISCONTINUITY_REASON_SEEK && !loop.contains(newPosition.positionMs)) {
-                            loop = VideoLoopRange(); gestureHint("已跳出循环区间，循环已清除")
-                        }
-                    }
-                    override fun onPlayerError(error: PlaybackException) {
-                        savePosition()
-                        if (!offline && !refreshed) { refreshed = true; phase = "正在刷新播放地址"; lifecycleScope.launch { try {
-                            val fresh = app.repository.detail(video.url); detail = fresh
-                            open(fresh.streams.firstOrNull { it.label == stream?.label } ?: fresh.streams.last(), position,
-                                player?.playWhenReady ?: resumePlay)
-                        } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } } } else playbackError(error)
-                    }
-                })
-            }
+        bufferingSince = 0
+        val engine = ensureEngine(bufferPlanFor(value))
         val item = if (local != null) MediaItem.fromUri(value.url)
             else app.playback.item(video, value)
-        val hlsKey = com.r34v.r34v.playback.HlsDownloads.mime(value.url)?.let { app.playback.key(video, value.label) }
-        val mediaSource = DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site, sourceRoot, hlsKey)).createMediaSource(item)
+        val hlsKey = HlsDownloads.mime(value.url)?.let { app.playback.key(video, value.label) }
+        val streamingCache = store.bool("stream_cache")
+        val mediaSource = DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site, sourceRoot, hlsKey, streamingCache)).createMediaSource(item)
         engine.setMediaSource(mediaSource, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
     }
     private fun playbackError(error: Throwable) { pendingError = error; phase = null; status = "播放失败：${error.message}"; failureVisible = true; controls = true; locked = false }
-    private fun restart() { refreshed = false; if (stream != null) open(stream!!, if (pendingError != null) position else 0) else load() }
+    private fun restart() { refreshed = false; autoDowngrades = 0; stallsInWindow = 0; if (stream != null) open(stream!!, if (pendingError != null) position else 0) else load() }
+
+    /**
+     * 首帧就绪后才真正入队自动下载。
+     *
+     * 以前在拿到播放地址的同一刻就 `add()`，Downloads 立刻和播放抢带宽（并行 2 个任务），在
+     * 250 KB/s 的链路上等于把起播时间翻倍。现在先让画面出来，再开始写盘；只做一次。
+     */
+    private fun startPendingAutoDownload() {
+        val target = pendingAutoDownload ?: return
+        pendingAutoDownload = null
+        runCatching { app.playback.add(video, target) }.onFailure { toast("自动下载未开始：${it.message}") }
+    }
+
+    /** 记一次卡顿；窗口过期就重新计数，避免十几次轻微抖动累加成一个“持续卡顿”。 */
+    private fun countStall() {
+        if (offline) return
+        val now = SystemClock.elapsedRealtime()
+        if (stallWindowStart == 0L || now - stallWindowStart > StallPolicy.WINDOW_MS) { stallWindowStart = now; stallsInWindow = 0 }
+        stallsInWindow++
+    }
+
+    /**
+     * 卡顿就降一档。
+     *
+     * 以前没有任何降档路径：链路喂不动 720p 时引擎只会一直 `STATE_BUFFERING`，用户面对的是
+     * 永远转圈的缓冲画面。现在三种信号（起播太久 / 单次卡太久 / 短时间反复卡）任一成立就退到
+     * 下一档，并保留播放位置和播放状态；用户手动选的档位也照降，只是会明说“网络跟不上，已降到 xxx”。
+     */
+    private fun maybeDowngrade() {
+        if (offline || player == null || bufferingSince == 0L) return
+        if (autoDowngrades >= MAX_AUTO_DOWNGRADES) return
+        val now = SystemClock.elapsedRealtime()
+        if (lastDowngradeAt != 0L && now - lastDowngradeAt < DOWNGRADE_COOLDOWN_MS) return
+        val engine = player ?: return
+        val buffered = now - bufferingSince
+        if (!StallPolicy.shouldDowngrade(buffered, engine.currentPosition, stallsInWindow)) return
+        val current = stream ?: return
+        val lower = StreamSelection.lower(detail?.streams.orEmpty(), current) ?: return
+        autoDowngrades++; lastDowngradeAt = now; bufferingSince = 0; stallsInWindow = 0; stallWindowStart = now
+        gestureHint("网络跟不上 ${current.label}，已自动降到 ${lower.label}")
+        open(lower, engine.currentPosition, engine.playWhenReady)
+    }
     @Composable private fun Content() {
         BackHandler { if (locked) { locked = false; controls = true } else if (fullscreen) fullscreen = false else finish() }
         SideEffect { applyFullscreen() }
@@ -467,7 +583,7 @@ class PlayerActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); outState.putBoolean("fullscreen", fullscreen); outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied); outState.putBoolean("resumePlay", player?.playWhenReady ?: resumePlay); outState.putBoolean("locked", locked); outState.putLong("pauseAt", pauseAt); outState.putLong("loopA", loop.startMs); outState.putLong("loopB", loop.endMs); super.onSaveInstanceState(outState) }
     override fun onResume() { super.onResume(); window.decorView.post { if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && player == null && stream != null) open(stream!!, position, resumePlay) } }
     override fun onPause() { resumePlay = player?.playWhenReady ?: resumePlay; savePosition(); if (!pipMode && !enteringPip) player?.pause(); super.onPause() }
-    override fun onStop() { savePosition(); playerView?.player = null; player?.release(); player = null; engineRevision++; super.onStop() }
+    override fun onStop() { savePosition(); playerView?.player = null; player?.release(); player = null; appliedPlan = null; engineRevision++; super.onStop() }
     private fun gestureHint(value: String) { hintJob?.cancel(); hint = value; hintJob = lifecycleScope.launch { delay(1000); hint = "" } }
     @Suppress("ClickableViewAccessibility") private fun installGestures(view: PlayerView) {
         val audio = getSystemService(AudioManager::class.java); var start = 0L; var x = 0f; var y = 0f; var mode = 0; var seek = 0L; var hold = false; var brightness = .5f; var volume = 0
@@ -490,5 +606,12 @@ class PlayerActivity : ComponentActivity() {
             if (locked || pipMode) return@setOnTouchListener true
             detector.onTouchEvent(event); if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) { if (mode == 1 && event.actionMasked == MotionEvent.ACTION_UP) player?.seekTo(seek); if (hold) { player?.setPlaybackSpeed(userRate); hold = false } }; true
         }
+    }
+
+    private companion object {
+        /** 一部片子最多自动降两档：降到最低档还卡就是链路问题，再降只会更糊。 */
+        const val MAX_AUTO_DOWNGRADES = 2
+        /** 两次自动降档的最短间隔，避免一次长缓冲连降到底。 */
+        const val DOWNGRADE_COOLDOWN_MS = 20_000L
     }
 }

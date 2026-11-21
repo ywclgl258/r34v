@@ -600,9 +600,14 @@ class MainActivity : ComponentActivity() {
             Setting("默认清晰度", store.string("quality", "720p")) { val values = listOf("360p", "480p", "720p", "1080p", "2160p"); dialogs.choose("默认清晰度", values, values.indexOf(store.string("quality", "720p"))) { store.set("quality", values[it]); revision++ } }
             Setting("默认倍速", "${store.string("native_speed", "1.0")}×") { val values = listOf("0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "3.0"); dialogs.choose("默认倍速", values, values.indexOf(store.string("native_speed", "1.0"))) { store.set("native_speed", values[it]); revision++ } }
             Toggle("进入播放后自动全屏", "auto_fullscreen"); Toggle("播放时自动下载", "auto_download"); Copy("主动保存的视频与整本漫画统一在下载中心管理，支持后台下载与离线打开。")
+            Toggle("边播边写播放缓存", "stream_cache"); Copy("默认关闭：开播时不再把整片同步写入 512 MB 临时缓存，弱网下缓冲更快；需要“重看不用再下载”时可打开。已下载的视频不受影响。")
             Title("网络"); Copy("自动跟随系统代理；未设置代理时使用系统 DNS 直连。代理连接失败时会显示错误。")
             Copy(runCatching { app.network.routeDescription() }.getOrDefault("系统代理设置暂不可用"))
-            Setting("网络诊断") { lifecycleScope.launch { dialogs.message("网络诊断", "正在发起实时请求…"); val pending = dialogs.content; val report = app.network.diagnose(); if (dialogs.content === pending) dialogs.message("网络诊断", report) } }
+            Setting("网络诊断", "含媒体测速") { lifecycleScope.launch {
+                dialogs.message("网络诊断", "正在实测页面和媒体链路…"); val pending = dialogs.content
+                val report = withContext(Dispatchers.IO) { app.playbackDiagnostics.report(site, store.string("quality", "720p")) }
+                if (dialogs.content === pending) dialogs.message("网络诊断", report)
+            } }
             Title("本地数据"); Setting("清理播放临时数据") { dialogs.confirm("清理播放临时数据？", body = "已下载的视频和漫画会保留。") { lifecycleScope.launch { withContext(Dispatchers.IO) { app.playback.clearStreaming() }; showNotice("已清理") } } }
             Setting("备份与恢复", "收藏、订阅、进度与片单") { navigate("backup") }
             if (site.mediaKind == MediaKind.GALLERY) Setting("清理本站阅读临时数据") { dialogs.confirm("清理阅读临时数据？", body = "整本下载、阅读记录和收藏会保留。") { lifecycleScope.launch { withContext(Dispatchers.IO) { app.galleries.clear(site) }; showNotice("已清理") } } }

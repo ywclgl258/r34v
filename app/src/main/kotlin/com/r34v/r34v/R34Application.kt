@@ -31,6 +31,10 @@ class R34Application : Application() {
     val galleries by lazy { GalleryRepository(this, network, storage) }
     val galleryDownloads by lazy { com.r34v.r34v.downloads.GalleryDownloadStore(this, galleries, network, index) { downloadPolicy.allowed } }
     val playback by lazy { PlaybackStore(this, network, library, storage, index) }
+    /** 进程内共享的链路速度估计；播放实测与起播前探测都写到这里。 */
+    val linkSpeed by lazy { com.r34v.r34v.playback.LinkSpeed(this) }
+    val mediaProbe by lazy { com.r34v.r34v.playback.MediaProbe(network) }
+    val playbackDiagnostics by lazy { com.r34v.r34v.playback.PlaybackDiagnostics(network, mediaProbe) }
     val downloadPolicy by lazy { com.r34v.r34v.downloads.DownloadPolicy(this) }
     val batchDownloads by lazy { com.r34v.r34v.downloads.BatchDownloads(this) }
     private val coverMemory by lazy { MemoryCache.Builder().maxSizeBytes(24L * 1024 * 1024).build() }

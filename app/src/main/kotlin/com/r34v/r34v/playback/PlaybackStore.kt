@@ -12,6 +12,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
+import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.NoOpCacheEvictor
@@ -171,13 +172,18 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         }
     }
 
-    fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = "", hlsKey: String? = null): DataSource.Factory {
+    fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = "", hlsKey: String? = null,
+                      cacheStreaming: Boolean = false): DataSource.Factory {
         val owner = siteId?.let(SiteRegistry::byId)
         val cacheKeys = hlsKey?.let(HlsDownloads::keys) ?: androidx.media3.datasource.cache.CacheKeyFactory.DEFAULT
         // Select a restored HLS library once, not once per segment (which would rescan every file).
         val hlsCache by lazy { downloadCaches.readCache(hlsKey.orEmpty(), sourceRoot) }
+        // Streaming reads the download cache, and only writes its own copy when the user asked for it:
+        // on a link that is already the bottleneck, a synchronous 512 MB cache writer on the read
+        // path only adds latency to the very stall the user is complaining about.
         val streaming = CacheDataSource.Factory().setCache(streamCache)
             .setCacheKeyFactory(cacheKeys)
+            .setCacheWriteDataSinkFactory(if (cacheStreaming) CacheDataSink.Factory().setCache(streamCache) else null)
             .setUpstreamDataSourceFactory(mediaAware(DefaultDataSource.Factory(context, httpFactory(owner)), owner))
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         return DataSource.Factory {
