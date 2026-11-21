@@ -103,6 +103,144 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
     }
 }
 
+/**
+ * 同一站点主机上的请求起点节流。
+ *
+ * rule34video 这类站对短时间连续的页面请求很快返回 429，而开屏时的订阅合并（3 并发）、
+ * 保存的搜索、诊断会在同一主机上叠出一段突发。这里把每个主机的请求**起点**按固定间隔
+ * 错开——只推迟起点，不占住连接，响应体仍然并发传输。间隔按目的地分两档：页面慢、
+ * 图片快（浏览器滚动列表时本来也是图片高频、导航低频）。媒体 CDN（boomio-cdn 等不在
+ * 站点清单里的主机）与更新服务器不受影响。
+ */
+internal class HostGate {
+    private val lock = Any()
+    private var nextSlot = 0L
+
+    /** 返回本次请求需要等待的毫秒数，并把该主机的下一个起点往前推 [gapMs] 一格。 */
+    fun reserve(now: Long, gapMs: Long): Long = synchronized(lock) {
+        val start = maxOf(now, nextSlot)
+        nextSlot = start + gapMs
+        start - now
+    }
+}
+
+/** 页面导航的起点间隔：400ms ≈ 每主机至多 2.5 请求/秒。 */
+private const val PAGE_REQUEST_GAP_MS = 400L
+
+/** 列表封面这类图片的起点间隔：浏览一屏 30 张封面时摊开到 4.5 秒，接近真实滚动手感。 */
+private const val IMAGE_REQUEST_GAP_MS = 150L
+
+/** 带 these 后缀的路径按图片对待：封面、预览图、动图封面。 */
+internal val BROWSER_IMAGE_PATH =
+    Regex("\\.(jpe?g|png|gif|webp|avif|webm)(\\?.*|#.*|$)", RegexOption.IGNORE_CASE)
+
+/**
+ * 站点把媒体地址 302 到 CDN 的解析结果缓存。
+ *
+ * KVS 的 /get-file 每次都要先敲站点主域再跳 CDN：播放里的每一次 seek、每一次引擎重建、
+ * 下载管理器的每次重开都会重复这笔账，而站点的限流器把它们全算在同一 IP 上。浏览器每次
+ * seek 也会重新跟一遍 302，这里更进一步：解析一次，令牌窗口期内直接敲 CDN，把主域的
+ * 请求数压到浏览器的几分之一。CDN 侧 403/404/410（令牌过期、防盗链变化）立即作废并回
+ * 站点重解析，不会拿旧地址硬撑。
+ */
+internal class MediaRedirectCache(
+    private val ttlMs: Long = 30L * 60 * 1000,
+    private val eligible: (okhttp3.HttpUrl) -> Boolean = { SiteRegistry.isRegistered(it.host) },
+) {
+    private data class Resolved(val url: okhttp3.HttpUrl, val expiresAt: Long)
+    private val resolved = java.util.concurrent.ConcurrentHashMap<String, Resolved>()
+
+    private fun expired(entry: Resolved) = entry.expiresAt <= System.currentTimeMillis()
+
+    private fun cacheIfAbsent(key: String, url: okhttp3.HttpUrl) {
+        if (resolved.size > 256) resolved.values.removeAll { expired(it) }
+        resolved.putIfAbsent(key, Resolved(url, System.currentTimeMillis() + ttlMs))
+    }
+
+    /**
+     * 应用层：命中缓存就把请求改写到已解析的 CDN 地址；未命中时给请求挂上解析键，
+     * 由 [networkInterceptor] 在最终一跳上回填结果。
+     */
+    fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+        val original = chain.request()
+        if (!eligible(original.url)) return chain.proceed(original)
+        val key = original.url.toString()
+        val hit = resolved[key]?.takeIf { !expired(it) }
+        if (hit != null) {
+            val direct = chain.proceed(original.newBuilder().tag(String::class.java, key).url(hit.url).build())
+            if (direct.code !in INVALID) return direct
+            // CDN 拒绝：多半是签好令牌过期了。作废缓存，回到站点重新走一遍 302。
+            direct.close()
+            resolved.remove(key, hit)
+        }
+        return chain.proceed(original.newBuilder().tag(String::class.java, key).build())
+    }
+
+    /** 网络层：每一跳都能看到真实地址（应用层看不到 302 之后的跳转），成功响应即回填。 */
+    fun interceptNetwork(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+        val request = chain.request()
+        val response = chain.proceed(request)
+        val key = request.tag(String::class.java)
+        if (key != null && response.isSuccessful) {
+            val origin = key.toHttpUrlOrNull()
+            if (origin != null && request.url.host != origin.host) cacheIfAbsent(key, request.url)
+        }
+        return response
+    }
+
+    val interceptor = okhttp3.Interceptor { intercept(it) }
+    val networkInterceptor = okhttp3.Interceptor { interceptNetwork(it) }
+
+    companion object { private val INVALID = setOf(403, 404, 410) }
+}
+
+/**
+ * 按请求目的地补齐“浏览器一定会带、裸 OkHttp 不带”的头。站点的机器人评分和限流都看
+ * 请求形态：Chrome 对页面导航、封面图片、CORS API、<video> 媒体各自发不同的 Accept 与
+ * Sec-Fetch 组合。已显式设置的头部一律不覆盖——adapter 或调用方显式给的头说明它有更具体的意图。
+ * 未登记的主机（更新服务器、未知 CDN）保持最小形态不动。
+ */
+internal fun applyBrowserShape(builder: okhttp3.Request.Builder, request: okhttp3.Request, site: SiteContext?) {
+    if (site == null) return
+    val sameOrigin = SiteRegistry.forRequestHost(request.url.host) != null
+    when {
+        request.url.host in site.apiHosts -> {
+            if (request.header("Accept") == null) builder.header("Accept", "application/json, text/plain, */*")
+            fetch(request, builder, dest = "empty", mode = "cors", site = "same-site")
+        }
+        BROWSER_IMAGE_PATH.containsMatchIn(request.url.encodedPath) -> {
+            if (request.header("Accept") == null)
+                builder.header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            fetch(request, builder, dest = "image", mode = "no-cors",
+                site = if (sameOrigin) "same-origin" else "cross-site")
+        }
+        else -> {
+            if (request.header("Accept") == null)
+                builder.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+            fetch(request, builder, dest = "document", mode = "navigate", site = "same-origin")
+            if (request.header("Upgrade-Insecure-Requests") == null) builder.header("Upgrade-Insecure-Requests", "1")
+        }
+    }
+    if (request.header("Accept-Language") == null) builder.header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+}
+
+private fun fetch(request: okhttp3.Request, builder: okhttp3.Request.Builder, dest: String, mode: String, site: String) {
+    if (request.header("Sec-Fetch-Dest") == null) builder.header("Sec-Fetch-Dest", dest)
+    if (request.header("Sec-Fetch-Mode") == null) builder.header("Sec-Fetch-Mode", mode)
+    if (request.header("Sec-Fetch-Site") == null) builder.header("Sec-Fetch-Site", site)
+}
+
+/** 播放、下载、测速走 <video> 的取法：覆盖基线拦截器给的 document 形态，Range 等原样保留。 */
+private fun applyMediaShape(builder: okhttp3.Request.Builder, host: String) {
+    val sameOrigin = SiteRegistry.forRequestHost(host) != null
+    builder.header("Accept", "*/*")
+        .header("Sec-Fetch-Dest", "video")
+        .header("Sec-Fetch-Mode", "no-cors")
+        .header("Sec-Fetch-Site", if (sameOrigin) "same-origin" else "cross-site")
+        .removeHeader("Upgrade-Insecure-Requests")
+        .removeHeader("Sec-Fetch-User")
+}
+
 class Network(private val context: Context, private val store: LibraryStore) {
     val session = SessionCookies(store)
     @Volatile private var current: OkHttpClient? = null
@@ -111,8 +249,23 @@ class Network(private val context: Context, private val store: LibraryStore) {
     @Volatile var lastPeer: String = "尚未连接"
         private set
     private val systemRoutes = SystemProxySelector()
+    private val hostGates = java.util.concurrent.ConcurrentHashMap<String, HostGate>()
+    private val mediaRedirects = MediaRedirectCache()
     val client: OkHttpClient get() = current ?: synchronized(this) { current ?: build().also { current = it } }
-    val mediaClient: OkHttpClient get() = client.newBuilder().callTimeout(0, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).cache(null).build()
+
+    /**
+     * 媒体专用客户端：不缓存、不超时，带 CDN 重解析与 <video> 形态。播放器、下载管理器、
+     * 测速都从这里派生（newBuilder 会继承这两个拦截器）。
+     */
+    val mediaClient: OkHttpClient get() = client.newBuilder()
+        .callTimeout(0, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).cache(null)
+        .addInterceptor(mediaRedirects.interceptor)
+        .addNetworkInterceptor(mediaRedirects.networkInterceptor)
+        .addInterceptor { chain ->
+            val shaped = chain.request().newBuilder()
+            applyMediaShape(shaped, chain.request().url.host)
+            chain.proceed(shaped.build())
+        }.build()
     @Synchronized fun invalidate() { current?.connectionPool?.evictAll(); current = null }
     fun routeDescription(url: String = SiteRegistry.current.base) = systemRoutes.describe(url.toHttpUrl().toUri())
     private fun build(): OkHttpClient {
@@ -127,12 +280,21 @@ class Network(private val context: Context, private val store: LibraryStore) {
             } }
             .addInterceptor { chain ->
                 val host = chain.request().url.host
+                // 只有站点页面与 API 受节流；图片走快车道。等待被中断即视为调用被取消。
+                if (SiteRegistry.forRequestHost(host) != null) {
+                    val gap = if (BROWSER_IMAGE_PATH.containsMatchIn(chain.request().url.encodedPath))
+                        IMAGE_REQUEST_GAP_MS else PAGE_REQUEST_GAP_MS
+                    val wait = hostGates.computeIfAbsent(host) { HostGate() }
+                        .reserve(System.currentTimeMillis(), gap)
+                    if (wait > 0) Thread.sleep(wait)
+                }
                 val site = chain.request().tag(SiteContext::class.java) ?: SiteRegistry.forMediaHost(host)
                 // A blank User-Agent is rejected outright by Cloudflare, so every request carries one.
                 val agent = site?.userAgent?.takeIf { it.isNotBlank() } ?: SiteContext.DEFAULT_UA
                 val referer = chain.request().header("Referer") ?: site?.referer ?: "${chain.request().url.scheme}://$host/"
                 val request = chain.request().newBuilder().header("User-Agent", agent).header("Referer", referer)
                 if (site?.id == SiteRegistry.IWARA.id) request.header("Origin", site.base).header("x-site", "www.iwara.tv")
+                applyBrowserShape(request, chain.request(), site)
                 chain.proceed(request.build())
             }.build()
     }
@@ -252,13 +414,20 @@ class Repository(private val network: Network, private val library: LibraryStore
                 }
                 page
             } catch (error: IOException) {
-                val stale = if (request.kind != FeedKind.FOR_YOU) runCatching {
-                    com.google.gson.Gson().fromJson(file.readText(), FeedPage::class.java)
-                }.getOrNull() else null
-                stale?.copy(cached = true) ?: throw error
+                staleFallback(request, file) ?: throw error
+            } catch (error: GalleryResponseException) {
+                // 退避与镜像都失败后仍然 429：回退旧快照，别让限流把整页打死。
+                staleFallback(request, file) ?: throw error
             }
         }
     }
+
+    /** FOR_YOU 是每次现算的合成页，没有可回退的快照；其余失败都允许展示旧缓存。 */
+    private fun staleFallback(request: FeedRequest, file: File): FeedPage? =
+        if (request.kind == FeedKind.FOR_YOU) null else runCatching {
+            com.google.gson.Gson().fromJson(file.readText(), FeedPage::class.java)
+        }.getOrNull()?.copy(cached = true)
+
     suspend fun detail(url: String): Detail {
         val site = SiteRegistry.forHost(url.toHttpUrlOrNull()?.host.orEmpty()) ?: SiteRegistry.current
         val adapter = AdapterRegistry.adapter(site, network)
