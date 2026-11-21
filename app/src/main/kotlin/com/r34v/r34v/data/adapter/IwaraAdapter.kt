@@ -9,11 +9,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.MessageDigest
 
 /** Iwara's public JSON API. Protocol reference: LoveIwara, see docs/dev/iwara-adapter.md. */
 class IwaraAdapter(override val site: SiteContext, private val network: Network) : SiteAdapter {
-    override val capabilities = setOf(Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.RANKING, Capability.DOWNLOAD)
+    override val capabilities = setOf(Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.RANKING, Capability.DOWNLOAD, Capability.LOGIN)
     override val sorts = listOf(Sort.RELEVANCE, Sort.NEWEST, Sort.TRENDING, Sort.POPULARITY, Sort.RATING, Sort.VIEWS)
     override val sections = listOf(
         Section("trending", "趋势榜", "看看最近受到关注的作品", FeedRequest(sort = Sort.TRENDING)),
@@ -23,6 +25,7 @@ class IwaraAdapter(override val site: SiteContext, private val network: Network)
         Section("popular", "热门榜", feed = FeedRequest(sort = Sort.POPULARITY)),
         Section("liked", "点赞榜", feed = FeedRequest(sort = Sort.RATING)),
         Section("views", "播放榜", feed = FeedRequest(sort = Sort.VIEWS)),
+        Section("subscriptions", "关注动态", "已关注作者的最新作品，需要在设置中登录", FeedRequest(FeedKind.SUBSCRIPTIONS)),
     )
     private val signature = IwaraSignature(network)
     private val galleryDetails = java.util.concurrent.ConcurrentHashMap<String, JsonObject>()
@@ -53,8 +56,13 @@ class IwaraAdapter(override val site: SiteContext, private val network: Network)
             check(user.isNotBlank()) { "没有找到该作者，请输入准确的用户名" }
             request.copy(target = user)
         } else request
-        val page = if (request.contentKind == MediaKind.GALLERY) IwaraProtocol.imageFeed(network.json(resolve(resolved)), site, request)
+        val page = try {
+            if (request.contentKind == MediaKind.GALLERY) IwaraProtocol.imageFeed(network.json(resolve(resolved)), site, request)
             else IwaraProtocol.feed(network.json(resolve(resolved)), site, request)
+        } catch (error: GalleryResponseException) {
+            if (request.kind == FeedKind.SUBSCRIPTIONS && error.status == 401) throw GalleryAccessException("请先在设置中登录 Iwara 账号，关注动态需要登录")
+            throw error
+        }
         return if (request.contentKind == MediaKind.VIDEO && (request.filter.minDurationSec > 0 || request.filter.maxDurationSec > 0 || request.filter.minRating > 0))
             page.copy(videos = page.videos.filter(request.filter::matchesLoaded)) else page
     }
@@ -102,8 +110,16 @@ class IwaraAdapter(override val site: SiteContext, private val network: Network)
     }
 
     override suspend fun index(section: String): List<Link> = emptyList()
-    override suspend fun login(network: Network, username: String, password: String): Unit =
-        error("Iwara 当前支持公开浏览，账号登录尚未接入")
+    /** 功能 F25：账号登录。令牌加密落盘，之后 API 请求自动附带 Bearer；关注动态依赖它。 */
+    override suspend fun login(network: Network, username: String, password: String) {
+        require(username.isNotBlank() && password.isNotEmpty()) { "请填写用户名和密码" }
+        val response = try { network.postJson(IwaraProtocol.loginEndpoint(site), IwaraProtocol.loginBody(username, password)) }
+        catch (error: GalleryResponseException) {
+            throw IllegalStateException(if (error.status == 401) "用户名或密码不正确" else "登录失败：HTTP ${error.status}")
+        }
+        val token = IwaraProtocol.authToken(com.google.gson.JsonParser.parseString(response).asJsonObject)
+        network.saveAuthToken(site.id, token)
+    }
 }
 
 /** Pure protocol functions shared by the adapter and its contract tests. */
@@ -116,8 +132,23 @@ object IwaraProtocol {
     }
     fun isUserId(value: String) = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}").matches(value)
 
+    /** 功能 F25：登录端点与请求体。令牌字段以实际响应为准（真账号联调时核对）。 */
+    fun loginEndpoint(site: SiteContext): String =
+        site.apiBase.toHttpUrl().newBuilder().addPathSegment("auth").addPathSegment("login").build().toString()
+
+    fun loginBody(username: String, password: String): okhttp3.RequestBody =
+        com.google.gson.JsonObject().apply { addProperty("user", username.trim()); addProperty("password", password) }.toString()
+            .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+
+    fun authToken(response: com.google.gson.JsonObject): String =
+        response.string("token")?.takeIf(String::isNotBlank) ?: error("登录响应缺少令牌，请稍后重试或更新应用")
+
     fun resolve(site: SiteContext, request: FeedRequest): String {
         require(request.page > 0) { "页码必须大于零" }
+        if (request.kind == FeedKind.SUBSCRIPTIONS) {
+            return site.apiBase.toHttpUrl().newBuilder().addPathSegment("subscriptions").addPathSegment("videos")
+                .addQueryParameter("page", (request.page - 1).toString()).addQueryParameter("limit", "20").build().toString()
+        }
         val search = request.kind == FeedKind.SEARCH
         val gallery = request.contentKind == MediaKind.GALLERY
         val url = site.apiBase.toHttpUrl().newBuilder().addPathSegment(if (search) "search" else if (gallery) "images" else "videos")

@@ -17,7 +17,7 @@ class GalleryLoginRequiredException(message: String) : GalleryAccessException(me
 
 /** Independent parser for the live gallery HTML; no EhViewer application code is bundled. */
 class EhAdapter(override val site: SiteContext, private val network: Network) : SiteAdapter {
-    override val capabilities = setOf(Capability.DOWNLOAD, Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.CATEGORY, Capability.RANKING, Capability.SESSION_IMPORT)
+    override val capabilities = setOf(Capability.DOWNLOAD, Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.CATEGORY, Capability.RANKING, Capability.SESSION_IMPORT, Capability.ORIGINAL_IMAGES)
     override val sorts = listOf(Sort.NEWEST)
     override val catalogueTitle = "画廊分类"
     override val sections = listOf(
@@ -248,7 +248,12 @@ object EhProtocol {
         val reload = Regex("""nl\(['"]([A-Za-z0-9-]+)['"]\)""").find(body)?.groupValues?.get(1)?.let {
             pageUrl.toHttpUrl().newBuilder().setQueryParameter("nl", it).build().toString()
         }
-        return GalleryImage(index, pageUrl, image, adjacent("prev", false), adjacent("next", true), reload)
+        // 功能 F34：原图入口与体积文案。fullimg.php 走站点会话 Cookie，读取/下载共用同一偏好。
+        val originalLink = doc.selectFirst("a[href*=fullimg.php]")?.absUrl("href").orEmpty()
+        val originalSize = Regex("""(?:Load|Download)\s+original[^,]*,\s*size:\s*([\d.]+\s*[KMGT]?B)""", RegexOption.IGNORE_CASE)
+            .find(doc.body().text())?.groupValues?.get(1).orEmpty()
+        return GalleryImage(index, pageUrl, image, adjacent("prev", false), adjacent("next", true), reload,
+            originalUrl = originalLink.takeIf { it.startsWith("https://") }.orEmpty(), originalSize = originalSize)
     }
 
     fun sessionCookies(site: SiteContext, raw: String): List<Cookie> {

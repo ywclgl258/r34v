@@ -284,25 +284,31 @@ class GalleryActivity : ComponentActivity() {
         }
     }
     private fun readingBehaviorOptions() {
-        val choices = listOf("音量键翻页：${if (readingBehavior.volumeKeys) "开启" else "关闭"}",
-            "音量键方向：${if (readingBehavior.reverseVolume) "反向" else "正向"}",
-            if (readingBehavior.autoPageSeconds > 0) "自动翻页：每 ${readingBehavior.autoPageSeconds} 秒" else "自动翻页：关闭") +
-            if (autoPageRunning) listOf("暂停自动翻页") else emptyList()
-        dialogs.choose("阅读行为", choices) { index ->
-            when (index) {
-                0 -> readingBehavior = readingBehavior.copy(volumeKeys = !readingBehavior.volumeKeys).also { store.personal.setReadingBehavior(site.id, it); autoPageRunning = false }
-                1 -> readingBehavior = readingBehavior.copy(reverseVolume = !readingBehavior.reverseVolume).also { store.personal.setReadingBehavior(site.id, it) }
-                2 -> {
-                    val values = listOf(0, 3, 5, 10, 20, 30)
-                    dialogs.choose("自动翻页间隔", values.map { if (it == 0) "关闭" else "每 $it 秒，成功显示后推进" }, values.indexOf(readingBehavior.autoPageSeconds)) { selected ->
-                        readingBehavior = readingBehavior.copy(autoPageSeconds = values[selected]).also { store.personal.setReadingBehavior(site.id, it) }
-                        autoPageRunning = readingBehavior.autoPageSeconds > 0 && reading
-                    }
-                    return@choose
+        // 条目=(文案, 是否打开子对话框, 动作)：子对话框自己负责收尾，其余动作执行后重开本菜单。
+        val items = mutableListOf(
+            Triple("音量键翻页：${if (readingBehavior.volumeKeys) "开启" else "关闭"}", false, {
+                readingBehavior = readingBehavior.copy(volumeKeys = !readingBehavior.volumeKeys).also { store.personal.setReadingBehavior(site.id, it); autoPageRunning = false }
+            }),
+            Triple("音量键方向：${if (readingBehavior.reverseVolume) "反向" else "正向"}", false, {
+                readingBehavior = readingBehavior.copy(reverseVolume = !readingBehavior.reverseVolume).also { store.personal.setReadingBehavior(site.id, it) }
+            }),
+            Triple(if (readingBehavior.autoPageSeconds > 0) "自动翻页：每 ${readingBehavior.autoPageSeconds} 秒" else "自动翻页：关闭", true, {
+                val values = listOf(0, 3, 5, 10, 20, 30)
+                dialogs.choose("自动翻页间隔", values.map { if (it == 0) "关闭" else "每 $it 秒，成功显示后推进" }, values.indexOf(readingBehavior.autoPageSeconds)) { selected ->
+                    readingBehavior = readingBehavior.copy(autoPageSeconds = values[selected]).also { store.personal.setReadingBehavior(site.id, it) }
+                    autoPageRunning = readingBehavior.autoPageSeconds > 0 && reading
                 }
-                else -> autoPageRunning = false
-            }
-            readingBehaviorOptions()
+            }),
+        )
+        if (autoPageRunning) items += Triple("暂停自动翻页", false, { autoPageRunning = false })
+        if (Capability.ORIGINAL_IMAGES in AdapterRegistry.adapter(site, app.network).capabilities) items += Triple(
+            if (readingBehavior.originalImages) "原图优先：开启（更大、更慢，消耗图片配额）" else "原图优先：关闭", false, {
+                readingBehavior = readingBehavior.copy(originalImages = !readingBehavior.originalImages).also { store.personal.setReadingBehavior(site.id, it) }
+            })
+        dialogs.choose("阅读行为", items.map { it.first }) { index ->
+            val (label, opensSubDialog, action) = items[index]
+            action()
+            if (!opensSubDialog) readingBehaviorOptions()
         }
     }
     private fun readerDisplayOptions() {

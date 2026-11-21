@@ -28,7 +28,7 @@ class R34Application : Application() {
     val repository by lazy { Repository(network, library) }
     val storage by lazy { StorageRoot(this, library) }
     val index by lazy { LibraryIndex(this, storage, library.gson) }
-    val galleries by lazy { GalleryRepository(this, network, storage) }
+    val galleries by lazy { GalleryRepository(this, network, storage) { site -> library.personal.readingBehavior(site.id).originalImages } }
     val galleryDownloads by lazy { com.r34v.r34v.downloads.GalleryDownloadStore(this, galleries, network, index) { downloadPolicy.allowed } }
     val playback by lazy { PlaybackStore(this, network, library, storage, index) }
     /** 进程内共享的链路速度估计；播放实测与起播前探测都写到这里。 */

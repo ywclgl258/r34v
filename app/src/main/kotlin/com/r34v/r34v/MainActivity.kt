@@ -48,6 +48,7 @@ import com.r34v.r34v.data.adapter.*
 import com.r34v.r34v.ui.*
 import kotlinx.coroutines.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     private val feeds by viewModels<FeedStates>()
@@ -68,6 +69,7 @@ class MainActivity : ComponentActivity() {
     private var searchCondition by mutableStateOf(SearchCondition())
     private var importingUri by mutableStateOf<Uri?>(null)
     private var importingDirectory by mutableStateOf(false)
+    private var importingVideo by mutableStateOf(false)
     private var navigationTab by mutableStateOf("siteHome")
     private var revision by mutableIntStateOf(0)
     private var resumed by mutableStateOf(false)
@@ -76,8 +78,9 @@ class MainActivity : ComponentActivity() {
     private val backStack = ArrayDeque<Pair<String, FeedRequest>>()
     private fun showNotice(text: String) { notice = text }
     private val dialogs = ComposeDialogs()
-    private val archivePicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> uri?.let { importingDirectory = false; importingUri = it } }
-    private val directoryPicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { importingDirectory = true; importingUri = it } }
+    private val archivePicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> uri?.let { importingDirectory = false; importingVideo = false; importingUri = it } }
+    private val directoryPicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { importingDirectory = true; importingVideo = false; importingUri = it } }
+    private val videoPicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> uri?.let { importingDirectory = false; importingVideo = true; importingUri = it } }
     private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) navigate("siteHome", false)
     }
@@ -99,7 +102,7 @@ class MainActivity : ComponentActivity() {
             searchCategory = savedInstanceState.getString("searchCategory").orEmpty()
             searchLanguages = runCatching { store.gson.fromJson(savedInstanceState.getString("searchLanguages"), object : com.google.gson.reflect.TypeToken<Map<String, String>>() {}.type) as Map<String,String> }.getOrDefault(emptyMap())
             searchCondition = runCatching { store.gson.fromJson(savedInstanceState.getString("searchCondition"), SearchCondition::class.java) }.getOrNull() ?: SearchCondition(searchQuery)
-            importingUri = savedInstanceState.getString("importingUri")?.let(Uri::parse); importingDirectory = savedInstanceState.getBoolean("importingDirectory")
+            importingUri = savedInstanceState.getString("importingUri")?.let(Uri::parse); importingDirectory = savedInstanceState.getBoolean("importingDirectory"); importingVideo = savedInstanceState.getBoolean("importingVideo")
             libraryTab = savedInstanceState.getString("libraryTab") ?: "片库"; favoriteTab = savedInstanceState.getString("favoriteTab") ?: "视频"
             savedInstanceState.getStringArrayList("backScreens").orEmpty().zip(savedInstanceState.getStringArrayList("backRequests").orEmpty()).forEach { (route, json) ->
                 runCatching { store.gson.fromJson(json, FeedRequest::class.java) }.getOrNull()?.let { backStack.addLast(route to it) }
@@ -136,7 +139,7 @@ class MainActivity : ComponentActivity() {
         outState.putBoolean("multipleSources", multipleSources)
         outState.putStringArrayList("searchSites", ArrayList(searchSites))
         outState.putString("searchCategory", searchCategory); outState.putString("searchLanguages", store.gson.toJson(searchLanguages)); outState.putString("searchCondition", store.gson.toJson(searchCondition))
-        outState.putString("importingUri", importingUri?.toString()); outState.putBoolean("importingDirectory", importingDirectory)
+        outState.putString("importingUri", importingUri?.toString()); outState.putBoolean("importingDirectory", importingDirectory); outState.putBoolean("importingVideo", importingVideo)
         outState.putStringArrayList("backScreens", ArrayList(backStack.map { it.first })); outState.putStringArrayList("backRequests", ArrayList(backStack.map { store.gson.toJson(it.second) }))
         super.onSaveInstanceState(outState)
     }
@@ -165,6 +168,13 @@ class MainActivity : ComponentActivity() {
     private fun browse(segment: String) { backStack.addLast(screen to request); request = FeedRequest(target = segment); navigate("index", false) }
     private fun play(video: Video, offlineId: String? = null, localPath: String? = null, read: Boolean = false, offline: Boolean = false, sourceRoot: String = "", page: Int = 0) {
         if (video.site == SiteRegistry.LOCAL.id) {
+            if (video.mediaKind == MediaKind.VIDEO) {
+                // 功能 F37：本地视频走 PlayerActivity 的 local 分支，路径以登记记录为准。
+                val record = store.localVideos(SiteRegistry.LOCAL.id).firstOrNull { it.id == video.id }
+                if (record == null) { showNotice("本地视频文件不存在，请重新导入"); return }
+                startActivity(Intent(this, PlayerActivity::class.java).putExtra("video", store.gson.toJson(video)).putExtra("local", record.path))
+                return
+            }
             if (page > 0) startActivity(Intent(this, GalleryActivity::class.java).putExtra("gallery", store.gson.toJson(video)).putExtra("read", true).putExtra("page", page))
             else MediaRouter.open(this, video, read = true)
             return
@@ -273,8 +283,12 @@ class MainActivity : ComponentActivity() {
             }, confirmButton = { TextAction(dialogs::dismiss) { Text("完成") } })
         }
     }
-    private fun importLocal() { dialogs.choose("导入本地漫画", listOf("选择 CBZ / ZIP 文件", "选择图片目录")) { index ->
-        if (index == 0) archivePicker.launch(arrayOf("application/zip", "application/x-cbz", "application/vnd.comicbook+zip", "application/octet-stream")) else directoryPicker.launch(null)
+    private fun importLocal() { dialogs.choose("导入本地内容", listOf("选择 CBZ / ZIP 漫画", "选择图片目录", "选择本地视频")) { index ->
+        when (index) {
+            0 -> archivePicker.launch(arrayOf("application/zip", "application/x-cbz", "application/vnd.comicbook+zip", "application/octet-stream"))
+            1 -> directoryPicker.launch(null)
+            else -> videoPicker.launch(arrayOf("video/*"))
+        }
     } }
     private fun openLocalImport(value: Intent) {
         if (!value.getBooleanExtra("import_local", false)) return
@@ -450,7 +464,20 @@ class MainActivity : ComponentActivity() {
         }
         }
         dialogs.Host()
-        importingUri?.let { uri -> LocalImportDialog(app, uri, importingDirectory, { importingUri = null }) { video -> importingUri = null; revision++; libraryTab = "片库"; navigate("library"); play(video, read = true) } }
+        importingUri?.let { uri -> LocalImportDialog(app, uri, importingDirectory, importingVideo, { importingUri = null }) { video ->
+            importingUri = null; revision++; libraryTab = "片库"; navigate("library")
+            if (video.mediaKind == MediaKind.VIDEO) {
+                // 功能 F37：登记播放记录，PlayerActivity 的本地分支按 id+path 校验。
+                val book = app.localLibrary.book(video.id)
+                if (book != null) {
+                    val dir = File(app.localLibrary.rootDirectory(), video.id)
+                    val file = File(dir, book.files.first())
+                    val thumb = book.thumb.takeIf { it.isNotBlank() }?.let { File(dir, it).absolutePath }.orEmpty()
+                    app.library.addLocalVideo(LocalVideo(video.id, video.title, file.absolutePath, thumb, site = SiteRegistry.LOCAL.id))
+                }
+            }
+            play(video, read = true)
+        } }
     }
     @Composable private fun LoginGate() {
         Column { EmptyState("ExHentai 必须登录", "未登录时原站可能只显示白屏。请通过官方论坛登录，并确认账号具备 ExHentai 访问权限。", "官方网页登录", ::loginOfficial)
@@ -477,6 +504,11 @@ class MainActivity : ComponentActivity() {
                 supportingText = if (error) ({ Text("请输入关键词") }) else null,
                 trailingIcon = { Row { if (searchQuery.isNotEmpty()) IconAction(R.drawable.ic_close, "清除关键词") { searchQuery = "" }; IconAction(R.drawable.ic_chevron_right, "提交搜索") { submit() } } },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { submit() }))
+            // 功能 F02：词典候选进主搜索框。点候选即按当前范围提交；与高级搜索共用一套词典。
+            val candidates = remember(searchQuery) { TagNames.suggestions(app, searchQuery) }
+            if (candidates.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                candidates.forEach { (slug, translated) -> Choice(if (translated == slug) slug else "$slug · $translated") { searchQuery = slug; submit() } }
+            }
             ContentTabs(listOf("当前站点", "多个站点"), if (multipleSources) 1 else 0) { multipleSources = it == 1 }
             if (multipleSources) TextAction({ dialogs.searchSources(app, searchSites) { searchSites = it; store.set("cross_search_sites", it.joinToString(",")) } }) { Text("选择来源 · ${searchSites.size} 个站点") }
             // 4KHD only has a plain keyword search, so it gets one scope instead of three chips
@@ -593,8 +625,13 @@ class MainActivity : ComponentActivity() {
                 Setting("官方网页登录", "${site.name} 官方论坛", ::loginOfficial)
                 Setting("导入站点会话", if (app.network.session.hasGallerySession(site)) "已导入" else "未导入") { credentials(site, true) }
                 if (app.network.session.hasGallerySession(site)) Setting("退出本站会话") { dialogs.confirm("清除 ${site.name} 的账号会话？") { app.network.session.clear(site); revision++ } }
-            } else if (Capability.LOGIN in adapter.capabilities) Setting(if (store.username.isBlank()) "登录站点账户" else "退出登录", store.username) {
-                if (store.username.isBlank()) credentials(site, false) else dialogs.confirm("退出当前账户？") { app.network.session.clear(site); revision++ }
+            } else if (Capability.LOGIN in adapter.capabilities) {
+                // JWT 会话（如 Iwara）没有用户名记录：登录态看令牌，退出同步清令牌。
+                val token = app.network.authToken(site.id)
+                val loggedIn = store.username.isNotBlank() || token != null
+                Setting(if (loggedIn) "退出登录" else "登录站点账户", store.username.ifBlank { if (token != null) "已登录" else "" }) {
+                    if (!loggedIn) credentials(site, false) else dialogs.confirm("退出当前账户？") { app.network.clearAuthToken(site.id); app.network.session.clear(site); revision++ }
+                }
             } else Copy("${site.name} 当前支持公开浏览，无需登录。")
             Title("播放")
             Setting("默认清晰度", store.string("quality", "720p")) { val values = listOf("360p", "480p", "720p", "1080p", "2160p"); dialogs.choose("默认清晰度", values, values.indexOf(store.string("quality", "720p"))) { store.set("quality", values[it]); revision++ } }
@@ -609,6 +646,7 @@ class MainActivity : ComponentActivity() {
                 if (dialogs.content === pending) dialogs.message("网络诊断", report)
             } }
             Title("本地数据"); Setting("清理播放临时数据") { dialogs.confirm("清理播放临时数据？", body = "已下载的视频和漫画会保留。") { lifecycleScope.launch { withContext(Dispatchers.IO) { app.playback.clearStreaming() }; showNotice("已清理") } } }
+            Setting("重复文件检查", "整本内容指纹比对") { duplicateScan() }
             Setting("备份与恢复", "收藏、订阅、进度与片单") { navigate("backup") }
             if (site.mediaKind == MediaKind.GALLERY) Setting("清理本站阅读临时数据") { dialogs.confirm("清理阅读临时数据？", body = "整本下载、阅读记录和收藏会保留。") { lifecycleScope.launch { withContext(Dispatchers.IO) { app.galleries.clear(site) }; showNotice("已清理") } } }
             Title("下载位置")
@@ -618,6 +656,74 @@ class MainActivity : ComponentActivity() {
             Toggle("自动检查更新", "auto_update", true); Setting("检查更新") { lifecycleScope.launch { UpdateController(this@MainActivity, app, dialogs).check(false) } }
         }
     }
+    /** 功能 F41：整本内容指纹比对。只报告候选；删除由用户逐本决定，走各来源既有安全删除路径。 */
+    private fun duplicateScan() {
+        dialogs.content = {
+            var progress by remember { mutableStateOf("正在收集本地内容…") }
+            var scanning by remember { mutableStateOf(true) }
+            var groups by remember { mutableStateOf(listOf<DuplicateGroup>()) }
+            var busyId by remember { mutableStateOf<String?>(null) }
+            fun remove(copy: DuplicateCopy) {
+                if (busyId != null) return
+                busyId = copy.id
+                lifecycleScope.launch {
+                    try {
+                        if (copy.source == "download") app.galleryDownloads.remove(copy.id) else app.localLibrary.remove(copy.id)
+                        groups = groups.mapNotNull { group ->
+                            group.copy(copies = group.copies.filterNot { it.id == copy.id }).takeIf { it.copies.size > 1 }
+                        }
+                        showNotice("副本已删除")
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        showNotice(error.message ?: "删除失败，请重试")
+                    } finally { busyId = null }
+                }
+            }
+            LaunchedEffect(Unit) {
+                withContext(Dispatchers.IO) {
+                    val refs = buildList {
+                        app.galleryDownloads.tasks().filter { it.state == GalleryDownloadState.COMPLETED }.forEach { record ->
+                            runCatching { add(DuplicateBook("download", record.id, record.entry.title, record.entry.site, app.galleries.downloadDirectory(record.entry))) }
+                        }
+                        val localRoot = app.localLibrary.rootDirectory()
+                        app.localLibrary.books().forEach { book -> add(DuplicateBook("local", book.id, book.title, "本地", File(localRoot, book.id))) }
+                    }
+                    progress = "正在比对 ${refs.size} 本内容指纹…"
+                    groups = DuplicateScan.scan(refs)
+                }
+                scanning = false
+            }
+            val wasted = groups.sumOf { it.wastedBytes }
+            AlertDialog({ if (busyId == null) dialogs.dismiss() }, title = { Text("重复文件检查") }, text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (scanning) {
+                        Text(progress)
+                        Copy("按整本内容指纹比对（逐页字节），不按标题；只报告候选，不会自动删除任何文件。")
+                    } else if (groups.isEmpty()) {
+                        Text("没有发现内容完全相同的整本副本。")
+                    } else {
+                        Text("发现 ${groups.size} 组完全相同的副本，多占 ${humanBytes(wasted)}。每组保留一本，其余由你逐本决定。")
+                        groups.forEachIndexed { index, group ->
+                            Title("第 ${index + 1} 组 · ${group.copies.size} 本 · 每本 ${group.copies.first().pages} 页 · 多占 ${humanBytes(group.wastedBytes)}")
+                            group.copies.forEach { copy ->
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(copy.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                        Copy("${if (copy.source == "download") "下载" else "本地"} · ${copy.site} · ${humanBytes(copy.sizeBytes)}")
+                                    }
+                                    TextButton(onClick = { remove(copy) }, enabled = busyId == null) {
+                                        Text(if (busyId == copy.id) "删除中…" else "删除此副本")
+                                    }
+                                }
+                            }
+                        }
+                        Copy("删除走下载中心/本地库的既有安全路径；元数据、下载记录和索引同步清理。")
+                    }
+                }
+            }, confirmButton = { TextButton(onClick = { dialogs.dismiss() }) { Text("关闭") } })
+        }
+    }
+
     /** Download location: explains what survives an uninstall, then moves the files. */
     private fun storageOptions() {
         if (!app.storage.supported()) { dialogs.message("下载位置", "未检测到可写的外部存储卷，下载会保存在应用内。"); return }

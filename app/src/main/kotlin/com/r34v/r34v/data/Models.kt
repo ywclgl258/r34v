@@ -22,6 +22,7 @@ object Site {
 enum class FeedKind(val title: String, val segment: String) {
     LATEST("最新更新", "latest-updates"), POPULAR("热门榜", "most-popular"), RATED("高分榜", "top-rated"),
     FOR_YOU("为你推荐", "for-you"), SEARCH("搜索", "search"), TAG("标签", "tags"),
+    SUBSCRIPTIONS("关注动态", "subscriptions"),
     CHARACTER("角色", "tags"), CATEGORY("分类", "categories"), MODEL("作者", "models")
 }
 
@@ -115,7 +116,9 @@ data class GalleryDetail(
 ) {
     val embeddedVideos: List<Video> get() = videoEntries.orEmpty()
 }
-data class GalleryImage(val index: Int, val pageUrl: String, val imageUrl: String, val previousUrl: String?, val nextUrl: String?, val reloadUrl: String? = null)
+/** [originalUrl] 是站点的原图地址（如 E-Hentai 的 fullimg.php）；空串表示图源不区分显示图与原图。 */
+data class GalleryImage(val index: Int, val pageUrl: String, val imageUrl: String, val previousUrl: String?, val nextUrl: String?, val reloadUrl: String? = null,
+    val originalUrl: String = "", val originalSize: String = "")
 data class ReadingProgress(val entry: Video, val page: Int, val pages: Int, val pageUrl: String, val at: Long = System.currentTimeMillis(), val offset: Int = 0)
 
 data class Watch(

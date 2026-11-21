@@ -16,6 +16,25 @@ class IwaraContractTest {
     private fun fixture(name: String) = JsonParser.parseString(javaClass.getResource("/iwara/$name")!!.readText())
     private fun metadata() = fixture("list.json").asJsonObject.getAsJsonArray("results")[0].asJsonObject
 
+    @Test fun subscriptionsRouteToTheAccountFeedEndpoint() {
+        val url = IwaraProtocol.resolve(site, FeedRequest(FeedKind.SUBSCRIPTIONS, page = 2)).toHttpUrl()
+        assertEquals("apiq.iwara.tv", url.host)
+        assertEquals(listOf("subscriptions", "videos"), url.pathSegments)
+        assertEquals("1", url.queryParameter("page"))
+        assertEquals("20", url.queryParameter("limit"))
+    }
+
+    @Test fun loginBodyCarriesTrimmedCredentialsAndAuthTokenIsExtracted() {
+        val body = IwaraProtocol.loginBody("  user01  ", "secret").let { body ->
+            val buffer = okio.Buffer(); body.writeTo(buffer); buffer.readUtf8()
+        }
+        assertEquals("""{"user":"user01","password":"secret"}""", body)
+        assertEquals("https://apiq.iwara.tv/auth/login", IwaraProtocol.loginEndpoint(site))
+        val token = IwaraProtocol.authToken(JsonParser.parseString("""{"token":"jwt-value","expires":3600}""").asJsonObject)
+        assertEquals("jwt-value", token)
+        assertThrows(IllegalStateException::class.java) { IwaraProtocol.authToken(JsonParser.parseString("{}").asJsonObject) }
+    }
+
     @Test fun routesEncodeSearchAndTranslatePagesToZeroBased() {
         val url = IwaraProtocol.resolve(site, FeedRequest(FeedKind.SEARCH, "夜景 & MMD", Sort.RELEVANCE, 3)).toHttpUrl()
         assertEquals("apiq.iwara.tv", url.host)

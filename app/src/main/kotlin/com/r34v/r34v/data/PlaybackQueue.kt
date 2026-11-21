@@ -51,13 +51,19 @@ object MediaRouter {
     }
     private suspend fun intent(context: Context, video: Video, queue: String?, read: Boolean): Intent {
         val app = context.applicationContext as R34Application
-        val gallery = video.mediaKind == MediaKind.GALLERY || SiteRegistry.byId(video.site)?.mediaKind == MediaKind.GALLERY
+        // 本地站点的 mediaKind 是 GALLERY（历史原因），本地视频必须按条目自身的 kind 分流。
+        val gallery = if (video.site == SiteRegistry.LOCAL.id) video.mediaKind == MediaKind.GALLERY
+            else video.mediaKind == MediaKind.GALLERY || SiteRegistry.byId(video.site)?.mediaKind == MediaKind.GALLERY
         val scanned = if (video.site == SiteRegistry.LOCAL.id) null else withContext(Dispatchers.IO) {
             app.index.scan(app.playback::cached).firstOrNull { it.site == video.site && it.id == video.id && it.isComic == gallery && it.state == LibraryRecord.STATE_COMPLETED }
         }
         val intent = if (gallery) {
             val offline = scanned != null || video.site == SiteRegistry.LOCAL.id || app.galleryDownloads.task(video)?.state == GalleryDownloadState.COMPLETED
             Intent(context, GalleryActivity::class.java).putExtra("gallery", app.library.gson.toJson(video)).putExtra("read", read).putExtra("offline", offline).putExtra("root", scanned?.sourceRoot.orEmpty())
+        } else if (video.site == SiteRegistry.LOCAL.id) {
+            val record = withContext(Dispatchers.IO) { app.library.localVideos(SiteRegistry.LOCAL.id).firstOrNull { it.id == video.id } }
+                ?: error("本地视频文件不存在，请重新导入")
+            Intent(context, PlayerActivity::class.java).putExtra("video", app.library.gson.toJson(video)).putExtra("local", record.path)
         } else {
             val task = app.playback.downloads().firstOrNull { it.state == Download.STATE_COMPLETED && app.playback.metadata(it)?.video?.entryKey == video.entryKey }
             Intent(context, PlayerActivity::class.java).putExtra("video", app.library.gson.toJson(video)).apply {

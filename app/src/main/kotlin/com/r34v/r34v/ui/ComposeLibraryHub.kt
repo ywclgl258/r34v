@@ -233,6 +233,11 @@ private fun newSmartShelf(dialogs: ComposeDialogs, app: R34Application) {
 
 @Composable private fun LocalRemoveDialog(app: R34Application, video: Video, done: () -> Unit) {
     var error by remember { mutableStateOf("") }
-    LaunchedEffect(video.entryKey) { try { app.localLibrary.remove(video.id); done() } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message.orEmpty() } }
+    LaunchedEffect(video.entryKey) { try {
+        app.localLibrary.remove(video.id)
+        // 本地视频还要清掉播放登记（PlayerActivity 的 local 分支按 id+path 校验）。
+        if (video.mediaKind == MediaKind.VIDEO) app.library.removeLocal(video.id, SiteRegistry.LOCAL.id)
+        done()
+    } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message.orEmpty() } }
     AlertDialog(done, title = { Text("移除本地副本") }, text = { if (error.isBlank()) Loading(title = "正在移除") else Text(error) }, confirmButton = { if (error.isNotBlank()) TextAction(done) { Text("关闭") } })
 }

@@ -78,6 +78,18 @@ class EhContractTest {
         assertFalse(page.imageUrl.contains("fullimg")); assertTrue(page.nextUrl!!.endsWith("8888-3"))
         assertEquals("sample-reload", page.reloadUrl!!.toHttpUrl().queryParameter("nl"))
     }
+    @Test fun originalLinkAndSizeAreParsedForTheOriginalPreference() {
+        val body = """<html><body>
+            <img id='img' src='https://sample.hath.network:1443/h/abc/display.jpg'>
+            <a href='https://e-hentai.org/fullimg.php?gid=8888&page=2&key=xyz'>Load original 1440x2560 JPEG, size: 2.34 MB</a>
+        </body></html>"""
+        val page = EhProtocol.image(body, "https://e-hentai.org/s/a2/8888-2", site)
+        assertEquals("https://e-hentai.org/fullimg.php?gid=8888&page=2&key=xyz", page.originalUrl)
+        assertEquals("2.34 MB", page.originalSize)
+        // 没有原图入口的页面保持空串：其他站点与旧缓存行为不变。
+        val plain = EhProtocol.image("<html><img id='img' src='https://ehgt.org/a.jpg'></html>", "https://e-hentai.org/s/a2/8888-2", site)
+        assertEquals("", plain.originalUrl)
+    }
     @Test fun quotaAndUnavailableImagesFailExplicitly() {
         assertThrows(GalleryAccessException::class.java) { EhProtocol.image("<html><img id='img' src='https://ehgt.org/g/509.gif'></html>", "https://e-hentai.org/s/a2/8888-2", site) }
         assertThrows(GalleryAccessException::class.java) { EhProtocol.checkAccess("Image View Limit Exceeded", site) }

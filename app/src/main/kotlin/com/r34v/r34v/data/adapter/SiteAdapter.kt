@@ -4,7 +4,7 @@ import com.r34v.r34v.data.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /** A capability a site may or may not offer. The UI dims what is missing. */
-enum class Capability { FEED, SEARCH, TAG, MODEL, CATEGORY, RANKING, LOGIN, DOWNLOAD, SESSION_IMPORT }
+enum class Capability { FEED, SEARCH, TAG, MODEL, CATEGORY, RANKING, LOGIN, DOWNLOAD, SESSION_IMPORT, ORIGINAL_IMAGES }
 
 /** One entry in the site's own browse menu. */
 data class Section(val key: String, val title: String, val subtitle: String = "", val feed: FeedRequest? = null)

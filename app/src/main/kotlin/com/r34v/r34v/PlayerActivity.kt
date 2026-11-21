@@ -137,7 +137,9 @@ class PlayerActivity : ComponentActivity() {
     }
     private fun load() {
         if (opening) return
-        opening = true; failureVisible = false; phase = if (offline) "正在打开离线片源" else "正在连接放映厅"; pendingError = null
+        opening = true; failureVisible = false
+        phase = when { offline -> "正在打开离线片源"; local != null -> "正在打开本地视频"; else -> "正在连接放映厅" }
+        pendingError = null
         autoDowngrades = 0; stallsInWindow = 0; stallWindowStart = 0; bufferingSince = 0; lastDowngradeAt = 0
         lifecycleScope.launch { try {
             stream = when {
@@ -167,7 +169,7 @@ class PlayerActivity : ComponentActivity() {
             open(stream!!, position, resumePlay)
             // 自动下载改到首帧之后入队：以前在取到地址的同一刻就开始下载，正好把起播要用的
             // 那条连接和带宽对半分，弱网下等于自己给自己制造缓冲。
-            if (!offline && store.bool("auto_download")) pendingAutoDownload = stream
+            if (!offline && local == null && store.bool("auto_download")) pendingAutoDownload = stream
         } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } finally { opening = false } }
     }
     /**
@@ -251,7 +253,7 @@ class PlayerActivity : ComponentActivity() {
             }
             override fun onPlayerError(error: PlaybackException) {
                 savePosition()
-                if (!offline && !refreshed) { refreshed = true; phase = "正在刷新播放地址"; lifecycleScope.launch { try {
+                if (!offline && local == null && !refreshed) { refreshed = true; phase = "正在刷新播放地址"; lifecycleScope.launch { try {
                     val fresh = app.repository.detail(video.url); detail = fresh
                     open(fresh.streams.firstOrNull { it.label == stream?.label } ?: fresh.streams.last(), position,
                         player?.playWhenReady ?: resumePlay)

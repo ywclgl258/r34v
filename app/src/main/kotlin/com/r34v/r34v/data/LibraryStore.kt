@@ -259,6 +259,15 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     fun localVideos(siteId: String = this.siteId) = list("$siteId:video_cache_v1", LocalVideo::class.java).filter { item ->
         runCatching { File(item.path).canonicalFile.let { it.path.startsWith(dataDir.path + File.separator) && it.isFile } }.getOrDefault(false)
     }
+    // JWT 类站点会话（Iwara 等）：只落密封后的密文，明文只存在于内存缓存。
+    fun authToken(siteId: String): String? = prefs.getString("$siteId:auth_token", null)
+    fun saveAuthToken(siteId: String, sealed: String) { prefs.edit { putString("$siteId:auth_token", sealed) } }
+    fun clearAuthToken(siteId: String) { prefs.edit { remove("$siteId:auth_token") } }
+
+    /** 功能 F37：登记本地导入的视频；同 id 重新导入时替换旧记录。 */
+    fun addLocalVideo(item: LocalVideo, siteId: String = this.siteId) {
+        write("$siteId:video_cache_v1", localVideos(siteId).filterNot { it.id == item.id } + item)
+    }
     fun removeLocal(id: String, siteId: String = this.siteId) {
         localVideos(siteId).firstOrNull { it.id == id }?.let { File(it.path).delete() }
         write("$siteId:video_cache_v1", localVideos(siteId).filter { it.id != id })

@@ -14,7 +14,9 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.zip.ZipInputStream
 
-data class LocalBook(val id: String = "", val title: String = "", val files: List<String> = emptyList(), val bytes: Long = 0, val at: Long = System.currentTimeMillis())
+/** [kind] 为 "video" 时 [files] 只有一个视频文件，[thumb] 是同目录下的截图文件名。 */
+data class LocalBook(val id: String = "", val title: String = "", val files: List<String> = emptyList(), val bytes: Long = 0, val at: Long = System.currentTimeMillis(),
+    val kind: String = "comic", val thumb: String = "")
 
 /** Copies selected documents into an app-owned library. Never extracts archive paths. */
 class LocalLibrary(private val context: Context) {
@@ -23,6 +25,8 @@ class LocalLibrary(private val context: Context) {
         const val MAX_IMAGE = 50L * 1024 * 1024
         const val MAX_BOOK = 1024L * 1024 * 1024
         fun imageName(name: String) = name.substringAfterLast('.').lowercase() in setOf("jpg", "jpeg", "png", "webp", "gif", "bmp")
+        val videoExtensions = setOf("mp4", "webm", "mkv", "m4v", "mov", "3gp", "ts")
+        const val MAX_VIDEO = 8L * 1024 * 1024 * 1024
         private val digits = Regex("\\d+|\\D+")
         val naturalOrder = Comparator<String> { a, b ->
             val left = digits.findAll(a.lowercase()).map { it.value }.toList(); val right = digits.findAll(b.lowercase()).map { it.value }.toList()
@@ -41,10 +45,16 @@ class LocalLibrary(private val context: Context) {
     private val root get() = File(context.filesDir, "local-library").apply { mkdirs() }
     private val gson = com.google.gson.Gson()
     val changes = MutableStateFlow(0)
+
+    /** 重复文件检查等只读工具用的根目录；书目录以 [books] 返回的 id 命名。 */
+    fun rootDirectory(): File = root
     private fun folder(id: String): File { require(Regex("[a-f0-9]{64}").matches(id)); return File(root, id) }
     fun book(id: String): LocalBook? = runCatching {
         val value = gson.fromJson(File(folder(id), "book.json").readText(), LocalBook::class.java)
-        value.takeIf { it.id == id && it.files.size in 1..MAX_PAGES && it.files.all { f -> Regex("\\d+\\.image").matches(f) && File(folder(id), f).isFile } }
+        when (value.kind) {
+            "video" -> value.takeIf { it.id == id && it.files.size == 1 && it.files[0].substringAfterLast('.').lowercase() in videoExtensions && File(folder(id), it.files[0]).isFile }
+            else -> value.takeIf { it.id == id && it.files.size in 1..MAX_PAGES && it.files.all { f -> Regex("\\d+\\.image").matches(f) && File(folder(id), f).isFile } }
+        }
     }.getOrNull()
     fun books(): List<LocalBook> = root.listFiles().orEmpty().filter { it.isDirectory && !it.name.startsWith("incoming-") }.mapNotNull { book(it.name) }.sortedByDescending { it.at }
     fun imageUri(id: String, page: Int): String? = book(id)?.files?.getOrNull(page - 1)?.let { filename ->
@@ -56,6 +66,12 @@ class LocalLibrary(private val context: Context) {
             Regex("[a-f0-9]{64}").matches(file.parentFile!!.name) && Regex("\\d+\\.image").matches(file.name)
     }.getOrDefault(false)
     fun video(book: LocalBook) = Video(book.id, book.title, "r34local://${book.id}", Uri.fromFile(File(folder(book.id), book.files.first())).toString(), "${book.files.size} 页", site = SiteRegistry.LOCAL.id, mediaKind = MediaKind.GALLERY)
+
+    /** 本地视频条目：site 为 LOCAL、mediaKind 为 VIDEO，播放走 PlayerActivity 的本地分支。 */
+    fun videoEntry(book: LocalBook): Video {
+        val thumb = book.thumb.takeIf { it.isNotBlank() }?.let { File(folder(book.id), it) }?.takeIf(File::isFile)?.absolutePath.orEmpty()
+        return Video(book.id, book.title, "r34local://${book.id}", thumb, "本地视频", site = SiteRegistry.LOCAL.id, mediaKind = MediaKind.VIDEO)
+    }
     fun detail(video: Video): GalleryDetail {
         val book = book(video.id) ?: error("本地文件不存在，请重新导入同一文件或目录")
         return GalleryDetail(video(book), book.files.size, emptyList(), book.files.size, description = "本地导入 · ${book.files.size} 页", cached = true)
@@ -122,6 +138,55 @@ class LocalLibrary(private val context: Context) {
         walk(rootId, "", 0)
         build(name(rootDocument).take(160), report) { add -> files.forEach { (label, uri) -> resolver.openInputStream(uri)?.use { add(label, it) } ?: error("无法读取 $label") } }
     }
+    /**
+     * 功能 F37：导入本地视频。复制进应用内（原文件保留），复制时限制 8 GiB 并检查剩余空间，
+     * 生成首帧缩略图。同一文件重复导入按内容摘要去重，直接返回已有条目。
+     */
+    suspend fun importVideo(uri: Uri, report: (String) -> Unit = {}): Video = withContext(Dispatchers.IO) {
+        val label = name(uri)
+        val ext = label.substringAfterLast('.', "").lowercase().ifBlank { "mp4" }
+        check(ext in videoExtensions) { "暂不支持该视频格式（.$ext）" }
+        val title = label.substringBeforeLast('.').take(160)
+        val staging = File(root, "incoming-${UUID.randomUUID()}").apply { check(mkdirs()) }
+        try {
+            report("正在复制视频文件…")
+            val target = File(staging, "video.$ext")
+            var copied = 0L
+            val buffer = ByteArray(1024 * 1024)
+            context.contentResolver.openInputStream(uri)?.use { input -> target.outputStream().buffered().use { output ->
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val read = input.read(buffer); if (read < 0) break
+                    output.write(buffer, 0, read); copied += read
+                    check(copied <= MAX_VIDEO && context.filesDir.usableSpace > 1024L * 1024 * 1024) { "视频超过 8 GiB 上限或应用存储空间不足" }
+                    if (copied % (64L * 1024 * 1024) < buffer.size) report("已复制 ${humanBytes(copied)}")
+                }
+            } } ?: error("无法打开所选视频")
+            check(copied > 0) { "所选视频没有内容" }
+            report("正在生成缩略图…")
+            var thumb = ""
+            val retriever = android.media.MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(target.absolutePath)
+                runCatching { retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC) }.getOrNull()?.let { frame ->
+                    val file = File(staging, "thumb.png")
+                    if (runCatching { frame.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, file.outputStream()) }.getOrDefault(false)) thumb = "thumb.png"
+                }
+            } finally { retriever.release() }
+            val digest = MessageDigest.getInstance("SHA-256")
+            target.inputStream().use { input -> val hash = ByteArray(65536); while (true) { val n = input.read(hash); if (n < 0) break; digest.update(hash, 0, n) } }
+            val id = digest.digest().joinToString("") { "%02x".format(it) }
+            book(id)?.let { return@withContext videoEntry(it) }
+            val book = LocalBook(id, title.ifBlank { "本地视频" }, listOf("video.$ext"), copied, kind = "video", thumb = thumb)
+            File(staging, "book.json").writeText(gson.toJson(book))
+            val folder = folder(id)
+            check(!folder.exists()) { "同名本地内容不完整，请先在本地导入中移除后重试" }
+            check(staging.renameTo(folder)) { "无法保存本地导入" }
+            changes.update { it + 1 }
+            return@withContext videoEntry(book)
+        } finally { if (staging.exists()) safeDelete(staging) }
+    }
+
     private suspend fun build(title: String, report: (String) -> Unit, source: suspend (suspend (String, InputStream) -> Unit) -> Unit): Video {
         val staging = File(root, "incoming-${UUID.randomUUID()}").apply { check(mkdirs()) }
         val pages = mutableListOf<Pair<String, File>>()

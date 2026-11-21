@@ -51,7 +51,8 @@ suspend fun personalCatalog(app: R34Application, scanned: List<LibraryRecord> = 
         values[task.entry.entryKey] = old.copy(offline = old.offline || ready, downloadState = if (old.offline) "已离线" else label)
     }
     app.localLibrary.books().forEach { book ->
-        val video = app.localLibrary.video(book); add(video, book.at)
+        val video = if (book.kind == "video") app.localLibrary.videoEntry(book) else app.localLibrary.video(book)
+        add(video, book.at)
         values[video.entryKey] = values.getValue(video.entryKey).copy(video = video, offline = true, downloadState = "本地导入")
     }
     values.values.filter { store.allowed(it.video, it.video.site) }.sortedByDescending { it.at }

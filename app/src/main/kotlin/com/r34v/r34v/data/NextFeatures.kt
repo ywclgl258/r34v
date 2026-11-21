@@ -97,6 +97,8 @@ data class ReadingBehavior(
     val showProgress: Boolean = false,
     val brightnessPercent: Int = -1,
     val keepAwake: Boolean = false,
+    // 功能 F34：原图优先（仅支持原图的站点，如 E-Hentai / ExHentai）。
+    val originalImages: Boolean = false,
 )
 
 /** A pending start survives seeks; an active range is inclusive at A and exclusive at B. */

@@ -29,6 +29,7 @@ internal object SiteHtml {
             } else emptyList()
         var firstError: Exception? = null
         for (target in listOf(url) + mirrors) {
+            val host = target.toHttpUrlOrNull()?.host ?: target
             // 只有 429 允许在同一地址重试一次；验证页与连接错误维持“换下一个目标”的走法。
             for (attempt in 1..2) {
                 try {
@@ -40,9 +41,13 @@ internal object SiteHtml {
                     throw error
                 } catch (error: Exception) {
                     if (error is GalleryResponseException && error.status == 429 && attempt == 1) {
-                        delay(retryWaitMs(error.retryAfter))
+                        val wait = retryWaitMs(error.retryAfter)
+                        RateLimitLog.record(host, "HTTP 429，退避 ${wait}ms 后重试")
+                        delay(wait)
                         continue
                     }
+                    if (error is GalleryResponseException && error.status == 429)
+                        RateLimitLog.record(host, "HTTP 429，重试后仍被拒")
                     val retryable = when (error) {
                         is GalleryResponseException -> error.status in setOf(403, 429) || error.status in 500..599
                         is IOException -> true

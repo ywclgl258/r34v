@@ -172,6 +172,7 @@ internal class MediaRedirectCache(
             // CDN 拒绝：多半是签好令牌过期了。作废缓存，回到站点重新走一遍 302。
             direct.close()
             resolved.remove(key, hit)
+            RateLimitLog.record(original.url.host, "CDN HTTP ${direct.code}，重新解析媒体地址")
         }
         return chain.proceed(original.newBuilder().tag(String::class.java, key).build())
     }
@@ -230,6 +231,24 @@ private fun fetch(request: okhttp3.Request, builder: okhttp3.Request.Builder, de
     if (request.header("Sec-Fetch-Site") == null) builder.header("Sec-Fetch-Site", site)
 }
 
+/**
+ * API JSON 路径的 429 退避，与 [SiteHtml] 的页面口径一致：同地址退避重试一次，
+ * 尊重 Retry-After（封顶 15 秒）。页面 HTML 的重试在 SiteHtml 内部，这里只管
+ * `text()/json()`（GET 语义）；POST 登录这类有副作用的请求不进这条路径。
+ */
+internal suspend fun <T> withRateLimitRetry(block: suspend () -> T): T =
+    try { block() }
+    catch (error: GalleryResponseException) {
+        if (error.status != 429) throw error
+        val wait = SiteHtml.retryWaitMs(error.retryAfter)
+        RateLimitLog.record("api", "HTTP 429，退避 ${wait}ms 后重试")
+        kotlinx.coroutines.delay(wait)
+        try { block() } catch (retry: GalleryResponseException) {
+            if (retry.status == 429) RateLimitLog.record("api", "HTTP 429，重试后仍被拒")
+            throw retry
+        }
+    }
+
 /** 播放、下载、测速走 <video> 的取法：覆盖基线拦截器给的 document 形态，Range 等原样保留。 */
 private fun applyMediaShape(builder: okhttp3.Request.Builder, host: String) {
     val sameOrigin = SiteRegistry.forRequestHost(host) != null
@@ -250,6 +269,7 @@ class Network(private val context: Context, private val store: LibraryStore) {
         private set
     private val systemRoutes = SystemProxySelector()
     private val hostGates = java.util.concurrent.ConcurrentHashMap<String, HostGate>()
+    private val authTokenCache = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val mediaRedirects = MediaRedirectCache()
     val client: OkHttpClient get() = current ?: synchronized(this) { current ?: build().also { current = it } }
 
@@ -293,19 +313,26 @@ class Network(private val context: Context, private val store: LibraryStore) {
                 val agent = site?.userAgent?.takeIf { it.isNotBlank() } ?: SiteContext.DEFAULT_UA
                 val referer = chain.request().header("Referer") ?: site?.referer ?: "${chain.request().url.scheme}://$host/"
                 val request = chain.request().newBuilder().header("User-Agent", agent).header("Referer", referer)
-                if (site?.id == SiteRegistry.IWARA.id) request.header("Origin", site.base).header("x-site", "www.iwara.tv")
+                if (site?.id == SiteRegistry.IWARA.id) {
+                    request.header("Origin", site.base).header("x-site", "www.iwara.tv")
+                    // Bearer 只发给 API 主机；媒体 CDN 不带账号凭据。
+                    if (host in site.apiHosts) authToken(site.id)?.let { request.header("Authorization", "Bearer $it") }
+                }
                 applyBrowserShape(request, chain.request(), site)
                 chain.proceed(request.build())
             }.build()
     }
     suspend fun diagnose(site: SiteContext = SiteRegistry.current): String = withContext(Dispatchers.IO) {
         val start = System.currentTimeMillis()
+        val limits = RateLimitLog.report()
         try {
             val result = AdapterRegistry.adapter(site, this@Network).feed(AdapterRegistry.adapter(site, this@Network).homeRequest())
-            "实时请求成功 · ${System.currentTimeMillis() - start} ms\n${site.name} · ${result.videos.size} 个条目\n${routeDescription(site.base)}\n$lastPeer"
+            "实时请求成功 · ${System.currentTimeMillis() - start} ms\n${site.name} · ${result.videos.size} 个条目\n${routeDescription(site.base)}\n$lastPeer" +
+                if (limits.isEmpty()) "" else "\n$limits"
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            "实时请求失败：${error.message}\n${site.name}\n${runCatching { routeDescription(site.base) }.getOrDefault("系统代理设置不可用")}\n$lastPeer"
+            "实时请求失败：${error.message}\n${site.name}\n${runCatching { routeDescription(site.base) }.getOrDefault("系统代理设置不可用")}\n$lastPeer" +
+                if (limits.isEmpty()) "" else "\n$limits"
         }
     }
     private suspend fun getText(request: Request): String {
@@ -327,7 +354,7 @@ class Network(private val context: Context, private val store: LibraryStore) {
     suspend fun body(url: String): String = html(url)
     suspend fun text(url: String, headers: Map<String, String> = emptyMap()): String = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).apply { headers.forEach { (name, value) -> header(name, value) } }.build()
-        getText(request)
+        withRateLimitRetry { getText(request) }
     }
     suspend fun json(url: String, headers: Map<String, String> = emptyMap()): com.google.gson.JsonElement {
         val body = text(url, headers)
@@ -337,6 +364,24 @@ class Network(private val context: Context, private val store: LibraryStore) {
             }
         }
         catch (_: com.google.gson.JsonParseException) { error("站点返回了非 JSON 数据，请稍后重试或调整网络") }
+    }
+    /** JWT 类站点会话（Iwara）：明文只在内存缓存，落盘走 SessionVault 密文。 */
+    fun saveAuthToken(siteId: String, token: String) {
+        store.saveAuthToken(siteId, SessionVault.seal(token)); authTokenCache[siteId] = token
+    }
+    fun clearAuthToken(siteId: String) { store.clearAuthToken(siteId); authTokenCache.remove(siteId) }
+    fun authToken(siteId: String): String? = authTokenCache.getOrPut(siteId) {
+        store.authToken(siteId)?.let { sealed -> runCatching { SessionVault.open(sealed) }.getOrNull() }.orEmpty()
+    }.takeIf { it.isNotEmpty() }
+
+    /** 带 JSON 请求体的 POST；非 2xx 抛 GalleryResponseException，保留状态码与 Retry-After。 */
+    suspend fun postJson(url: String, body: okhttp3.RequestBody): String = withContext(Dispatchers.IO) {
+        withRateLimitRetry {
+            client.readResponse(Request.Builder().url(url).post(body).build()) { response ->
+                if (!response.isSuccessful) throw GalleryResponseException(response.code, response.header("Retry-After"), "请求失败：HTTP ${response.code}")
+                response.body?.string().orEmpty()
+            }
+        }
     }
     suspend fun post(url: String, form: okhttp3.RequestBody): String = withContext(Dispatchers.IO) {
         client.newCall(Request.Builder().url(url).post(form).build()).execute().use { response ->

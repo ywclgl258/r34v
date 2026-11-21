@@ -16,7 +16,9 @@ import java.io.IOException
 import java.security.MessageDigest
 
 /** Bounded reading cache and separate, persistent whole-book downloads. */
-class GalleryRepository(private val context: Context, private val network: Network, private val storage: StorageRoot) {
+class GalleryRepository(private val context: Context, private val network: Network, private val storage: StorageRoot,
+    /** 功能 F34：按站点询问“原图优先”；由 Application 接到阅读行为设置上，阅读/下载/导出共用。 */
+    private val originalImages: (SiteContext) -> Boolean = { false }) {
     /**
      * Plain private-storage repository, for callers that own neither app settings nor a download
      * location (probes, adapter fixtures). The application always passes a real [StorageRoot].
@@ -34,6 +36,9 @@ class GalleryRepository(private val context: Context, private val network: Netwo
     private fun directory(site: SiteContext) = File(context.filesDir, "gallery-cache/${site.id}").apply { mkdirs() }
     val downloadsAllowed get() = !storage.changing && !storage.pendingRestart
     fun checkDownloadsAllowed() = storage.checkDownloadsAllowed()
+    /** 重复文件检查等只读工具用的整本下载目录；删除仍走 [removeDownload] 与下载中心事务。 */
+    fun downloadDirectory(entry: Video, sourceRoot: String = ""): File = bookDirectory(entry, sourceRoot)
+
     private fun bookDirectory(entry: Video, sourceRoot: String = "", write: Boolean = false): File {
         val site = SiteRegistry.byId(entry.site) ?: error("未知图集站点")
         require(entry.mediaKind == MediaKind.GALLERY && entry.id.isNotBlank())
@@ -129,23 +134,23 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         val adapter = AdapterRegistry.adapter(site, network)
         var image = if (cachedBytes != null) cachedMeta!! else adapter.galleryImage(pageUrl)
         check(image.index == index) { "原站返回了错误的图页编号" }
-        val bytes = cachedBytes ?: try { imageBytes(site, image) } catch (error: GalleryResponseException) {
+        val bytes = cachedBytes ?: try { imageBytes(site, originalView(site, image)) } catch (error: GalleryResponseException) {
             val reload = image.reloadUrl?.takeIf { error.status == 403 && it.isNotBlank() } ?: throw error
             image = adapter.galleryImage(reload)
             check(image.index == index) { "刷新图源返回了错误的图页编号" }
-            imageBytes(site, image)
+            imageBytes(site, originalView(site, image))
         } catch (error: GalleryRedirectException) {
             val reload = image.reloadUrl?.takeIf { (site.id == SiteRegistry.EHENTAI.id || site.id == SiteRegistry.EXHENTAI.id) && it.isNotBlank() } ?: throw error
             image = adapter.galleryImage(reload)
             check(image.index == index) { "刷新图源返回了错误的图页编号" }
-            imageBytes(site, image)
+            imageBytes(site, originalView(site, image))
         } catch (error: IOException) {
             if ((site.id != SiteRegistry.EHENTAI.id && site.id != SiteRegistry.EXHENTAI.id) ||
                 !com.r34v.r34v.downloads.DownloadRecovery.isTlsConnectionInterruption(error)) throw error
             val reload = image.reloadUrl?.takeIf(String::isNotBlank) ?: throw error
             image = adapter.galleryImage(reload)
             check(image.index == index) { "刷新图源返回了错误的图页编号" }
-            imageBytes(site, image)
+            imageBytes(site, originalView(site, image))
         }
         check(validImage(bytes)) { "图源未返回可识别的图片，请重试下载" }
         val normalized = image.copy(pageUrl = pageUrl)
@@ -207,6 +212,13 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         write(file, gson.toJson(KnownPages(links)).toByteArray())
     }
 
+    /**
+     * 功能 F34：站点开启“原图优先”且图源给出原图地址时，返回指向原图的视图。
+     * 元数据仍保留显示图字段（originalUrl 一并落盘），已缓存/已下载文件不追溯变化。
+     */
+    private fun originalView(site: SiteContext, image: GalleryImage): GalleryImage =
+        if (originalImages(site) && image.originalUrl.isNotBlank()) image.copy(imageUrl = image.originalUrl) else image
+
     suspend fun page(site: SiteContext, pageUrl: String, force: Boolean = false, galleryUrl: String? = null, entry: Video? = null, offlineOnly: Boolean = false, sourceRoot: String = ""): RenderedPage = withContext(Dispatchers.IO) {
         val original = originalPage(site, pageUrl, force, galleryUrl, entry, offlineOnly, sourceRoot)
         RenderedPage(original.image, decode(original.bytes), original.cached)
@@ -240,7 +252,7 @@ class GalleryRepository(private val context: Context, private val network: Netwo
         val requestUrl = if (force) previous?.reloadUrl ?: pageUrl else pageUrl
         val image = AdapterRegistry.adapter(site, network).galleryImage(requestUrl)
         write(metadataFile, gson.toJson(image.copy(pageUrl = pageUrl)).toByteArray())
-        val bytes = imageBytes(site, image)
+        val bytes = imageBytes(site, originalView(site, image))
         check(validImage(bytes)) { "图源未返回可识别的图片，请重试此页" }
         write(imageFile, bytes)
         rememberPage(site, galleryUrl, image.copy(pageUrl = pageUrl))
