@@ -71,9 +71,10 @@ class NextFeatureStorageTest {
             assertEquals("true", backup.settings["reduce_transparency"])
             store.set("reduce_transparency", false); store.restoreBackup(backup)
             assertTrue(store.bool("reduce_transparency"))
-            assertEquals(ReaderMode.LEFT_TO_RIGHT, store.personal.readerMode("4khd"))
-            store.personal.setReaderMode("4khd", ReaderMode.STRIP)
-            assertEquals(ReaderMode.STRIP, PersonalStore(store).readerMode("4khd"))
+            // 写真站与漫画站一样默认上下连续阅读；显式设置仍按用户选择。
+            assertEquals(ReaderMode.STRIP, store.personal.readerMode("4khd"))
+            store.personal.setReaderMode("4khd", ReaderMode.LEFT_TO_RIGHT)
+            assertEquals(ReaderMode.LEFT_TO_RIGHT, PersonalStore(store).readerMode("4khd"))
             val a = Video("same", site = "r34v"); val b = Video("same", site = "nhentai", mediaKind = MediaKind.GALLERY)
             val queue = PlaybackQueueStore(store).start("测试片单", PersonalLibrary.WATCH_LATER, listOf(a,b))
             val reopened = PlaybackQueueStore(store)

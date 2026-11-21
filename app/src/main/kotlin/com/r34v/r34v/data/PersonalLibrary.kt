@@ -163,8 +163,15 @@ class PersonalStore(private val library: LibraryStore) {
         val mark = PageBookmark(video, page, offset)
         change { data -> data.copy(bookmarks = if (data.bookmarks.any { it.key == mark.key }) data.bookmarks.filter { it.key != mark.key } else data.bookmarks + mark) }
     }
+    /**
+     * 未显式设置过的站点用默认模式。
+     *
+     * 写真与漫画都默认“上下连续”：写真集的图页竖向长图居多，左右翻页要一直点；
+     * 用户反馈过写真集应当上下滑。显式设置过（[setReaderMode] 或本书覆盖）的站点
+     * 仍按用户选择执行，不强制覆盖旧偏好。
+     */
     fun readerMode(site: String) = ReaderMode.entries.firstOrNull { it.name == snapshot().readerModes[site] }
-        ?: if (SiteRegistry.byId(site)?.category == SiteCategory.PHOTO) ReaderMode.LEFT_TO_RIGHT else ReaderMode.STRIP
+        ?: ReaderMode.STRIP
     fun setReaderMode(site: String, mode: ReaderMode) = change { it.copy(readerModes = it.readerModes + (site to mode.name)) }
     fun inbox(site: String) = snapshot().inboxes[site] ?: SubscriptionInbox()
     fun refreshInbox(site: String, feeds: List<TagFeed>) = change { it.copy(inboxes = it.inboxes + (site to inbox(site).refreshed(feeds))) }
