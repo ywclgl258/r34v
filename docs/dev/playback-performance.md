@@ -30,7 +30,7 @@
 
 ## 优化顺序
 
-1. 单档直接起播已实现，复测见下文。高码率单档弱网仍待覆盖。多档选档后续可区分真实传输采样和网络类型的默认估值，HLS 的实测速率可取自媒体分片。预跑在尚无媒体传输时观察到 2.40 Mbps 的初始估值，Media3 的网络类型回调可携带默认估值，当前 `LinkSpeed` 接受所有正值回调。[带宽估算源码](https://github.com/androidx/media/blob/1.9.2/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/upstream/DefaultBandwidthMeter.java#L389-L431) · [应用带宽估算](../../app/src/main/kotlin/com/r34v/r34v/playback/LinkSpeed.kt)
+1. 单档直接起播已实现，原片源和 1080p HLS 的弱网复测见下文。多档选档后续可区分真实传输采样和网络类型的默认估值，HLS 的实测速率可取自媒体分片。预跑在尚无媒体传输时观察到 2.40 Mbps 的初始估值，Media3 的网络类型回调可携带默认估值，当前 `LinkSpeed` 接受所有正值回调。[带宽估算源码](https://github.com/androidx/media/blob/1.9.2/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/upstream/DefaultBandwidthMeter.java#L389-L431) · [应用带宽估算](../../app/src/main/kotlin/com/r34v/r34v/playback/LinkSpeed.kt)
 2. 点播 HLS 支持有容量上限的会话回拖缓存，使用独立会话和完整分片 URI 隔离资源。下文记录开关对照和全局流式缓存的结果。[会话缓存](../../app/src/main/kotlin/com/r34v/r34v/playback/HlsSeekSession.kt)
 
 ## 单档直接起播复测
@@ -71,6 +71,30 @@
 会话缓存使回拖中位数缩短 252 ms（38%），5 轮均在退出后清除会话分片。三组首帧范围重叠。会话缓存与全局流式缓存的短片写入量同量级，分别为 1.72 MiB 和 1.68 MiB。会话缓存组首帧前尚未提交完整缓存段，全局组每轮均已提交 671 B 的播放列表；两组首帧前都可能已写入尚未提交的媒体数据。这组数字适用于该点播样本及模拟限速，长期播放的写入量取决于实际媒体码率和读取范围。
 
 Android 16 另通过容量淘汰、字节范围和 URI 隔离、并发会话关闭、直播列表绕过、离线 HLS 播放及损坏分片重新下载回归。[缓存边界用例](../../app/src/androidTest/kotlin/com/r34v/r34v/HlsSeekSessionTest.kt) · [离线 HLS 回归](../../app/src/androidTest/kotlin/com/r34v/r34v/HlsPlaybackIntegrationTest.kt)
+
+## 1080p 与真实 CDN 复测
+
+基线 `58b59ce`。在同一台 Android 16 模拟器上固定使用 Mux 公共测试流 Big Buck Bunny 的 1920 × 1080 HLS 点播档，主清单标记 6.22 Mbps。每轮都从同一公开 HTTPS URL 读取点播清单和原始分片，播放时核对解码尺寸。详情页由本地夹具生成，仍走应用的 KVS 解析器。测试关闭 HTTP 响应缓存、全局流式缓存和自动下载。[Mux 测试流目录](https://test-streams.mux.dev/) · [1080p 变体所在主清单](https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8)
+
+该档共有 64 个分片，前两个各 10 秒，分别为 5,312,128 B 和 13,184,440 B，合计约 7.40 Mbps。实际响应经 HTTP/2 由香港 CDN 节点提供。日志分别记录 CDN 响应的 `X-Cache` 和应用会话缓存读取。
+
+- 原链路使用设备连接到 CDN 的实际传输。弱网组在相同 CDN 连接上将媒体响应体交付速率限制到每请求 4.00 Mbps，保留 TLS、请求延迟和 CDN 响应。限速施加在播放器读取侧，未注入丢包。
+- 缓存开与关使用同一片源及播放步骤。两组先预热原链路，再交替执行原链路和弱网各 3 轮。每轮进入新作品会话，首帧计到 Media3 实际渲染。再缓冲计实际播放到 16 秒期间的次数和总时间。
+- 从 16 秒跳到缓冲区外的 72 秒，播到 72.5 秒后回拖至 1.2 秒，计到目标附近首帧。记录回拖前缓存里首分片的字节数、实际读取的缓存段、回拖到出画的同分片 HTTP 请求，以及回拖前淘汰次数。回拖后播到 5 秒退出，写入量为当轮缓存文件累计提交字节及次数，含退出时提交的部分文件。
+
+12 次有效样本，每组 3 次。耗时和写入量为中位数（最小–最大）。
+
+| 链路与会话缓存 | 首次出画 ms | 再缓冲次数 / 总时长 ms | 回拖恢复 ms | 目标分片命中 / HTTP 重读 | 累计写入 B / 提交次数 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 原链路 · 关闭 | 1464（1251–1490） | 0 / 0 | 2812（2392–2846） | 0/3 · 3/3 | 0 / 0 |
+| 原链路 · 开启 | 3049（1322–3234） | 0（0–1） / 0（0–11502） | 2692（2559–3173） | 0/3 · 3/3 | 79,310,929（63,467,080–79,683,290） / 44（35–44） |
+| 4.00 Mbps · 关闭 | 1155（1105–3098） | 6 / 12639（12528–12708） | 1208（1022–1328） | 0/3 · 3/3 | 0 / 0 |
+| 4.00 Mbps · 开启 | 1311（1290–1330） | 6 / 12490（12331–12581） | 1083（1023–1232） | 3/3 · 0/3 | 19,771,008（19,600,552–19,893,888） / 12 |
+
+- **原链路达到容量压力。** 三轮开启缓存时，回拖前均淘汰了首分片，已提交留存约 29.6 MiB，累计写入中位数为 75.64 MiB。回拖耗时范围重叠。开启组的首帧中位数高 1.59 秒，并有一轮发生 11.50 秒再缓冲。这个样本量只能记录差异，首帧和再缓冲仍需分段计时确认原因。
+- **限速时保住了回拖目标。** 开启组回拖前留存约 16.2 MiB，三轮都读到完整的 5,312,128 B 首分片，累计写入中位数为 18.86 MiB。两组回拖时间范围重叠，连续播放再缓冲均为 6 次。
+
+下一轮用同一片源对照限制预读写入、给已播数据保留额度两种做法。沿用 32 MiB 容量，比较首帧、弱网再缓冲、目标分片复用和累计写入。首帧按详情、播放列表、首分片获取和出画分段记录。本轮数据来自公共样片、单台模拟器和一个 CDN 边缘节点。
 
 ## 复测
 
@@ -121,4 +145,13 @@ adb -s $serial shell am instrument -w -r -e class com.r34v.r34v.PlaybackPerforma
   -e playbackPerf true -e playbackPerfScenario hls-cache -e playbackPerfRepeats 5 `
   com.r34v.r34v.debug.test/androidx.test.runner.AndroidJUnitRunner
 adb -s $serial logcat -d -s R34VHlsSeek:I
+```
+
+真实 CDN 复测使用同样的开发包及测试包，媒体由设备连接公共测试 CDN 获取。
+
+```powershell
+adb -s $serial shell am instrument -w -r -e class com.r34v.r34v.PlaybackPerformanceProbe `
+  -e playbackPerf true -e playbackPerfScenario cdn-high -e playbackPerfRepeats 3 `
+  com.r34v.r34v.debug.test/androidx.test.runner.AndroidJUnitRunner
+adb -s $serial logcat -d -s R34VCdn:I R34VCdnPerf:I
 ```
