@@ -2,6 +2,7 @@ package com.r34v.r34v
 
 import androidx.compose.ui.test.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.r34v.r34v.data.FeedKind
 import com.r34v.r34v.data.FeedPage
 import com.r34v.r34v.data.FeedRequest
@@ -11,11 +12,16 @@ import com.r34v.r34v.data.Sort
 import com.r34v.r34v.data.Video
 import com.r34v.r34v.data.entryKey
 import com.google.gson.JsonParser
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.json.JSONObject
 
 @RunWith(AndroidJUnit4::class)
 class FeedPositionUiTest : ComposeUiCase() {
@@ -113,5 +119,99 @@ class FeedPositionUiTest : ComposeUiCase() {
         f.app.library.setGalleryLanguage(GalleryLanguage.JAPANESE, site)
         f.launch(); waitForWork(all.first())
         ui.onNodeWithTag("media-${anchor.site}-${anchor.id}").assertDoesNotExist()
+    }
+
+    @Test fun discoverFiltersReportTheSelectedLanguageAndResetToTheSiteDefault() = ComposeFixture().use { f ->
+        val site = SiteRegistry.EHENTAI
+        val all = f.video(site.id).copy(title = "全部语言样本")
+        val chinese = all.copy(id = "${all.id}-chinese", title = "中文筛选样本")
+        f.app.library.switchSite(site.id)
+        f.app.library.setGalleryLanguage(GalleryLanguage.ALL, site.id)
+        f.feedOverride = { owner, request ->
+            if (owner != site.id) null
+            else FeedPage(listOf(if (request.language == GalleryLanguage.CHINESE) chinese else all), 1, 1, "发现语言样本")
+        }
+        f.launch(); waitHome(); clickText("发现"); waitForWork(all)
+        ui.onNodeWithContentDescription("漫画语言，当前 全部显示").performClick()
+        clickText("仅中文")
+        waitForWork(chinese)
+        ui.onNodeWithText("仅中文").assertIsDisplayed()
+        assertEquals(GalleryLanguage.CHINESE, f.app.library.galleryLanguage(site.id))
+
+        f.launch(); waitHome(); clickText("发现"); waitForWork(chinese)
+        ui.onNodeWithContentDescription("内容分类，当前 最新更新").performClick()
+        clickText("热门榜")
+        ui.waitUntil(15000) { f.requests.any { it.first == site.id && it.second.kind == FeedKind.POPULAR && it.second.language == GalleryLanguage.CHINESE } }
+        ui.onNodeWithContentDescription("内容分类，当前 热门榜").assertIsDisplayed()
+        clickText("清除筛选")
+        waitForWork(all)
+        ui.onNodeWithText("清除筛选").assertDoesNotExist()
+        assertEquals(GalleryLanguage.ALL, f.app.library.galleryLanguage(site.id))
+    }
+
+    @Test fun homeAndDiscoverRestoreWorksAcrossProcesses() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val phase = InstrumentationRegistry.getArguments().getString("feedPositionProcessPhase")
+        assumeTrue(phase == "write" || phase == "restore")
+        val app = instrumentation.targetContext.applicationContext as R34Application
+        val key = "browse_positions_v1"
+        val marker = File(app.cacheDir, "feed-position-process-test.json")
+        val writing = phase == "write"
+        val prior = if (writing) {
+            JSONObject().put("pid", android.os.Process.myPid())
+                .put("previous", app.library.prefs.getString(key, null) ?: JSONObject.NULL)
+        } else JSONObject(marker.readText())
+        var saved = false
+        try {
+            if (!writing) assertNotEquals(prior.getInt("pid"), android.os.Process.myPid())
+            ComposeFixture(preservePreferences = if (writing) setOf(key) else emptySet()).use { f ->
+                if (writing) check(f.app.library.prefs.edit().remove(key).commit())
+                val site = SiteRegistry.R34V.id
+                check(f.app.library.prefs.edit().remove("$site:explore_filter_v1").commit())
+                val works = (0 until 64).map { f.video(site, index = it).copy(id = "feed-process-test-$it") }
+                val homeAnchor = works[11]
+                val discoverAnchor = works[20]
+                val discovering = AtomicBoolean(false)
+                f.feedOverride = { _, request ->
+                    val entries = when {
+                        request.kind != FeedKind.LATEST -> emptyList()
+                        discovering.get() -> works.drop((request.page - 1) * 16).take(16)
+                        else -> works
+                    }
+                    FeedPage(entries, request.page, if (entries.isNotEmpty() && discovering.get()) 4 else 1, "进程恢复样本")
+                }
+                f.launch()
+                if (writing) {
+                    waitHome()
+                    ui.onNodeWithContentDescription("内容列表").performScrollToIndex(2)
+                    val first = works[8]
+                    ui.onNode(hasScrollToIndexAction() and hasAnyChild(hasTestTag("poster-${first.site}-${first.id}")))
+                        .performScrollToIndex(3)
+                    ui.waitUntil(15000) { savedWork(f, homeAnchor) }
+                    discovering.set(true)
+                    clickText("发现"); waitForWork(works.first())
+                    val grid = ui.onNodeWithTag("discover-feed")
+                    grid.performScrollToIndex(14)
+                    ui.waitUntil(15000) { runCatching { grid.performScrollToIndex(21) }.isSuccess }
+                    ui.waitUntil(15000) { savedWork(f, discoverAnchor) }
+                } else {
+                    waitForWork(homeAnchor, "poster")
+                    discovering.set(true)
+                    clickText("发现"); waitForWork(discoverAnchor)
+                    assertTrue(f.requests.any { it.first == site && it.second.page == 2 })
+                }
+            }
+            if (writing) {
+                marker.writeText(prior.toString())
+                saved = true
+            }
+        } finally {
+            if (!saved) {
+                val edit = app.library.prefs.edit()
+                if (prior.isNull("previous")) edit.remove(key) else edit.putString(key, prior.getString("previous"))
+                check(edit.commit())
+                marker.delete()
+            }
+        }
     }
 }

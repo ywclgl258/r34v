@@ -241,7 +241,7 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
     Box(modifier.then(if (opaque) Modifier.contentPanel(radius) else Modifier.liquidSurface(radius)), content = content)
 }
 @Composable fun MediaCard(video: Video, modifier: Modifier = Modifier, menu: List<Pair<String, () -> Unit>> = emptyList(),
-    progress: Float? = null, progressLabel: String? = null, click: () -> Unit) {
+    progress: Float? = null, progressLabel: String? = null, quietSleeve: Boolean = false, click: () -> Unit) {
     val site = SiteRegistry.byIdOrDefault(video.site)
     val personal = (LocalContext.current.applicationContext as R34Application).library.personal
     val personalRevision by personal.changes.collectAsState()
@@ -255,8 +255,12 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
     var ratio by remember(video.site, video.id) { mutableFloatStateOf(if (gallery) video.thumbAspectRatio else 16f / 9f) }
     var expanded by remember { mutableStateOf(false) }
     val caseShape = RentalShape
-    val metadata = progressLabel ?: listOf(mediaCountOrDuration(video), video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
-    Column(modifier.testTag("media-${video.site}-${video.id}").clip(caseShape).background(RentalSurface).border(RentalBorder, caseShape)
+    val duration = mediaCountOrDuration(video)
+    val metadata = progressLabel ?: if (quietSleeve) duration
+        else listOf(duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
+    val outline = if (quietSleeve) BorderStroke(1.dp, RentalEdge.copy(alpha = .27f)) else RentalBorder
+    val labelColor = if (quietSleeve) RentalPaper else RentalInk
+    Column(modifier.testTag("media-${video.site}-${video.id}").clip(caseShape).background(RentalSurface).border(outline, caseShape)
         .combinedClickable(role = Role.Button, onClick = click, onLongClickLabel = "更多作品操作", onLongClick = { expanded = true })
         .padding(1.dp)) {
         Box {
@@ -270,14 +274,15 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 2
                 DropdownMenu(expanded, { expanded = false }) { actions.forEach { (label, action) -> DropdownMenuItem({ Text(label) }, { expanded = false; action() }) } }
             }
         }
-        Column(Modifier.fillMaxWidth().background(RentalPaper).rentalStock().padding(horizontal = 9.dp, vertical = 7.dp),
+        val label = if (quietSleeve) Modifier else Modifier.background(RentalPaper).rentalStock()
+        Column(Modifier.fillMaxWidth().then(label).padding(horizontal = 9.dp, vertical = 7.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(video.title, color = RentalInk, fontWeight = FontWeight.Bold, fontSize = 14.sp, lineHeight = 18.sp,
+            Text(video.title, color = labelColor, fontWeight = FontWeight.Bold, fontSize = 14.sp, lineHeight = 18.sp,
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (metadata.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(metadata, Modifier.weight(1f), color = RentalInk.copy(alpha = .78f), fontSize = 11.sp,
+                Text(metadata, Modifier.weight(1f), color = if (quietSleeve) RentalMuted else RentalInk.copy(alpha = .78f), fontSize = 11.sp,
                     lineHeight = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                RentalStripes(Modifier.size(18.dp, 7.dp))
+                if (!quietSleeve) RentalStripes(Modifier.size(18.dp, 7.dp))
             }
         }
         if (progress != null) LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(2.dp),

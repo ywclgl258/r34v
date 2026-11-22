@@ -35,7 +35,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     var videos by state::videos
     var next by state::next; var total by state::total; var cursor by state::cursor
     var cached by state::cached; var loaded by state::loaded
-    val gridInset = 14.dp
+    val gridInset = if (browseToolbar != null) 16.dp else 14.dp
     fun load(automatic: Boolean = false) {
         if (busy || loaded && next > total || automatic && state.emptyPages >= 3) return
         if (!automatic) state.emptyPages = 0
@@ -217,7 +217,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
             }
         }
         items(videos, key = Video::entryKey, contentType = { "media" }) { video ->
-            MediaCard(video, menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) }
+            MediaCard(video, menu = listOf("收藏 / 取消收藏" to { favorite(video) }), quietSleeve = browseToolbar != null) { play(video) }
         }
         if (busy) item(span = StaggeredGridItemSpan.FullLine, key = "loading") { Loading(title = if (loaded) "正在加载下一页" else "正在加载内容") }
         error?.let { message -> item(span = StaggeredGridItemSpan.FullLine, key = "error") { EmptyState(if (loaded) "下一页加载失败" else "内容加载失败", message) { if (state.restartRequired) refresh() else load() } } }
@@ -230,26 +230,31 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable fun ExploreScreen(app: R34Application, adapter: SiteAdapter, request: FeedRequest, state: FeedState,
     dialogs: ComposeDialogs, play: (Video) -> Unit, favorite: (Video) -> Unit, scroll: (Float, Boolean) -> Unit,
-    changeFeed: (FeedRequest) -> Unit, browse: (String) -> Unit, permissionDenied: () -> Unit = {}) {
+    changeFeed: (FeedRequest) -> Unit, changeLanguage: (GalleryLanguage) -> Unit, browse: (String) -> Unit,
+    permissionDenied: () -> Unit = {}) {
     key(state) {
         FeedScreen(app, adapter.site, request, false, state, dialogs, play, favorite, scroll,
             permissionDenied = permissionDenied,
-            browseToolbar = { refresh -> ExploreToolbar(adapter, request, dialogs, changeFeed, browse, refresh) },
+            browseToolbar = { refresh -> ExploreToolbar(adapter, request, dialogs, changeFeed, changeLanguage, browse, refresh) },
             sort = changeFeed)
     }
 }
 
 @Composable private fun ExploreToolbar(adapter: SiteAdapter, request: FeedRequest, dialogs: ComposeDialogs,
-    changeFeed: (FeedRequest) -> Unit, browse: (String) -> Unit, refresh: () -> Unit) {
+    changeFeed: (FeedRequest) -> Unit, changeLanguage: (GalleryLanguage) -> Unit, browse: (String) -> Unit,
+    refresh: () -> Unit) {
     val sections = remember(adapter) { adapter.sections.filter { it.feed != null || adapter.sectionUrl(it.key) != null } }
     val active = sections.indexOfFirst { it.feed?.copy(language = request.language) == request }.takeIf { it >= 0 }
         ?: sections.indexOfFirst { it.feed?.sort == Sort.NEWEST && it.feed.copy(sort = request.sort, language = request.language) == request }
     val title = sections.getOrNull(active)?.title ?: adapter.feedTitle(request)
     val sorts = adapter.sortsFor(request)
-    Column {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    val default = adapter.homeRequest()
+    val selectedLanguage = request.language.takeIf { adapter.supportsLanguage && it != default.language }
+    val hasFeedSelection = request.copy(language = default.language) != default
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             if (sections.size > 1) {
-                FrameSelector(title, Modifier.weight(1f, fill = false).semantics { contentDescription = "内容分类，当前 $title" }, primary = true) {
+                BrowseSelector(title, Modifier.weight(1f, fill = false).semantics { contentDescription = "内容分类，当前 $title" }) {
                     dialogs.choose("内容分类", sections.map { it.title }, active) { index ->
                         val section = sections[index]
                         val feed = section.feed
@@ -263,28 +268,50 @@ import kotlinx.coroutines.flow.distinctUntilChanged
             if (sorts.size > 1) {
                 val selectedSort = sorts.indexOf(request.sort).coerceAtLeast(0)
                 val sortTitle = adapter.sortTitle(sorts[selectedSort])
-                FrameSelector(sortTitle, Modifier.weight(1f, fill = false).semantics { contentDescription = "排序方式，当前 $sortTitle" }) {
+                BrowseSelector(sortTitle, Modifier.weight(1f, fill = false).semantics { contentDescription = "排序方式，当前 $sortTitle" }) {
                     dialogs.choose("排序方式", sorts.map(adapter::sortTitle), selectedSort) {
                         changeFeed(request.copy(sort = sorts[it], page = 1, cursor = ""))
                     }
                 }
-            } else Spacer(Modifier.weight(1f))
+            }
+            if (adapter.supportsLanguage) {
+                BrowseSelector("语言", Modifier.semantics { contentDescription = "漫画语言，当前 ${request.language.title}" }) {
+                    dialogs.choose("漫画语言", GalleryLanguage.entries.map { it.title }, request.language.ordinal) { index ->
+                        changeLanguage(GalleryLanguage.entries[index])
+                    }
+                }
+            }
             TextAction(refresh) { Text("刷新", color = RentalMuted) }
         }
-        HorizontalDivider(color = RentalEdge)
+        if (hasFeedSelection || selectedLanguage != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically) {
+            val summary = buildList {
+                if (request.kind != default.kind || request.target != default.target) add(title)
+                if (request.sort != default.sort) add(adapter.sortTitle(request.sort))
+                if (selectedLanguage != null) add(selectedLanguage.title)
+            }.joinToString(" · ")
+            Text(summary, Modifier.weight(1f).padding(start = 8.dp),
+                style = MaterialTheme.typography.labelMedium, color = RentalMuted,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            TextAction({
+                if (selectedLanguage != null) changeLanguage(default.language)
+                changeFeed(default)
+            }) { Text("清除筛选", color = RentalMuted) }
+        }
+        HorizontalDivider(color = RentalEdge.copy(alpha = .45f))
     }
 }
 
-@Composable private fun FrameSelector(title: String, modifier: Modifier, primary: Boolean = false, click: () -> Unit) {
-    val fill = if (primary) RentalPaper else RentalSurface
-    OutlinedButton(onClick = click, modifier = modifier.minimumInteractiveComponentSize(), shape = RoundedCornerShape(3.dp),
-        border = BorderStroke(1.dp, if (primary) RentalPaper else RentalEdge),
-        colors = ButtonDefaults.outlinedButtonColors(containerColor = fill, contentColor = if (primary) RentalInk else RentalPaper),
-        contentPadding = PaddingValues(horizontal = 11.dp, vertical = 5.dp)) {
-        Text(title, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.width(5.dp))
-        Glyph(R.drawable.ic_chevron_down, null, Modifier.size(13.dp))
+@Composable private fun BrowseSelector(title: String, modifier: Modifier, click: () -> Unit) {
+    TextButton(onClick = click, modifier = modifier.heightIn(min = 48.dp).widthIn(min = 48.dp), shape = RentalShape,
+        colors = ButtonDefaults.textButtonColors(contentColor = RentalPaper),
+        contentPadding = PaddingValues(0.dp)) {
+        Row(Modifier.clip(RentalShape).background(RentalSurface).heightIn(min = 36.dp).padding(horizontal = 9.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(title, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Glyph(R.drawable.ic_chevron_down, null, Modifier.size(13.dp))
+        }
     }
 }
 

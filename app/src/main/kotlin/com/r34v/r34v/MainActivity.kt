@@ -417,7 +417,7 @@ class MainActivity : ComponentActivity() {
                     if (compactHeader && !downloading && screen != "home" && !(screen == "library" && libraryTab == "片库") && !(screen == "search" && multipleSources)) Copy("${site.category.title} · ${site.name}", Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp))
                     // Translation language only exists on the manga sites; a photo archive has no
                     // translations, and showing the bar there would promise a filter that is absent.
-                    AnimatedVisibility(adapter.supportsLanguage && screen in listOf("siteHome", "feed", "search", "explore") && !(screen == "search" && multipleSources) && languageVisible) {
+                    AnimatedVisibility(adapter.supportsLanguage && screen in listOf("siteHome", "feed", "search") && !(screen == "search" && multipleSources) && languageVisible) {
                         Box(Modifier.padding(horizontal = 16.dp)) { Choices(listOf("全部", "中文", "日文", "中＋日"), language.ordinal) { index -> language = GalleryLanguage.entries[index]; store.setGalleryLanguage(language, site.id); request = request.copy(language = language, page = 1, cursor = "") } }
                     }
                     HorizontalDivider(color = RentalRed.copy(alpha = .72f))
@@ -467,7 +467,10 @@ class MainActivity : ComponentActivity() {
                                         savedFilter = filter
                                         store.prefs.edit { putString(filterKey, filter) }
                                     },
-                                    browse = ::browse, permissionDenied = { revision++ })
+                                    changeLanguage = {
+                                        language = it
+                                        store.setGalleryLanguage(it, site.id)
+                                    }, browse = ::browse, permissionDenied = { revision++ })
                             }
                             "index" -> IndexScreen(app, site, request.target, dialogs, ::openFeed, ::browse, ::toggleSubscription)
                             "search" -> SearchScreen(adapter)

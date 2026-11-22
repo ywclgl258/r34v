@@ -77,6 +77,20 @@ class CinemaUiTest : ComposeUiCase() {
         ui.waitUntil(15000) { detailOpened.get() }
     }
 
+    @Test fun featuredFallbackKeepsThePlayActionVisibleWithoutRankingOrArtwork() = ComposeFixture().use { f ->
+        val entry = f.video().copy(title = "这是一部需要跨行显示完整信息的中文测试作品，封面暂不可用", thumb = "")
+        f.feedOverride = { _, request ->
+            val videos = if (request.kind == FeedKind.LATEST) listOf(entry) else emptyList()
+            FeedPage(videos, 1, 1, "精选占位")
+        }
+        f.launch(); openSourceHome()
+        ui.onNodeWithTag("featured-artwork").assertIsDisplayed()
+        ui.onNode(hasText(entry.title) and hasAnyAncestor(hasTestTag("home-carousel"))).assertIsDisplayed()
+        ui.onNodeWithText("播放").assertIsDisplayed()
+        ui.onNodeWithText("人气榜 Top 10").assertDoesNotExist()
+        ui.onNodeWithContentDescription("暂停轮播").assertDoesNotExist()
+    }
+
     @Test fun coilRetainsSiteHeadersOnSharedCdn() = ComposeFixture().use { f -> runBlocking {
         val sharedUrl = "https://cdn.example.invalid/compose-cover-${f.nonce}-shared.png"
         for (site in listOf(SiteRegistry.R34V, SiteRegistry.IWARA)) {
