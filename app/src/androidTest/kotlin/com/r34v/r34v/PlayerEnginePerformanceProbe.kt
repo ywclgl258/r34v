@@ -34,8 +34,9 @@ import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 class PlayerEnginePerformanceProbe : ComposeUiCase() {
-    private enum class Path {
-        REPLAY_REUSE, REPLAY_REBUILD, HLS_REPLAY_REUSE, HLS_REPLAY_REBUILD, QUALITY_SAME, QUALITY_LOWER,
+    private enum class Path(val hls: Boolean = false, val reselect: Boolean = false) {
+        REPLAY_REUSE, REPLAY_REBUILD, HLS_REPLAY_REUSE(hls = true), HLS_REPLAY_REBUILD(hls = true),
+        QUALITY_SAME(reselect = true), HLS_QUALITY_SAME(hls = true, reselect = true), QUALITY_LOWER,
         REFRESH_ADDRESS, AUTO_DOWNGRADE, LIFECYCLE_AND_CONTROLS,
     }
 
@@ -89,6 +90,7 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
     private data class Ready(val at: Long, val engine: ExoPlayer)
     private data class Frame(val at: Long, val engine: ExoPlayer, val position: Long)
     private data class Window(val start: Long, val returned: Long? = null)
+    private data class ReselectionStart(val at: Long, val position: Long, val requests: Int)
 
     private class Observation(private val activity: PlayerActivity) {
         private val player = field(activity, "player")
@@ -97,6 +99,7 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
         private var latest: Visit? = null
         val ready = mutableListOf<Ready>()
         val frames = mutableListOf<Frame>()
+        val buffering = mutableListOf<Long>()
 
         fun scan(): Visit {
             latest?.takeIf { it.revision == revision.intValue }?.let { return it }
@@ -106,6 +109,7 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
             engine?.addAnalyticsListener(object : AnalyticsListener {
                 override fun onPlaybackStateChanged(eventTime: AnalyticsListener.EventTime, state: Int) {
                     if (state == Player.STATE_READY) ready.add(Ready(now(), engine))
+                    if (state == Player.STATE_BUFFERING) buffering.add(now())
                 }
                 override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
                     frames.add(Frame(renderTimeMs, engine, eventTime.currentPlaybackPositionMs))
@@ -119,8 +123,9 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("playerEnginePerf") == "true")
         val repeats = args.getString("playerEnginePerfRepeats")?.toInt()?.coerceIn(1, 10) ?: 3
-        val selection = args.getString("playerEnginePerfPath")?.let(Path::valueOf)
-        val paths = Path.entries.filter { selection == null || selection == it }
+        val selection = args.getString("playerEnginePerfPath")?.split(',')?.map(Path::valueOf)
+        val paths = Path.entries.filter { selection == null || it in selection }
+        val expectQualityReopen = args.getString("playerEnginePerfExpectQualityReopen") == "true"
         ComposeFixture().use { fixture ->
             val link = fixture.app.linkSpeed
             val sampled = field(link, "sampled")
@@ -142,8 +147,8 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
                     for (path in ordered) {
                         val links = if (path == Path.REPLAY_REBUILD || path == Path.REPLAY_REUSE) listOf(false, true) else listOf(false)
                         for (weak in if (round % 2 == 0) links else links.reversed()) {
-                            val files = if (path in setOf(Path.HLS_REPLAY_REUSE, Path.HLS_REPLAY_REBUILD)) hls else mp4
-                            measure(fixture, Media(files), path, weak, round, ::setEstimate)
+                            val files = if (path.hls) hls else mp4
+                            measure(fixture, Media(files), path, weak, round, expectQualityReopen, ::setEstimate)
                         }
                     }
                 }
@@ -156,18 +161,19 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
         }
     }
 
-    private fun measure(fixture: ComposeFixture, media: Media, path: Path, weak: Boolean, round: Int, setEstimate: (Int) -> Unit) {
+    private fun measure(fixture: ComposeFixture, media: Media, path: Path, weak: Boolean, round: Int,
+                        expectQualityReopen: Boolean, setEstimate: (Int) -> Unit) {
         MockWebServer().use { server ->
             server.dispatcher = media
             server.start()
-            val highPath = if (path in setOf(Path.HLS_REPLAY_REUSE, Path.HLS_REPLAY_REBUILD)) "/hls/media.m3u8" else "/high.mp4"
+            val highPath = if (path.hls) "/hls/media.m3u8" else "/high.mp4"
             val high = Stream("720p", server.url(highPath).toString())
-            val low = Stream("480p", server.url("/low.mp4").toString())
+            val low = Stream("480p", server.url(if (path.hls) "$highPath?quality=480" else "/low.mp4").toString())
             val refreshed = high.copy(url = server.url("/fresh.mp4").toString())
             fixture.detailHook = {
                 fixture.detailStreams = when {
                     path == Path.REFRESH_ADDRESS && media.detailCount.incrementAndGet() > 1 -> listOf(refreshed)
-                    path == Path.QUALITY_LOWER || path == Path.QUALITY_SAME || path == Path.AUTO_DOWNGRADE -> listOf(high, low)
+                    path.reselect || path == Path.QUALITY_LOWER || path == Path.AUTO_DOWNGRADE -> listOf(high, low)
                     else -> listOf(high)
                 }
             }
@@ -204,7 +210,7 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
                     return
                 }
                 val action = when (path) {
-                    Path.QUALITY_SAME, Path.QUALITY_LOWER -> {
+                    Path.QUALITY_SAME, Path.HLS_QUALITY_SAME, Path.QUALITY_LOWER -> {
                         ui.onNodeWithContentDescription("清晰度，当前 720p").performClick()
                         clickAction(if (path == Path.QUALITY_LOWER) low.label else high.label, selectable = true)
                     }
@@ -212,6 +218,12 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
                         ui.onNodeWithContentDescription("播放器菜单").performClick()
                         clickAction("重新播放")
                     }
+                }
+                if (path.reselect) {
+                    main { fixture.app.library.set("quality", low.label) }
+                    measureReselection(server, observation, before, path, round, expectQualityReopen, action)
+                    check(fixture.app.library.string("quality", "") == high.label)
+                    return
                 }
                 val window = main {
                     media.weak = weak
@@ -256,6 +268,37 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
                 main { activity.finish() }
                 await("player activity cleanup") { main { true.takeIf { activity.isDestroyed && observation.scan().engine == null } } }
             }
+        }
+    }
+
+    private fun measureReselection(server: MockWebServer, observation: Observation, before: Visit, path: Path,
+                                   round: Int, expectReopen: Boolean, action: () -> Boolean) {
+        val engine = checkNotNull(before.engine)
+        val start = await("playing with the complete fixture buffered for $path") { main {
+            val duration = engine.duration
+            val position = engine.currentPosition
+            if (!engine.isPlaying || duration <= 0 || engine.bufferedPosition < duration) return@main null
+            check(duration - position >= 1_200) { "Not enough playback remains for $path at $position of $duration" }
+            val sample = ReselectionStart(now(), position, server.requestCount)
+            check(action())
+            sample
+        } }
+        await("one second of playback after reselecting $path") { true.takeIf { now() >= start.at + 1_000 } }
+        main {
+            val after = observation.scan()
+            val requests = server.requestCount - start.requests
+            val stalls = observation.buffering.count { it >= start.at }
+            val progress = engine.currentPosition - start.position
+            check(after.revision == before.revision && after.engine === engine)
+            if (expectReopen) {
+                check(requests > 0 && stalls > 0) { "$path must reproduce a request and rebuffer on the baseline" }
+            } else {
+                check(requests == 0 && stalls == 0) { "$path reopened media: requests=$requests buffering=$stalls" }
+                check(engine.isPlaying && progress >= 750) { "$path interrupted playback: progress=$progress" }
+            }
+            if (round > 0) Log.i(TAG, "round=$round path=$path link=local baseline=$expectReopen " +
+                "windowMs=${now() - start.at} requestsBefore=${start.requests} newRequests=$requests rebuffer=$stalls " +
+                "oldRev=${before.revision} newRev=${after.revision} delta=0 progressMs=$progress")
         }
     }
 

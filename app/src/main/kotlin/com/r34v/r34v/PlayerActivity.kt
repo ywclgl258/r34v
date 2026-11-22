@@ -531,10 +531,17 @@ class PlayerActivity : ComponentActivity() {
             }
         }
     }
-    private fun quality() { val options = detail?.streams ?: return; dialogs.choose("清晰度", options.map { it.label }, options.indexOf(stream)) { index ->
-        val start = player?.currentPosition ?: position; val playing = player?.playWhenReady ?: true
-        stream = options[index]; store.set("quality", stream!!.label); refreshed = false; open(stream!!, start, playing)
-    } }
+    private fun quality() {
+        val options = detail?.streams ?: return
+        dialogs.choose("清晰度", options.map { it.label }, options.indexOf(stream)) { index ->
+            val selected = options[index]
+            val engine = player
+            store.set("quality", selected.label)
+            refreshed = false
+            if (selected == stream && engine?.isPlaying == true && pendingError == null) return@choose
+            open(selected, engine?.currentPosition ?: position, engine?.playWhenReady ?: true)
+        }
+    }
     private fun speed() { val rates = listOf(.25f, .5f, .75f, 1f, 1.25f, 1.5f, 2f, 3f); dialogs.choose("播放速度", rates.map { "${it}×" }, rates.indexOf(userRate)) { userRate = rates[it]; store.set("native_speed", userRate.toString()); player?.setPlaybackSpeed(userRate) } }
     private fun playbackOptions() {
         val pip = Build.VERSION.SDK_INT >= 26 && packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
