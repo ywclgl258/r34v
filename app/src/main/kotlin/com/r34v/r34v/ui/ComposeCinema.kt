@@ -37,6 +37,7 @@ import com.r34v.r34v.R
 import com.r34v.r34v.data.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @Composable fun Modifier.cinemaGlass(radius: Int = 16): Modifier = liquidSurface(radius)
@@ -91,16 +92,19 @@ import kotlinx.coroutines.launch
     }
 }
 
+private data class HomeRow(val key: String, val works: List<Video> = emptyList())
+
 @Composable fun CinemaHome(
     videos: List<Video>, features: List<Pair<Video, String>>, popular: List<Video>, rated: List<Video>,
     continuing: List<Watch>, saved: Set<String>, cached: Boolean, busy: Boolean, error: String?,
     hasNext: Boolean, load: () -> Unit, play: (Video) -> Unit, favorite: (Video) -> Unit,
     browse: (FeedRequest) -> Unit, scroll: (Float, Boolean) -> Unit,
-    list: LazyListState,
+    state: FeedState,
     automatic: Boolean,
     loadAutomatically: () -> Unit,
     toggleWaiting: (Video) -> Unit,
 ) {
+    val list = state.list
     LaunchedEffect(list) {
         var previous = 0
         snapshotFlow { list.firstVisibleItemIndex * 100000 + list.firstVisibleItemScrollOffset }.distinctUntilChanged().collect { value ->
@@ -110,33 +114,85 @@ import kotlinx.coroutines.launch
     val nearEnd by remember { derivedStateOf {
         list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= list.layoutInfo.totalItemsCount - 2 } == true
     } }
-    LaunchedEffect(nearEnd, videos.size, busy, error, hasNext, automatic) { if (nearEnd && hasNext && automatic && !busy && error == null) loadAutomatically() }
     val pagePadding = 14.dp
     val latestRows = remember(videos) { videos.chunked(8) }
-    LazyColumn(Modifier.fillMaxSize().background(RentalInk).semantics { contentDescription = "内容列表" }, state = list,
-        contentPadding = PaddingValues(bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (features.isNotEmpty()) item("hero") { CinemaHero(features, saved, play, toggleWaiting) }
-        else item("home-inset") { Spacer(Modifier.height(LocalSourceTopInset.current)) }
-        if (cached) item("cached") { Copy("当前显示离线列表缓存", Modifier.padding(horizontal = pagePadding)) }
-        if (popular.isNotEmpty()) item("popular") {
-            PosterShelf("人气榜 Top 10", popular.take(10), true, { browse(FeedRequest(FeedKind.POPULAR)) }, play, favorite)
+    val rows = remember(features.isNotEmpty(), cached, popular, rated, latestRows, continuing.isNotEmpty()) {
+        buildList {
+            add(HomeRow(if (features.isNotEmpty()) "hero" else "home-inset"))
+            if (cached) add(HomeRow("cached"))
+            if (popular.isNotEmpty()) add(HomeRow("popular", popular.take(10)))
+            latestRows.firstOrNull()?.let { add(HomeRow("latest-0", it)) }
+            if (rated.isNotEmpty()) add(HomeRow("rated", rated.take(10)))
+            if (continuing.isNotEmpty()) add(HomeRow("continue"))
+            latestRows.drop(1).forEachIndexed { index, row -> add(HomeRow("latest-${index + 1}", row)) }
         }
-        latestRows.firstOrNull()?.let { firstRow ->
-            item("latest-0") { PosterShelf("最新更新", firstRow, false, { browse(FeedRequest()) }, play, favorite) }
+    }
+    val shelves = remember(state, state.refreshCount) { mutableStateMapOf<String, LazyListState>() }
+    val currentRows by rememberUpdatedState(rows)
+    val position = state.restorePosition
+    LaunchedEffect(position, rows) {
+        if (position != null) {
+            val targets = rows.withIndex().filter { (_, row) -> row.works.any { it.entryKey == position.work } }
+            val target = targets.firstOrNull { it.value.key == position.shelf }
+                ?: targets.firstOrNull { it.value.key.startsWith("latest-") } ?: targets.firstOrNull()
+            if (target != null) {
+                list.scrollToItem(target.index)
+                val shelf = snapshotFlow { shelves[target.value.key] }.first { it != null }
+                shelf?.scrollToItem(target.value.works.indexOfFirst { it.entryKey == position.work })
+            }
+            state.finishRestoring(found = target != null)
         }
-        if (rated.isNotEmpty()) item("rated") {
-            PosterShelf("高分佳作", rated.take(10), false, { browse(FeedRequest(FeedKind.RATED)) }, play, favorite)
-        }
-        if (continuing.isNotEmpty()) item("continue") {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                CinemaShelfTitle("继续观看", Modifier.padding(horizontal = pagePadding))
-                LazyRow(contentPadding = PaddingValues(horizontal = pagePadding), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(continuing, key = { "${it.site}:${it.id}" }) { watch -> ContinueCard(watch) { play(watch.video()) } }
+    }
+    LaunchedEffect(state, shelves) {
+        snapshotFlow {
+            val visible = list.layoutInfo.visibleItemsInfo
+            if (state.restorePosition != null || list.isScrollInProgress || visible.isEmpty()) null
+            else {
+                val atTop = list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset == 0
+                val kept = !atTop && state.restoredWork != null && visible.any { item ->
+                    (item.key as? String)?.let { shelves[it] }?.layoutInfo?.visibleItemsInfo?.any { it.key == state.restoredWork } == true
+                }
+                val row = if (atTop) null else visible.firstNotNullOfOrNull { item ->
+                    currentRows.getOrNull(item.index)?.takeIf { it.key == item.key && it.works.isNotEmpty() }
+                }
+                val shelf = row?.let { shelves[it.key] }
+                if (kept || shelf?.isScrollInProgress == true) null else {
+                    val work = row?.works?.getOrNull(shelf?.firstVisibleItemIndex ?: 0)?.entryKey.orEmpty()
+                    FeedPosition(work, state.next - 1, row?.key.orEmpty())
                 }
             }
-        }
-        latestRows.drop(1).forEachIndexed { index, row ->
-            item("latest-${index + 1}") { PosterRow(row, false, play, favorite) }
+        }.collect { settled -> if (settled != null) state.savePosition(settled.takeIf { it.work.isNotEmpty() }) }
+    }
+    LaunchedEffect(nearEnd, videos.size, busy, error, hasNext, automatic, position) {
+        if (position == null && nearEnd && hasNext && automatic && !busy && error == null) loadAutomatically()
+    }
+    LazyColumn(Modifier.fillMaxSize().background(RentalInk).semantics { contentDescription = "内容列表" }, state = list,
+        contentPadding = PaddingValues(bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(rows, key = { it.key }) { row ->
+            when (row.key) {
+                "hero" -> CinemaHero(features, saved, play, toggleWaiting)
+                "home-inset" -> Spacer(Modifier.height(LocalSourceTopInset.current))
+                "cached" -> Copy("当前显示离线列表缓存", Modifier.padding(horizontal = pagePadding))
+                "continue" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CinemaShelfTitle("继续观看", Modifier.padding(horizontal = pagePadding))
+                    LazyRow(contentPadding = PaddingValues(horizontal = pagePadding), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(continuing, key = { "${it.site}:${it.id}" }) { watch -> ContinueCard(watch) { play(watch.video()) } }
+                    }
+                }
+                else -> {
+                    val shelf = rememberLazyListState()
+                    DisposableEffect(shelves, row.key, shelf) {
+                        shelves[row.key] = shelf
+                        onDispose { if (shelves[row.key] == shelf) shelves.remove(row.key) }
+                    }
+                    when (row.key) {
+                        "popular" -> PosterShelf("人气榜 Top 10", row.works, true, { browse(FeedRequest(FeedKind.POPULAR)) }, play, favorite, shelf)
+                        "latest-0" -> PosterShelf("最新更新", row.works, false, { browse(FeedRequest()) }, play, favorite, shelf)
+                        "rated" -> PosterShelf("高分佳作", row.works, false, { browse(FeedRequest(FeedKind.RATED)) }, play, favorite, shelf)
+                        else -> PosterRow(row.works, false, play, favorite, shelf)
+                    }
+                }
+            }
         }
         if (busy) item("loading") { Loading(title = "正在加载下一页") }
         if (hasNext && !automatic && !busy && error == null) item("continue-empty") {
@@ -172,20 +228,20 @@ import kotlinx.coroutines.launch
 }
 
 @Composable private fun PosterShelf(title: String, videos: List<Video>, ranked: Boolean, more: () -> Unit,
-    play: (Video) -> Unit, favorite: (Video) -> Unit) {
+    play: (Video) -> Unit, favorite: (Video) -> Unit, state: LazyListState) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         ShelfHeading(title, more = more)
-        PosterRow(videos, ranked, play, favorite)
+        PosterRow(videos, ranked, play, favorite, state)
     }
 }
 
-@Composable private fun PosterRow(videos: List<Video>, ranked: Boolean, play: (Video) -> Unit, favorite: (Video) -> Unit) {
+@Composable private fun PosterRow(videos: List<Video>, ranked: Boolean, play: (Video) -> Unit, favorite: (Video) -> Unit, state: LazyListState) {
     val gap = 8.dp
     val columns = if (ranked) 3 else 2
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val cardWidth = ((maxWidth - 28.dp - gap * (columns - 1)) / columns).coerceAtMost(if (ranked) 154.dp else 248.dp)
-        LazyRow(contentPadding = PaddingValues(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(gap)) {
-            itemsIndexed(videos, key = { _, video -> "${video.site}:${video.id}" }) { index, video ->
+        LazyRow(state = state, contentPadding = PaddingValues(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(gap)) {
+            itemsIndexed(videos, key = { _, video -> video.entryKey }) { index, video ->
                 val shape = RoundedCornerShape(if (ranked) 3.dp else 4.dp)
                 Box(Modifier.width(cardWidth).aspectRatio(if (ranked) .72f else 1.5f)
                     .testTag("poster-${video.site}-${video.id}").clip(shape)

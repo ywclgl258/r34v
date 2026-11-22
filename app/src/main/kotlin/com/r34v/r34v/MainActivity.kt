@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.exoplayer.offline.Download
+import androidx.core.content.edit
 import com.r34v.r34v.data.*
 import com.r34v.r34v.data.adapter.*
 import com.r34v.r34v.ui.*
@@ -342,7 +343,7 @@ class MainActivity : ComponentActivity() {
         val adapter = remember(site) { AdapterRegistry.adapter(site, app.network) }
         val drawer = rememberDrawerState(DrawerValue.Closed); val scope = rememberCoroutineScope()
         var languageVisible by remember(site, screen) { mutableStateOf(true) }
-        var language by remember(site) { mutableStateOf(store.galleryLanguage()) }
+        var language by remember(site) { mutableStateOf(store.galleryLanguage(site.id)) }
         var scrollDistance by remember(site, screen) { mutableFloatStateOf(0f) }
         val holder = rememberSaveableStateHolder()
         val snackbar = remember { SnackbarHostState() }
@@ -416,7 +417,7 @@ class MainActivity : ComponentActivity() {
                     // Translation language only exists on the manga sites; a photo archive has no
                     // translations, and showing the bar there would promise a filter that is absent.
                     AnimatedVisibility(adapter.supportsLanguage && screen in listOf("siteHome", "feed", "search", "explore") && !(screen == "search" && multipleSources) && languageVisible) {
-                        Box(Modifier.padding(horizontal = 16.dp)) { Choices(listOf("全部", "中文", "日文", "中＋日"), language.ordinal) { index -> language = GalleryLanguage.entries[index]; store.setGalleryLanguage(language); request = request.copy(language = language, page = 1, cursor = "") } }
+                        Box(Modifier.padding(horizontal = 16.dp)) { Choices(listOf("全部", "中文", "日文", "中＋日"), language.ordinal) { index -> language = GalleryLanguage.entries[index]; store.setGalleryLanguage(language, site.id); request = request.copy(language = language, page = 1, cursor = "") } }
                     }
                     HorizontalDivider(color = RentalRed.copy(alpha = .72f))
                 }
@@ -451,15 +452,20 @@ class MainActivity : ComponentActivity() {
                                 sort = { request = it }) }
                             }
                             "explore" -> {
-                                var savedFilter by rememberSaveable { mutableStateOf<String?>(null) }
+                                val filterKey = "${site.id}:explore_filter_v1"
+                                var savedFilter by rememberSaveable { mutableStateOf(store.prefs.getString(filterKey, null)) }
                                 val selected = remember(adapter, savedFilter) {
-                                    savedFilter?.let { store.gson.fromJson(it, FeedRequest::class.java) } ?: adapter.homeRequest()
+                                    runCatching { store.gson.fromJson(savedFilter, FeedRequest::class.java) }.getOrNull() ?: adapter.homeRequest()
                                 }
                                 val effective = selected.copy(language = language)
                                 val blocked = store.blockedTags(site.id)
                                 val feedState = remember(site.id, effective, blocked) { feeds.page(site.id, "explore", effective, blocked) }
                                 ExploreScreen(app, adapter, effective, feedState, dialogs, { play(it) }, ::favorite, ::scroll,
-                                    changeFeed = { savedFilter = store.gson.toJson(it.copy(page = 1, cursor = "")) },
+                                    changeFeed = {
+                                        val filter = store.gson.toJson(it.copy(page = 1, cursor = ""))
+                                        savedFilter = filter
+                                        store.prefs.edit { putString(filterKey, filter) }
+                                    },
                                     browse = ::browse, permissionDenied = { revision++ })
                             }
                             "index" -> IndexScreen(app, site, request.target, dialogs, ::openFeed, ::browse, ::toggleSubscription)

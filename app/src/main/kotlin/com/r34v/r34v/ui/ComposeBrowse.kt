@@ -53,7 +53,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                     state.loadedAt = System.currentTimeMillis()
                     cached = result.cached
                 }
-                videos = (videos + allowed).distinctBy { "${it.site}:${it.id}" }; loaded = true
+                videos = (videos + allowed).distinctBy(Video::entryKey); loaded = true
                 next = result.current + 1; total = if (request.kind == FeedKind.FOR_YOU) result.current else result.total
                 if (!result.nextCursor.isNullOrBlank() && (result.nextCursor == requested.cursor || !state.cursors.add(result.nextCursor))) {
                     total = result.current; error = "原站返回了重复的翻页地址，请刷新列表"
@@ -73,32 +73,46 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         state.grid.requestScrollToItem(0); state.list.requestScrollToItem(0); load()
     }
     LaunchedEffect(Unit) { if (!loaded) load() }
-    if (home && site.mediaKind == MediaKind.VIDEO) {
-        val refreshCount = state.refreshCount
+    val cinemaHome = home && site.mediaKind == MediaKind.VIDEO
+    val refreshCount = state.refreshCount
+    var rankingsReady by remember(state, refreshCount) { mutableStateOf(!cinemaHome) }
+    if (cinemaHome) {
         LaunchedEffect(state, refreshCount) {
             val latest = FeedRequest(language = request.language)
-            for (kind in listOf(FeedKind.POPULAR, FeedKind.RATED)) {
-                if (kind in state.homeRankings) continue
-                launch {
-                    val ranking = latest.copy(kind = kind)
-                    try {
-                        // Some sites map unsupported rankings straight back to their latest feed.
-                        if (adapter.resolve(ranking) == adapter.resolve(latest)) return@launch
-                        val entries = app.repository.feed(ranking, site).videos.filter { app.library.allowed(it, site.id) }
-                        ensureActive()
-                        if (refreshCount == state.refreshCount) state.homeRankings[kind] = entries.take(10)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        // Leave the slot unset so the next visit can retry just this ranking.
+            coroutineScope {
+                for (kind in listOf(FeedKind.POPULAR, FeedKind.RATED)) {
+                    if (kind in state.homeRankings) continue
+                    launch {
+                        val ranking = latest.copy(kind = kind)
+                        try {
+                            // Some sites map unsupported rankings straight back to their latest feed.
+                            if (adapter.resolve(ranking) == adapter.resolve(latest)) return@launch
+                            val entries = app.repository.feed(ranking, site).videos.filter { app.library.allowed(it, site.id) }
+                            ensureActive()
+                            if (refreshCount == state.refreshCount) state.homeRankings[kind] = entries.take(10)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            // Leave the slot unset so the next visit can retry just this ranking.
+                        }
                     }
                 }
             }
+            rankingsReady = true
         }
+    }
+    val position = state.restorePosition
+    val rankingPosition = cinemaHome && position?.shelf in listOf("popular", "rated")
+    val waitingForRanking = rankingPosition && !rankingsReady
+    val needsRestorePage = position != null && loaded && !waitingForRanking && !state.restartRequired &&
+        next <= total && next.toLong() <= position.throughPage.toLong() + 1 && videos.none { it.entryKey == position.work } &&
+        (!rankingPosition || state.homeRankings.values.none { shelf -> shelf.any { it.entryKey == position.work } })
+    LaunchedEffect(state, position, needsRestorePage, next, busy, error) {
+        if (needsRestorePage && !busy && error == null) load()
     }
     // Create the lazy layout with its complete first page. Inserting a hero before an
     // already visible heading makes LazyGrid preserve that heading and skip the hero.
-    if (!loaded) {
+    if (!loaded || needsRestorePage || waitingForRanking) {
         val failure = error
         Column(Modifier.fillMaxSize().background(RentalInk)) {
             if (browseToolbar != null) Box(Modifier.padding(horizontal = gridInset)) { browseToolbar(::refresh) }
@@ -109,7 +123,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         }
         return
     }
-    if (home && site.mediaKind == MediaKind.VIDEO) {
+    if (cinemaHome) {
         val popularVideos = state.homeRankings[FeedKind.POPULAR].orEmpty()
         val ratedVideos = state.homeRankings[FeedKind.RATED].orEmpty()
         val ranked = remember(popularVideos, ratedVideos, videos) {
@@ -124,11 +138,35 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         val waitingRevision by app.library.personal.changes.collectAsState()
         val waiting = remember(waitingRevision) { app.library.personal.shelves().first { it.id == PersonalLibrary.WATCH_LATER }.entries.map { it.video.entryKey }.toSet() }
         CinemaHome(videos, ranked, popularVideos, ratedVideos, continuing, waiting, cached, busy, error,
-            next <= total, { if (state.restartRequired) refresh() else load() }, play, favorite, browse, scroll, state.list, state.emptyPages < 3, { load(true) },
+            next <= total, { if (state.restartRequired) refresh() else load() }, play, favorite, browse, scroll, state, state.emptyPages < 3, { load(true) },
             toggleWaiting = { video -> if (app.library.personal.contains(video)) app.library.personal.remove(video) else app.library.personal.add(video) })
         return
     }
     val grid = state.grid
+    val hasGalleryStage = home && site.mediaKind == MediaKind.GALLERY && videos.isNotEmpty()
+    LaunchedEffect(grid, position) {
+        if (position != null) {
+            val index = videos.indexOfFirst { it.entryKey == position.work }
+            if (index >= 0) grid.scrollToItem(index + if (hasGalleryStage) 2 else 1)
+            state.finishRestoring(found = index >= 0)
+        }
+    }
+    LaunchedEffect(grid, state.remembersPosition) {
+        if (!state.remembersPosition) return@LaunchedEffect
+        snapshotFlow {
+            val visible = grid.layoutInfo.visibleItemsInfo
+            if (state.restorePosition != null || grid.isScrollInProgress || visible.isEmpty()) null
+            else {
+                val atTop = grid.firstVisibleItemIndex == 0 && grid.firstVisibleItemScrollOffset == 0
+                // Reflow or a new neighbour in the same row should keep the restored work.
+                val kept = !atTop && visible.any { it.key == state.restoredWork }
+                if (kept) null else {
+                    val work = if (atTop) null else visible.firstNotNullOfOrNull { (it.key as? String)?.takeIf { key -> ':' in key } }
+                    FeedPosition(work.orEmpty(), state.next - 1)
+                }
+            }
+        }.collect { settled -> if (settled != null) state.savePosition(settled.takeIf { it.work.isNotEmpty() }) }
+    }
     LaunchedEffect(grid) {
         var previous = 0
         snapshotFlow { grid.firstVisibleItemIndex * 100000 + grid.firstVisibleItemScrollOffset }.distinctUntilChanged().collect { value ->
@@ -136,7 +174,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         }
     }
     val nearEnd by remember { derivedStateOf { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= grid.layoutInfo.totalItemsCount - 7 } == true } }
-    LaunchedEffect(nearEnd, next, busy) { if (nearEnd && loaded && next <= total && !busy && error == null) load(true) }
+    LaunchedEffect(nearEnd, next, busy, position) { if (position == null && nearEnd && loaded && next <= total && !busy && error == null) load(true) }
     val width = windowSizeDp().width
     val columns = if (LocalConfiguration.current.fontScale > 1.5f && width < 400) 1 else if (width >= 1280) 6 else if (width >= 1024) 5 else if (width >= 840) 4 else if (width >= 600) 3 else 2
     val gridModifier = Modifier.fillMaxSize().background(RentalInk)
@@ -147,7 +185,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
             top = if (browseToolbar != null) 0.dp else 16.dp, bottom = if (browseToolbar != null) 24.dp else 132.dp),
         horizontalArrangement = Arrangement.spacedBy(9.dp),
         verticalItemSpacing = 10.dp) {
-        if (home && site.mediaKind == MediaKind.GALLERY && videos.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, key = "gallery-stage") {
+        if (hasGalleryStage) item(span = StaggeredGridItemSpan.FullLine, key = "gallery-stage") {
             val progress = app.library.readings(site.id).firstOrNull { it.page < it.pages && app.library.allowed(it.entry, site.id) }
             val entry = progress?.entry ?: videos.first()
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -178,7 +216,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                 }
             }
         }
-        items(videos, key = { "${it.site}:${it.id}" }, contentType = { "media" }) { video ->
+        items(videos, key = Video::entryKey, contentType = { "media" }) { video ->
             MediaCard(video, menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) }
         }
         if (busy) item(span = StaggeredGridItemSpan.FullLine, key = "loading") { Loading(title = if (loaded) "正在加载下一页" else "正在加载内容") }

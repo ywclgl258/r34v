@@ -4,7 +4,7 @@
 
 ## 模块和数据流
 
-- `MainActivity`：Compose Scaffold、站点抽屉、首次教程及首页/发现/搜索/片库/设置导航。页面输入、站点和返回栈通过状态与 Bundle 恢复；FeedStates ViewModel 按站点、请求与屏蔽规则保存最多 8 份列表和对应滚动状态，5 分钟后整体过期。进程死亡后重新加载列表并从头布局，完整列表不写入 Bundle；轮播与展开状态仍通过 rememberSaveable 管理。
+- `MainActivity`：Compose Scaffold、站点抽屉、首次教程及首页/发现/搜索/片库/设置导航。页面输入、站点和返回栈通过状态与 Bundle 恢复。`FeedStates` 按站点、页面、请求及屏蔽规则缓存最多 8 份列表，已加载列表 5 分钟后过期。首页与发现另存最近 32 个浏览位置。进程重建后按作品标识恢复位置，视频首页同时对齐作品所在的片架。找不到作品时回到顶部，手动刷新清除当前位置。完整列表保留在内存，轮播与展开状态由 `rememberSaveable` 管理。
 - `ui/ComposeBrowse`：列表请求、LazyVerticalStaggeredGrid 搜索结果与漫画、发现和索引；手机双列，600dp 起三列，840／1024／1280dp 分别增加到四／五／六列。请求随页面离开取消，刷新取消旧分页并阻止过期回包；分页保留原站游标与语言条件。过滤后空页不等于结束，连续三页无可显示内容后提供手动继续；重复游标停止自动请求并可刷新恢复。
 - `ui/ComposeCinema`：2.2.1 沉浸式 Hero、透明顶栏配套、轻量底部导航、LazyColumn + LazyRow 海报片架、真实继续观看和片单状态。最新内容在最后追加，避免可选榜单或片架插入导致跳过首页 Hero。
 - `PlayerActivity`：Compose 详情、播放控件、清晰度、倍速、手势、横竖屏全屏、进度保存和过期地址刷新。仅 Media3 PlayerView 画面使用 AndroidView，关闭自带控制器，所有控制按钮与时间轴均为 Compose。
