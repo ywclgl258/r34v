@@ -33,7 +33,6 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.input.*
 import androidx.compose.ui.text.style.TextOverflow
@@ -183,13 +182,15 @@ class MainActivity : ComponentActivity() {
         navigate(if (section == null) "feed" else "index", false)
     }
     private fun browse(segment: String) { backStack.addLast(Triple(screen, request, siteId)); request = FeedRequest(target = segment); navigate("index", false) }
-    private fun play(video: Video, offlineId: String? = null, localPath: String? = null, read: Boolean = false, offline: Boolean = false, sourceRoot: String = "", page: Int = 0) {
+    private fun play(video: Video, offlineId: String? = null, localPath: String? = null, read: Boolean = false,
+        offline: Boolean = false, sourceRoot: String = "", page: Int = 0, autoplay: Boolean = true) {
         if (video.site == SiteRegistry.LOCAL.id) {
             if (video.mediaKind == MediaKind.VIDEO) {
                 // 功能 F37：本地视频走 PlayerActivity 的 local 分支，路径以登记记录为准。
                 val record = store.localVideos(SiteRegistry.LOCAL.id).firstOrNull { it.id == video.id }
                 if (record == null) { showNotice("本地视频文件不存在，请重新导入"); return }
-                startActivity(Intent(this, PlayerActivity::class.java).putExtra("video", store.gson.toJson(video)).putExtra("local", record.path))
+                startActivity(Intent(this, PlayerActivity::class.java).putExtra("video", store.gson.toJson(video))
+                    .putExtra("local", record.path).putExtra("autoplay", autoplay))
                 return
             }
             if (page > 0) startActivity(Intent(this, GalleryActivity::class.java).putExtra("gallery", store.gson.toJson(video)).putExtra("read", true).putExtra("page", page))
@@ -199,7 +200,8 @@ class MainActivity : ComponentActivity() {
         store.personal.markRead(video.site, setOf(video.entryKey))
         val gallery = video.mediaKind == MediaKind.GALLERY || SiteRegistry.byIdOrDefault(video.site).mediaKind == MediaKind.GALLERY
         startActivity(if (gallery) Intent(this, GalleryActivity::class.java).putExtra("gallery", store.gson.toJson(video.copy(mediaKind = MediaKind.GALLERY))).putExtra("read", read).putExtra("offline", offline).putExtra("root", sourceRoot).putExtra("page", page)
-        else Intent(this, PlayerActivity::class.java).putExtra("video", store.gson.toJson(video)).putExtra("download", offlineId).putExtra("local", localPath))
+        else Intent(this, PlayerActivity::class.java).putExtra("video", store.gson.toJson(video)).putExtra("download", offlineId)
+            .putExtra("local", localPath).putExtra("autoplay", autoplay))
     }
 
     /** Plays a cache entry found by the disk scan: no Media3 download record exists for it. */
@@ -348,11 +350,14 @@ class MainActivity : ComponentActivity() {
         var scrollDistance by remember(site, screen) { mutableFloatStateOf(0f) }
         val holder = rememberSaveableStateHolder()
         val snackbar = remember { SnackbarHostState() }
-        val density = LocalDensity.current
-        var sourceTopInset by remember { mutableStateOf(82.dp) }
-        val immersiveHome = screen == "siteHome" && site.mediaKind == MediaKind.VIDEO
+        val palettes = remember { mutableStateMapOf<String, ArtworkPalette>() }
+        val fallback = remember(site.category) { artworkPalette(site.category) }
+        val palette = palettes[site.id] ?: fallback
         val compactHeader = windowSizeDp().width < 360 || LocalConfiguration.current.fontScale > 1.3f
         val downloading = screen == "library" && libraryTab in listOf("下载", "缓存")
+        val ime = WindowInsets.ime
+        val density = LocalDensity.current
+        val keyboardVisible by remember(ime, density) { derivedStateOf { ime.getBottom(density) > 0 } }
         LaunchedEffect(notice) { notice?.let { snackbar.showSnackbar(it); notice = null } }
         fun scroll(dy: Float, top: Boolean) {
             if (top || dy < 0) { languageVisible = true; scrollDistance = 0f }
@@ -364,16 +369,16 @@ class MainActivity : ComponentActivity() {
                 withFrameNanos { }; if (store.consumeSiteSwitchTutorial()) tutorial = true
             }
         }
-        CompositionLocalProvider(LocalSourceTopInset provides sourceTopInset) {
+        ArtworkColors(palette) {
         ModalNavigationDrawer(drawerState = drawer, drawerContent = {
             val closeDrawer: () -> Unit = { scope.launch { drawer.close() } }
-            SiteSwitcher(site, pinnedSites, { pinnedSites = store.togglePinnedSite(it) }, drawer.isOpen, closeDrawer) { target ->
+            SiteSwitcher(site, palette, pinnedSites, { pinnedSites = store.togglePinnedSite(it) }, drawer.isOpen, closeDrawer) { target ->
                 switchSite(target)
                 closeDrawer()
             }
         }) {
             val appTopBar: @Composable () -> Unit = {
-                Column(Modifier.fillMaxWidth().background(RentalInk).onSizeChanged { sourceTopInset = with(density) { it.height.toDp() } }.statusBarsPadding()) {
+                Column(Modifier.fillMaxWidth().statusBarsPadding()) {
                     Row(Modifier.fillMaxWidth().heightIn(min = 52.dp)
                         .padding(start = 14.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (downloading) IconAction(R.drawable.ic_back, "返回我的片库") { libraryTab = "片库" }
@@ -393,10 +398,8 @@ class MainActivity : ComponentActivity() {
                                 "feed" -> adapter.feedTitle(request)
                                 else -> "浏览索引"
                             }
-                            RentalStripes(Modifier.size(21.dp, 16.dp))
-                            Spacer(Modifier.width(7.dp))
                             Text(topTitle, Modifier.weight(1f).semantics { heading() }, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                color = RentalPaper,
+                                color = palette.ink,
                                 style = if (screen in listOf("home", "search", "explore") || screen == "library") MaterialTheme.typography.headlineLarge else MaterialTheme.typography.titleLarge)
                         }
                         if (!downloading && (screen != "library" || libraryTab != "片库")) Box {
@@ -420,18 +423,22 @@ class MainActivity : ComponentActivity() {
                     AnimatedVisibility(adapter.supportsLanguage && screen in listOf("siteHome", "feed", "search") && !(screen == "search" && multipleSources) && languageVisible) {
                         Box(Modifier.padding(horizontal = 16.dp)) { Choices(listOf("全部", "中文", "日文", "中＋日"), language.ordinal) { index -> language = GalleryLanguage.entries[index]; store.setGalleryLanguage(language, site.id); request = request.copy(language = language, page = 1, cursor = "") } }
                     }
-                    HorizontalDivider(color = RentalRed.copy(alpha = .72f))
                 }
             }
-            Scaffold(containerColor = RentalInk, contentWindowInsets = if (immersiveHome) WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal) else WindowInsets.safeDrawing,
-                snackbarHost = { SnackbarHost(snackbar) { data -> Snackbar(data, containerColor = RaisedColor, contentColor = RentalPaper, shape = RentalShape) } },
-                topBar = { if (!immersiveHome) appTopBar() }, bottomBar = {
-                    CinemaNavigation(navigationTab) { key -> backStack.clear(); if (key == "library") libraryTab = "片库"; navigate(key, false) }
+            Scaffold(modifier = Modifier.artworkBackground(palette), containerColor = Color.Transparent,
+                contentWindowInsets = WindowInsets.safeDrawing,
+                snackbarHost = {
+                    SnackbarHost(snackbar) { data ->
+                        Snackbar(data, containerColor = palette.raised, contentColor = palette.ink, shape = ArtworkShape)
+                    }
+                },
+                topBar = appTopBar, bottomBar = {
+                    if (!keyboardVisible) {
+                        CinemaNavigation(navigationTab) { key -> backStack.clear(); if (key == "library") libraryTab = "片库"; navigate(key, false) }
+                    }
                 }) { padding ->
-                Box(Modifier.fillMaxSize()) {
-                Box(Modifier.padding(start = padding.calculateLeftPadding(androidx.compose.ui.unit.LayoutDirection.Ltr),
-                    end = padding.calculateRightPadding(androidx.compose.ui.unit.LayoutDirection.Ltr), top = padding.calculateTopPadding(),
-                    bottom = padding.calculateBottomPadding()).fillMaxSize().imePadding()) {
+                Box(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize().imePadding()
+                    .artworkReveal(Triple(site.id, screen, libraryTab.takeIf { screen == "library" }))) {
                     // Revision is observable because the persisted store intentionally remains framework independent.
                     @Suppress("UNUSED_VARIABLE") val observedRevision = revision
                     val exGate = site.id == "exhentai" && !app.network.session.hasGallerySession(site)
@@ -445,9 +452,13 @@ class MainActivity : ComponentActivity() {
                                 val effective = (if (screen == "siteHome") adapter.homeRequest() else request).copy(language = language)
                                 val blocked = store.blockedTags(site.id)
                                 val feedState = remember(site.id, screen, effective, blocked) { feeds.page(site.id, screen, effective, blocked) }
-                                key(feedState) { FeedScreen(app, site, effective, screen == "siteHome", feedState, dialogs, { play(it) }, ::favorite, ::scroll,
+                                key(feedState) { FeedScreen(app, site, effective, screen == "siteHome", feedState, dialogs,
+                                    { play(it, autoplay = screen == "siteHome") }, ::favorite, ::scroll,
                                 permissionDenied = { revision++ }, saved = store.favorites(site.id).filter { it.kind == "video" }.map { "${it.site}:${it.target}" }.toSet(),
                                 browse = ::openFeed,
+                                    openDetails = { play(it, autoplay = false) },
+                                    resumeGallery = { play(it, read = true) },
+                                    onArtwork = { palettes[site.id] = it },
                                 subscribe = { toggleSubscription(it) },
                                 subscribed = request.kind == FeedKind.TAG && store.isSubscribed(request.target, site.id),
                                 sort = { request = it }) }
@@ -461,7 +472,7 @@ class MainActivity : ComponentActivity() {
                                 val effective = selected.copy(language = language)
                                 val blocked = store.blockedTags(site.id)
                                 val feedState = remember(site.id, effective, blocked) { feeds.page(site.id, "explore", effective, blocked) }
-                                ExploreScreen(app, adapter, effective, feedState, dialogs, { play(it) }, ::favorite, ::scroll,
+                                ExploreScreen(app, adapter, effective, feedState, dialogs, { play(it, autoplay = false) }, ::favorite, ::scroll,
                                     changeFeed = {
                                         val filter = store.gson.toJson(it.copy(page = 1, cursor = ""))
                                         savedFilter = filter
@@ -488,10 +499,7 @@ class MainActivity : ComponentActivity() {
                         }
                     } }
                 }
-                if (immersiveHome) appTopBar()
-                }
             }
-        }
         }
         dialogs.Host()
         importingUri?.let { uri -> LocalImportDialog(app, uri, importingDirectory, importingVideo, { importingUri = null }) { video ->
@@ -510,6 +518,7 @@ class MainActivity : ComponentActivity() {
             }
             play(video, read = true)
         } }
+        }
     }
     @Composable private fun LoginGate() {
         Column { EmptyState("ExHentai 必须登录", "未登录时原站可能只显示白屏。请通过官方论坛登录，并确认账号具备 ExHentai 访问权限。", "官方网页登录", ::loginOfficial)
@@ -517,6 +526,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     @Composable private fun SearchScreen(adapter: SiteAdapter) {
+        val colors = MaterialTheme.colorScheme
         @Suppress("UNUSED_VARIABLE") val observedRevision = revision
         val gallery = adapter.site.mediaKind == MediaKind.GALLERY
         val noun = adapter.itemNoun
@@ -530,18 +540,18 @@ class MainActivity : ComponentActivity() {
                 includeTags = condition.includeTags, excludeTags = condition.excludeTags, filter = condition.filter))
         }
         val recent = store.searches()
-        Column(Modifier.fillMaxSize().background(RentalInk).verticalScroll(rememberScrollState())
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             .padding(horizontal = 14.dp).padding(top = 14.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             TextField(searchQuery, { searchQuery = it; error = false }, Modifier.fillMaxWidth().focusRequester(focus), label = { Text("搜索关键词") }, singleLine = true, isError = error,
-                shape = RoundedCornerShape(4.dp), leadingIcon = { Glyph(R.drawable.ic_search, null) },
-                colors = rentalSearchFieldColors(paper = true),
+                shape = ArtworkShape, leadingIcon = { Glyph(R.drawable.ic_search, null) },
+                colors = rentalSearchFieldColors(),
                 supportingText = if (error) ({ Text("请输入关键词") }) else null,
                 trailingIcon = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (searchQuery.isNotEmpty()) IconAction(R.drawable.ic_close, "清除关键词") { searchQuery = "" }
                         IconButton(onClick = ::submit) {
-                            Box(Modifier.size(32.dp).background(RentalInk, RoundedCornerShape(3.dp)), contentAlignment = Alignment.Center) {
-                                CompositionLocalProvider(LocalContentColor provides RentalPaper) { Glyph(R.drawable.ic_chevron_right, "提交搜索", Modifier.size(17.dp)) }
+                            Box(Modifier.size(34.dp).background(colors.primary, ArtworkPill), contentAlignment = Alignment.Center) {
+                                CompositionLocalProvider(LocalContentColor provides colors.onPrimary) { Glyph(R.drawable.ic_chevron_right, "提交搜索", Modifier.size(17.dp)) }
                             }
                         }
                     }
@@ -552,37 +562,36 @@ class MainActivity : ComponentActivity() {
             if (candidates.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 candidates.forEach { (slug, translated) -> Choice(if (translated == slug) slug else "$slug · $translated") { searchQuery = slug; submit() } }
             }
-            Column(Modifier.fillMaxWidth().background(RentalSurface, RoundedCornerShape(4.dp))
-                .border(1.dp, RentalEdge.copy(alpha = .65f), RoundedCornerShape(4.dp))
+            Column(Modifier.fillMaxWidth().artworkPanel()
                 .padding(horizontal = 10.dp, vertical = 3.dp)) {
                 ContentTabs(listOf("当前站点", "多个站点"), if (multipleSources) 1 else 0) { multipleSources = it == 1 }
-                HorizontalDivider(color = RentalEdge.copy(alpha = .6f))
+                HorizontalDivider(color = colors.outline)
                 if (multipleSources) TextAction({ dialogs.searchSources(app, searchSites) { searchSites = it; store.set("cross_search_sites", it.joinToString(",")) } }) { Text("选择来源 · ${searchSites.size} 个站点") }
                 // Photo archives have only a keyword search.
                 if (!multipleSources && adapter.site.category != SiteCategory.PHOTO) Choices(if (gallery) listOf(noun, "标签", adapter.creatorTitle) else listOf("视频", "标签", "作者"), searchScope) { searchScope = it }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextAction({ dialogs.advancedSearch(app, searchCondition.copy(query = searchQuery), if (multipleSources) searchSites else listOf(siteId)) { value ->
                         searchCondition = value; searchQuery = value.query; revision++
-                    } }) { Text("标签与高级筛选", color = RentalPaper) }
-                    if (multipleSources) TextAction({ dialogs.choose("漫画语言条件", GalleryLanguage.entries.map { it.title }) { selected -> searchLanguages = searchSites.filter { AdapterRegistry.adapter(SiteRegistry.byIdOrDefault(it), app.network).supportsLanguage }.associateWith { GalleryLanguage.entries[selected].name } } }) { Text("漫画语言", color = RentalPaper) }
+                    } }) { Text("标签与高级筛选") }
+                    if (multipleSources) TextAction({ dialogs.choose("漫画语言条件", GalleryLanguage.entries.map { it.title }) { selected -> searchLanguages = searchSites.filter { AdapterRegistry.adapter(SiteRegistry.byIdOrDefault(it), app.network).supportsLanguage }.associateWith { GalleryLanguage.entries[selected].name } } }) { Text("漫画语言") }
                     AnimatedVisibility(!searchCondition.copy(query = searchQuery).isEmpty) {
-                        TextAction({ saveSearch { keyboard?.hide(); focusManager.clearFocus() } }) { Text("保存搜索方案", color = RentalPaper) }
+                        TextAction({ saveSearch { keyboard?.hide(); focusManager.clearFocus() } }) { Text("保存搜索方案") }
                     }
                 }
             }
             val personalRevision by store.personal.changes.collectAsState()
             val saved = remember(personalRevision) { store.personal.snapshot().savedSearches }
             if (saved.isNotEmpty()) {
-                HorizontalDivider(color = RentalEdge)
+                HorizontalDivider(color = colors.outline)
                 Title("常用搜索")
                 NavigationRow("保存搜索更新与未读", R.drawable.ic_updates) { navigate("searchUpdates") }
-                saved.forEach { value -> Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(RentalSurface).rentalStock(),
+                saved.forEach { value -> Row(Modifier.fillMaxWidth().artworkPanel(),
                     verticalAlignment = Alignment.CenterVertically) {
                     Row(Modifier.weight(1f).heightIn(min = 56.dp).clickable { savedSearch(value) }.padding(12.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        CompositionLocalProvider(LocalContentColor provides RentalPaper) { Glyph(R.drawable.ic_bookmark, null) }
+                        Glyph(R.drawable.ic_bookmark, null)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(value.name, style = MaterialTheme.typography.titleSmall, color = RentalPaper)
+                            Text(value.name, style = MaterialTheme.typography.titleSmall)
                             Copy(value.query.ifBlank { "${value.sources.size} 个来源 · 已保存筛选" })
                         }
                     }
@@ -595,23 +604,23 @@ class MainActivity : ComponentActivity() {
                     } }
                 } }
             }
-            HorizontalDivider(color = RentalEdge)
+            HorizontalDivider(color = colors.outline)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Title("最近搜索", Modifier.weight(1f))
-                if (recent.isNotEmpty()) TextAction({ store.clearSearches(); revision++ }) { Text("清空", color = RentalMuted) }
+                if (recent.isNotEmpty()) TextAction({ store.clearSearches(); revision++ }) { Text("清空", color = colors.onSurfaceVariant) }
             }
-            if (recent.isEmpty()) Text("暂无搜索记录", Modifier.padding(vertical = 8.dp), color = RentalMuted, style = MaterialTheme.typography.bodyMedium)
+            if (recent.isEmpty()) Copy("暂无搜索记录", Modifier.padding(vertical = 8.dp))
             Column {
                 recent.forEach { query ->
                     Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Button) { searchQuery = query; submit() }
                         .padding(horizontal = 4.dp, vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        CompositionLocalProvider(LocalContentColor provides RentalMuted) { Glyph(R.drawable.ic_history, null, Modifier.size(17.dp)) }
-                        Text(query, Modifier.weight(1f), color = RentalPaper, style = MaterialTheme.typography.bodyMedium,
+                        CompositionLocalProvider(LocalContentColor provides colors.onSurfaceVariant) { Glyph(R.drawable.ic_history, null, Modifier.size(17.dp)) }
+                        Text(query, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        CompositionLocalProvider(LocalContentColor provides RentalMuted) { Glyph(R.drawable.ic_chevron_right, null, Modifier.size(14.dp)) }
+                        CompositionLocalProvider(LocalContentColor provides colors.onSurfaceVariant) { Glyph(R.drawable.ic_chevron_right, null, Modifier.size(14.dp)) }
                     }
-                    HorizontalDivider(color = RentalEdge.copy(alpha = .45f))
+                    HorizontalDivider(color = colors.outline.copy(alpha = .60f))
                 }
             }
         }
@@ -680,49 +689,86 @@ class MainActivity : ComponentActivity() {
     @Composable private fun SettingsScreen(site: SiteContext) {
         @Suppress("UNUSED_VARIABLE") val observedRevision = revision
         val adapter = AdapterRegistry.adapter(site, app.network)
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = LocalUiDensity.current.pagePadding).padding(bottom = 24.dp)) {
-            SettingsSection("显示"); Toggle("减少透明效果", "reduce_transparency"); Copy("使用深色实底控件，保持清晰对比。", Modifier.padding(bottom = 8.dp))
-            Toggle("标签优先显示中文词典", "translate_tags", true)
-            SettingsSection("内容过滤"); Setting("屏蔽词", "${store.blockedTags().size} 个") { blockedTags() }
-            SettingsSection("账户")
-            if (Capability.SESSION_IMPORT in adapter.capabilities) {
-                Setting("官方网页登录", "${site.name} 官方论坛", ::loginOfficial)
-                Setting("导入站点会话", if (app.network.session.hasGallerySession(site)) "已导入" else "未导入") { credentials(site, true) }
-                if (app.network.session.hasGallerySession(site)) Setting("退出本站会话") { dialogs.confirm("清除 ${site.name} 的账号会话？") { app.network.session.clear(site); revision++ } }
-            } else if (Capability.LOGIN in adapter.capabilities) {
-                // JWT 会话（如 Iwara）没有用户名记录：登录态看令牌，退出同步清令牌。
-                // 用户名按站点读：在别的站点登录成功后，当前站点不应该显示为已登录。
-                val token = app.network.authToken(site.id)
-                val account = store.username(site.id)
-                val loggedIn = account.isNotBlank() || token != null
-                Setting(if (loggedIn) "退出登录" else "登录站点账户", account.ifBlank { if (token != null) "已登录" else "" }) {
-                    if (!loggedIn) credentials(site, false) else dialogs.confirm("退出当前账户？") {
-                        app.network.clearAuthToken(site.id); app.network.session.clear(site); store.setUsername("", site.id); revision++
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = LocalUiDensity.current.pagePadding).padding(top = 8.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            SettingsSection("显示") {
+                Toggle("减少透明效果", "reduce_transparency", description = "使用不透明控件，保持文字清晰。")
+                Toggle("标签优先显示中文词典", "translate_tags", true)
+            }
+            SettingsSection("内容过滤") {
+                Setting("屏蔽词", "${store.blockedTags().size} 个", ::blockedTags)
+            }
+            SettingsSection("账户") {
+                if (Capability.SESSION_IMPORT in adapter.capabilities) {
+                    val imported = app.network.session.hasGallerySession(site)
+                    Setting("官方网页登录", "${site.name} 官方论坛", ::loginOfficial)
+                    Setting("导入站点会话", if (imported) "已导入" else "未导入") { credentials(site, true) }
+                    if (imported) Setting("退出本站会话") {
+                        dialogs.confirm("清除 ${site.name} 的账号会话？") { app.network.session.clear(site); revision++ }
+                    }
+                } else if (Capability.LOGIN in adapter.capabilities) {
+                    val token = app.network.authToken(site.id)
+                    val account = store.username(site.id)
+                    val loggedIn = account.isNotBlank() || token != null
+                    Setting(if (loggedIn) "退出登录" else "登录站点账户", account.ifBlank { if (token != null) "已登录" else "" }) {
+                        if (!loggedIn) credentials(site, false) else dialogs.confirm("退出当前账户？") {
+                            app.network.clearAuthToken(site.id); app.network.session.clear(site); store.setUsername("", site.id); revision++
+                        }
+                    }
+                } else SettingsNote("${site.name} 当前支持公开浏览，无需登录。")
+            }
+            SettingsSection("播放") {
+                val quality = store.string("quality", "720p")
+                Setting("默认清晰度", quality) {
+                    val values = listOf("360p", "480p", "720p", "1080p", "2160p")
+                    dialogs.choose("默认清晰度", values, values.indexOf(quality)) { store.set("quality", values[it]); revision++ }
+                }
+                val speed = store.string("native_speed", "1.0")
+                Setting("默认倍速", "$speed×") {
+                    val values = listOf("0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "3.0")
+                    dialogs.choose("默认倍速", values, values.indexOf(speed)) { store.set("native_speed", values[it]); revision++ }
+                }
+                Toggle("进入播放后自动全屏", "auto_fullscreen")
+                Toggle("播放时自动下载", "auto_download", description = "下载任务可在下载中心管理，完成后可离线打开。")
+                Toggle("边播边写播放缓存", "stream_cache",
+                    description = "开启后可复用最多 512 MB 的临时播放缓存，适合重看。默认关闭，减轻弱网下的缓冲压力。")
+                Toggle("回退播放使用 seek 缓存", "seek_cache", true,
+                    description = "MP4 回拖缓存上限 64 MiB，换视频时清理。关闭流式缓存时，HLS 点播会话最多缓存 32 MiB，离开播放时清理。")
+            }
+            SettingsSection("网络") {
+                SettingsNote("自动跟随系统代理。未设置代理时使用系统 DNS 直连，连接失败时会提示。")
+                SettingsNote(runCatching { app.network.routeDescription() }.getOrDefault("系统代理设置暂不可用"))
+                Setting("网络诊断", "含媒体测速") { lifecycleScope.launch {
+                    dialogs.message("网络诊断", "正在实测页面和媒体链路…")
+                    val pending = dialogs.content
+                    val report = withContext(Dispatchers.IO) { app.playbackDiagnostics.report(site, store.string("quality", "720p")) }
+                    if (dialogs.content === pending) dialogs.message("网络诊断", report)
+                } }
+            }
+            SettingsSection("本地数据") {
+                Setting("清理播放临时数据") {
+                    dialogs.confirm("清理播放临时数据？", body = "已下载的视频和漫画会保留。") {
+                        lifecycleScope.launch { withContext(Dispatchers.IO) { app.playback.clearStreaming() }; showNotice("已清理") }
                     }
                 }
-            } else Copy("${site.name} 当前支持公开浏览，无需登录。")
-            SettingsSection("播放")
-            Setting("默认清晰度", store.string("quality", "720p")) { val values = listOf("360p", "480p", "720p", "1080p", "2160p"); dialogs.choose("默认清晰度", values, values.indexOf(store.string("quality", "720p"))) { store.set("quality", values[it]); revision++ } }
-            Setting("默认倍速", "${store.string("native_speed", "1.0")}×") { val values = listOf("0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "3.0"); dialogs.choose("默认倍速", values, values.indexOf(store.string("native_speed", "1.0"))) { store.set("native_speed", values[it]); revision++ } }
-            Toggle("进入播放后自动全屏", "auto_fullscreen"); Toggle("播放时自动下载", "auto_download"); Copy("主动保存的视频与整本漫画统一在下载中心管理，支持后台下载与离线打开。")
-            Toggle("边播边写播放缓存", "stream_cache"); Copy("默认关闭：开播时不再把整片同步写入 512 MB 临时缓存，弱网下缓冲更快；需要“重看不用再下载”时可打开。已下载的视频不受影响。")
-            Toggle("回退播放使用 seek 缓存", "seek_cache", true); Copy("MP4 回拖缓存上限 64 MiB，换视频时清理。关闭全局流式缓存时，点播 HLS 的会话缓存上限为 32 MiB，离开播放时清理。")
-            SettingsSection("网络"); Copy("自动跟随系统代理；未设置代理时使用系统 DNS 直连。代理连接失败时会显示错误。", Modifier.padding(bottom = 8.dp))
-            Copy(runCatching { app.network.routeDescription() }.getOrDefault("系统代理设置暂不可用"))
-            Setting("网络诊断", "含媒体测速") { lifecycleScope.launch {
-                dialogs.message("网络诊断", "正在实测页面和媒体链路…"); val pending = dialogs.content
-                val report = withContext(Dispatchers.IO) { app.playbackDiagnostics.report(site, store.string("quality", "720p")) }
-                if (dialogs.content === pending) dialogs.message("网络诊断", report)
-            } }
-            SettingsSection("本地数据"); Setting("清理播放临时数据") { dialogs.confirm("清理播放临时数据？", body = "已下载的视频和漫画会保留。") { lifecycleScope.launch { withContext(Dispatchers.IO) { app.playback.clearStreaming() }; showNotice("已清理") } } }
-            Setting("重复文件检查", "整本内容指纹比对") { duplicateScan() }
-            Setting("备份与恢复", "收藏、订阅、进度与片单") { navigate("backup") }
-            if (site.mediaKind == MediaKind.GALLERY) Setting("清理本站阅读临时数据") { dialogs.confirm("清理阅读临时数据？", body = "整本下载、阅读记录和收藏会保留。") { lifecycleScope.launch { withContext(Dispatchers.IO) { app.galleries.clear(site) }; showNotice("已清理") } } }
-            SettingsSection("下载位置")
-            Setting("当前下载位置", app.storage.describe(), ::storageOptions)
-            Copy("放在公共目录时，卸载应用不会删除已下载的视频和漫画；重新安装后会自动出现在下载中心。放在应用内则随应用一起被删除。")
-            SettingsSection("关于"); Text("R34V ${BuildConfig.VERSION_NAME}"); Copy("应用不托管内容，与原站无关联。", Modifier.padding(top = 4.dp, bottom = 8.dp))
-            Toggle("自动检查更新", "auto_update", true); Setting("检查更新") { lifecycleScope.launch { UpdateController(this@MainActivity, app, dialogs).check(false) } }
+                Setting("重复文件检查", "整本内容指纹比对", ::duplicateScan)
+                Setting("备份与恢复", "收藏、订阅、进度与片单") { navigate("backup") }
+                if (site.mediaKind == MediaKind.GALLERY) Setting("清理本站阅读临时数据") {
+                    dialogs.confirm("清理阅读临时数据？", body = "整本下载、阅读记录和收藏会保留。") {
+                        lifecycleScope.launch { withContext(Dispatchers.IO) { app.galleries.clear(site) }; showNotice("已清理") }
+                    }
+                }
+            }
+            SettingsSection("下载位置") {
+                Setting("当前下载位置", app.storage.describe(), ::storageOptions)
+                SettingsNote("公共目录中的下载可在重装后重新识别。应用内的下载随卸载一起删除。")
+            }
+            SettingsSection("关于") {
+                SettingsNote("R34V ${BuildConfig.VERSION_NAME}\n应用不托管内容，与原站无关联。")
+                Toggle("自动检查更新", "auto_update", true)
+                Setting("检查更新") { lifecycleScope.launch { UpdateController(this@MainActivity, app, dialogs).check(false) } }
+            }
         }
     }
     /** 功能 F41：整本内容指纹比对。只报告候选；删除由用户逐本决定，走各来源既有安全删除路径。 */
@@ -798,7 +844,8 @@ class MainActivity : ComponentActivity() {
                         Copy("删除走下载中心/本地库的既有安全路径；元数据、下载记录和索引同步清理。")
                     }
                 }
-            }, confirmButton = { TextButton(onClick = { dialogs.dismiss() }) { Text("关闭") } })
+            }, shape = ArtworkShape, containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                confirmButton = { TextAction({ dialogs.dismiss() }) { Text("关闭") } })
         }
     }
 
@@ -845,37 +892,64 @@ class MainActivity : ComponentActivity() {
                         else "当前在应用内，卸载会连同下载一起删除。改到公共目录后可以保留。")
                     Copy("登录状态不随文件保留：重装后需要重新登录或重新导入 Cookie。")
                     actions.forEach { label ->
-                        Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(enabled = !busy) { action(label) }.padding(horizontal = 4.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(label, Modifier.weight(1f)); Glyph(R.drawable.ic_chevron_right, null)
+                        Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(ArtworkPill)
+                            .clickable(enabled = !busy, role = Role.Button) { action(label) }.padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(label, Modifier.weight(1f))
+                            Glyph(R.drawable.ic_chevron_right, null, Modifier.size(16.dp))
                         }
                     }
                     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                     if (progress.isNotBlank()) Copy(progress)
                 }
-            }, confirmButton = { TextAction({ dialogs.dismiss() }, enabled = !busy) { Text("关闭") } })
+            }, shape = ArtworkShape, containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                confirmButton = { TextAction({ dialogs.dismiss() }, enabled = !busy) { Text("关闭") } })
         }
     }
-    @Composable private fun SettingsSection(label: String) {
-        Row(Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(label, Modifier.semantics { heading() }, color = RentalPaper, style = MaterialTheme.typography.titleMedium)
-            HorizontalDivider(Modifier.weight(1f), color = RentalEdge.copy(alpha = .65f))
+    @Composable private fun SettingsSection(label: String, content: @Composable ColumnScope.() -> Unit) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Text(label, Modifier.padding(start = 4.dp).semantics { heading() },
+                color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleMedium)
+            Column(Modifier.fillMaxWidth().artworkPanel().padding(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp), content = content)
         }
     }
+
+    @Composable private fun SettingsNote(text: String) {
+        Copy(text, Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
+    }
+
     @Composable private fun Setting(label: String, value: String = "", click: () -> Unit) {
-        Row(Modifier.fillMaxWidth().clickable(onClick = click, role = Role.Button).heightIn(min = 54.dp).padding(vertical = 10.dp),
+        val colors = MaterialTheme.colorScheme
+        Row(Modifier.fillMaxWidth().heightIn(min = 54.dp).clip(ArtworkShape)
+            .clickable(onClick = click, role = Role.Button).padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-            if (value.isNotBlank()) Copy(value, Modifier.widthIn(max = 140.dp))
-            CompositionLocalProvider(LocalContentColor provides MutedColor) { Glyph(R.drawable.ic_chevron_right, null, Modifier.size(15.dp)) }
+            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+            if (value.isNotBlank()) Text(value, Modifier.widthIn(max = 132.dp), color = colors.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+            CompositionLocalProvider(LocalContentColor provides colors.onSurfaceVariant) {
+                Glyph(R.drawable.ic_chevron_right, null, Modifier.size(15.dp))
+            }
         }
     }
-    @Composable private fun Toggle(label: String, key: String, default: Boolean = false) {
-        @Suppress("UNUSED_VARIABLE") val observedRevision = revision
-        Row(Modifier.fillMaxWidth().heightIn(min = 54.dp).toggleable(store.bool(key, default), role = Role.Switch) { store.set(key, it); revision++ },
-            verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-            Switch(store.bool(key, default), null, colors = SwitchDefaults.colors(checkedTrackColor = BrandColor, checkedThumbColor = CanvasColor, uncheckedTrackColor = ControlColor, uncheckedThumbColor = MutedColor, checkedBorderColor = Color.Transparent, uncheckedBorderColor = RentalEdge))
+
+    @Composable private fun Toggle(label: String, key: String, default: Boolean = false, description: String = "") {
+        val colors = MaterialTheme.colorScheme
+        val checked = store.bool(key, default)
+        Row(Modifier.fillMaxWidth().heightIn(min = 54.dp).clip(ArtworkShape)
+            .toggleable(checked, role = Role.Switch) { store.set(key, it); revision++ }
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(label, style = MaterialTheme.typography.titleSmall)
+                if (description.isNotBlank()) Text(description, style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant)
+            }
+            Switch(checked, onCheckedChange = null, colors = SwitchDefaults.colors(
+                checkedTrackColor = colors.primary, checkedThumbColor = colors.onPrimary,
+                uncheckedTrackColor = colors.background, uncheckedThumbColor = colors.onSurfaceVariant,
+                checkedBorderColor = Color.Transparent, uncheckedBorderColor = colors.outline,
+            ))
         }
     }
     private fun blockedTags() {
@@ -892,11 +966,12 @@ class MainActivity : ComponentActivity() {
             DisposableEffect(Unit) { onDispose { username = ""; secret = ""; window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) } }
             AlertDialog({ if (!busy) dialogs.dismiss() }, title = { Text(if (importing) "导入 ${site.name} 会话" else "登录") }, text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (importing) Copy("复制已登录本站浏览器的 Cookie。验证账号权限后才保存本站会话。") else TextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("用户名") }, shape = RoundedCornerShape(16.dp), colors = filledFieldColors(), singleLine = true)
-                    TextField(secret, { secret = it }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = filledFieldColors(), label = { Text(if (importing) "本站 Cookie" else "密码") }, visualTransformation = PasswordVisualTransformation(), singleLine = !importing, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+                    if (importing) Copy("复制已登录本站浏览器的 Cookie。验证账号权限后才保存本站会话。") else TextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("用户名") }, shape = ArtworkShape, colors = rentalSearchFieldColors(), singleLine = true)
+                    TextField(secret, { secret = it }, Modifier.fillMaxWidth(), shape = ArtworkShape, colors = rentalSearchFieldColors(), label = { Text(if (importing) "本站 Cookie" else "密码") }, visualTransformation = PasswordVisualTransformation(), singleLine = !importing, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
                     if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error); if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
-            }, confirmButton = { TextAction({ busy = true; error = ""; scope.launch {
+            }, shape = ArtworkShape, containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                confirmButton = { TextAction({ busy = true; error = ""; scope.launch {
                 try { if (importing) withContext(Dispatchers.IO) { AdapterRegistry.adapter(site, app.network).importSession(secret) } else app.network.login(site, username, secret)
                     secret = ""; dialogs.dismiss(); revision++; if (importing) navigate("home", false); showNotice("登录成功")
                 } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "登录失败" } finally { busy = false }

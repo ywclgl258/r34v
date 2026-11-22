@@ -1,5 +1,6 @@
 package com.r34v.r34v
 
+import android.provider.Settings
 import androidx.compose.ui.test.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import coil3.request.ImageRequest
@@ -45,10 +46,22 @@ class CinemaUiTest : ComposeUiCase() {
         val featured = f.video(index = 1)
         f.app.library.clearHistory()
         f.launch(); openSourceHome(); waitCovers()
-        ui.onNodeWithContentDescription("暂停轮播").performClick()
+        val motion = Settings.Global.getFloat(f.ins.targetContext.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
+        if (motion) {
+            val secondPageSelected = hasContentDescription("精选第 2 页") and isSelected()
+            ui.waitUntil(12000) { ui.onAllNodes(secondPageSelected).fetchSemanticsNodes().isNotEmpty() }
+        }
+        ui.onNodeWithContentDescription("首页精选轮播").performTouchInput { swipeLeft() }
+        if (motion) ui.onNodeWithContentDescription("继续轮播").assertIsDisplayed()
+        else ui.onNodeWithContentDescription("继续轮播").assertDoesNotExist()
         ui.onNodeWithContentDescription("精选第 1 页").performClick()
         ui.onNodeWithTag("home-carousel").assertIsDisplayed()
-        ui.onNodeWithText("播放").assertIsDisplayed()
+        val firstPageSelected = hasContentDescription("精选第 1 页") and isSelected()
+        val playActions = ui.onAllNodes(hasText("播放") and hasAnyAncestor(hasTestTag("home-carousel")))
+        ui.waitUntil(5000) {
+            ui.onAllNodes(firstPageSelected).fetchSemanticsNodes().isNotEmpty() &&
+                playActions.fetchSemanticsNodes().indices.any { playActions[it].isDisplayed() }
+        }
         val screen = f.ins.targetContext.resources.configuration
         if (screen.screenHeightDp >= 700 && screen.screenHeightDp > screen.screenWidthDp && screen.fontScale <= 1.3f) {
             ui.onNodeWithText("人气榜 Top 10").assertIsDisplayed()
@@ -75,6 +88,8 @@ class CinemaUiTest : ComposeUiCase() {
         f.detailHook = { detailOpened.set(true) }
         firstWork.performClick()
         ui.waitUntil(15000) { detailOpened.get() }
+        ui.onNodeWithTag("video-poster-detail").assertIsDisplayed()
+        ui.onNodeWithTag("player-surface").assertDoesNotExist()
     }
 
     @Test fun featuredFallbackKeepsThePlayActionVisibleWithoutRankingOrArtwork() = ComposeFixture().use { f ->
@@ -85,10 +100,25 @@ class CinemaUiTest : ComposeUiCase() {
         }
         f.launch(); openSourceHome()
         ui.onNodeWithTag("featured-artwork").assertIsDisplayed()
+        ui.onNode(hasTestTag("cover-unavailable") and hasAnyAncestor(hasTestTag("home-carousel")), useUnmergedTree = true)
+            .assertIsDisplayed()
         ui.onNode(hasText(entry.title) and hasAnyAncestor(hasTestTag("home-carousel"))).assertIsDisplayed()
         ui.onNodeWithText("播放").assertIsDisplayed()
         ui.onNodeWithText("人气榜 Top 10").assertDoesNotExist()
         ui.onNodeWithContentDescription("暂停轮播").assertDoesNotExist()
+    }
+
+    @Test fun featuredDetailsOpenOnThePosterBeforeStartingPlayback() = ComposeFixture(cinematic = true).use { f ->
+        f.launch(); openSourceHome()
+        ui.onNodeWithTag("home-carousel").assertIsDisplayed()
+        ui.onNodeWithText("详情").performClick()
+        ui.waitUntil(15000) { ui.onAllNodesWithTag("video-poster-detail").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithTag("player-surface").assertDoesNotExist()
+        ui.onNodeWithText("立即播放").assertIsDisplayed().performClick()
+        ui.waitUntil(15000) { ui.onAllNodesWithTag("player-surface").fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithTag("video-poster-detail").assertDoesNotExist()
+        ui.onNodeWithTag("artwork-player-controls").assertIsDisplayed()
+        waitForDecodedVideo(f)
     }
 
     @Test fun coilRetainsSiteHeadersOnSharedCdn() = ComposeFixture().use { f -> runBlocking {

@@ -6,7 +6,7 @@ import com.r34v.r34v.R34Application
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-data class CatalogEntry(val video: Video, val at: Long = 0, val addedAt: Long = 0, val progress: String = "尚未开始", val fraction: Float = 0f,
+data class CatalogEntry(val video: Video, val at: Long = 0, val addedAt: Long = 0, val progress: String = "尚未开始", val fraction: Float? = null,
     val started: Boolean = false, val completed: Boolean = false, val offline: Boolean = false, val downloadState: String = "未下载", val remainingBytes: Long? = null)
 
 fun SmartShelf.select(entries: List<CatalogEntry>, now: Long = System.currentTimeMillis()): List<CatalogEntry> = entries.filter { item ->
@@ -30,11 +30,21 @@ suspend fun personalCatalog(app: R34Application, scanned: List<LibraryRecord> = 
         store.history(source.id).forEach { watch ->
             val video = watch.video(); add(video)
             val old = values.getValue(video.entryKey)
-            values[video.entryKey] = old.copy(at = watch.at, progress = "${timeText(watch.position * 1000)} / ${timeText(watch.duration * 1000)}", fraction = if (watch.duration > 0) (watch.position.toFloat() / watch.duration).coerceIn(0f,1f) else 0f, started = watch.position > 0, completed = watch.finished)
+            val position = timeText(watch.position * 1000)
+            val duration = watch.duration.takeIf { it > 0 }
+            values[video.entryKey] = old.copy(at = watch.at,
+                progress = if (duration != null) "进度 · $position / ${timeText(duration * 1000)}" else "进度 · $position",
+                fraction = duration?.let { (watch.position.toFloat() / it).coerceIn(0f, 1f) },
+                started = watch.position > 0, completed = watch.finished)
         }
         store.readings(source.id).forEach { reading ->
             add(reading.entry); val old = values.getValue(reading.entry.entryKey)
-            values[reading.entry.entryKey] = old.copy(at = reading.at, progress = "第 ${reading.page} / ${reading.pages} 页", fraction = if (reading.pages > 0) reading.page.toFloat() / reading.pages else 0f, started = true, completed = reading.page == reading.pages)
+            val unit = if (source.category == SiteCategory.PHOTO) "张" else "页"
+            val total = reading.pages.takeIf { it > 0 }
+            val position = if (total != null) "${reading.page} / $total\u00a0$unit" else "第 ${reading.page}\u00a0$unit"
+            values[reading.entry.entryKey] = old.copy(at = reading.at, progress = "进度 · $position",
+                fraction = total?.let { (reading.page.toFloat() / it).coerceIn(0f, 1f) },
+                started = true, completed = reading.page == total)
         }
     }
     scanned.filter { it.state == LibraryRecord.STATE_COMPLETED }.forEach { record -> add(record.video.copy(mediaKind = if (record.isComic) MediaKind.GALLERY else MediaKind.VIDEO), record.at); val old = values.getValue(record.video.entryKey); values[record.video.entryKey] = old.copy(offline = true, downloadState = "已离线") }

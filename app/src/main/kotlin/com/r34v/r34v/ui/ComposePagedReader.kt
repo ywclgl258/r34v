@@ -76,7 +76,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     var zoom by remember(number) { mutableFloatStateOf(1f) }
     var pan by remember(number) { mutableStateOf(Offset.Zero) }
     val currentToggle by rememberUpdatedState(toggle)
-    Box(modifier.clipToBounds().background(CanvasColor).testTag("reader-page-$number").semantics { stateDescription = "缩放 $zoom" }
+    Box(modifier.clipToBounds().background(androidx.compose.ui.graphics.Color.Black).testTag("reader-page-$number").semantics { stateDescription = "缩放 $zoom" }
         .pointerInput(number) { detectTapGestures(onTap = { currentToggle() }, onDoubleTap = { zoom = if (zoom > 1f) 1f else 2f; pan = Offset.Zero }) }
         .pointerInput(number) { awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
@@ -99,7 +99,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                     val crop = 1f + cropPercent / 100f; scaleX = zoom * crop; scaleY = zoom * crop; translationX = pan.x; translationY = pan.y
                 }, contentScale = when (fit) { ReaderFit.WIDTH -> ContentScale.FillWidth; ReaderFit.HEIGHT -> ContentScale.FillHeight; ReaderFit.ORIGINAL -> ContentScale.None })
             error != null -> Column(Modifier.padding(16.dp)) { Copy("第 $number 页：$error"); Action("重试此页", click = retry) }
-            else -> CircularProgressIndicator(Modifier.size(32.dp), color = BrandColor)
+            else -> CircularProgressIndicator(Modifier.size(32.dp), color = androidx.compose.material3.MaterialTheme.colorScheme.primary)
         }
     }
 }

@@ -22,7 +22,6 @@ import com.r34v.r34v.R34Application
 /** Only the content layer is recorded. Floating controls must be siblings of that layer. */
 val LocalLiquidBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 val LocalReduceTransparency = staticCompositionLocalOf { false }
-val LocalSourceTopInset = staticCompositionLocalOf { 132.dp }
 
 @Composable fun Modifier.liquidContent(backdrop: LayerBackdrop): Modifier =
     if (Build.VERSION.SDK_INT >= 31 && !LocalReduceTransparency.current) layerBackdrop(backdrop) else this

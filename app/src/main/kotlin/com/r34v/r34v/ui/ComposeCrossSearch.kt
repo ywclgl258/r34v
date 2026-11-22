@@ -15,6 +15,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -99,8 +102,9 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
                     }
                 }
             }
-        }, shape = RoundedCornerShape(6.dp), containerColor = RentalInk, titleContentColor = RentalPaper,
-            textContentColor = RentalMuted, tonalElevation = 0.dp, confirmButton = {
+        }, shape = ArtworkShape, containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant, tonalElevation = 0.dp, confirmButton = {
             Row {
                 TextAction({ checked = sites.map { it.id }.toSet() }) { Text("全选") }
                 Action("确定", primary = true, enabled = checked.isNotEmpty()) {
@@ -134,8 +138,8 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
             .distinctBy { it.entryKey }
     }
     val failures = activeSites.mapNotNull { id -> state.buckets[id]?.error?.let { id to it } }
-    val busy = activeSites.any { state.buckets[it]?.busy == true }
-    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().background(RentalInk).testTag("cross-search-results"),
+    val pending = activeSites.count { state.buckets[it]?.busy != false }
+    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().testTag("cross-search-results"),
         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 32.dp),
         horizontalArrangement = Arrangement.spacedBy(9.dp), verticalItemSpacing = 10.dp) {
         item(span = StaggeredGridItemSpan.FullLine, key = "head") {
@@ -146,10 +150,13 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
                     category = index
                     categoryChanged(if (index == 0) "" else SiteCategory.entries[index - 1].name)
                 }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     if (visible.size > 1 || activeOnly.isNotBlank()) SearchSourceFilter(visible, activeOnly, state.buckets) { only = it }
                     else if (visible.size == 1) Copy(SiteRegistry.byIdOrDefault(visible.first()).name)
-                    if (merged.isNotEmpty()) Copy("已加载 ${merged.size} 项")
+                }
+                if (merged.isNotEmpty()) {
+                    val status = "已加载 ${merged.size} 项" + if (pending > 0) " · 正在搜索 $pending 个来源" else ""
+                    Copy(status, Modifier.padding(vertical = 3.dp).semantics { liveRegion = LiveRegionMode.Polite })
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (save != null) TextAction(save) {
@@ -158,10 +165,10 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
                         Text("保存搜索方案")
                     }
                     TextAction({ state.search(app, query, sites, force = true, languageOverrides = languages, condition = condition) }) {
-                        Text("刷新全部来源", color = RentalMuted)
+                        Text("刷新全部来源", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                HorizontalDivider(color = RentalEdge)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             }
         }
         items(merged.size, key = { merged[it].entryKey }, contentType = { "result" }) { index ->
@@ -172,11 +179,11 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
             Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Title("来源状态")
                 failures.forEach { (id, message) ->
-                    Row(Modifier.fillMaxWidth().background(RentalSurface, RoundedCornerShape(4.dp))
+                    Row(Modifier.fillMaxWidth().artworkPanel()
                         .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(SiteRegistry.byIdOrDefault(id).name, color = RentalPaper, style = MaterialTheme.typography.titleMedium)
+                            Text(SiteRegistry.byIdOrDefault(id).name, style = MaterialTheme.typography.titleMedium)
                             Copy(message)
                         }
                         TextAction({ state.refreshSource(app, query, id) }) { Text("刷新来源") }
@@ -186,9 +193,12 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
         }
         item(span = StaggeredGridItemSpan.FullLine, key = "status") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (busy) Loading(title = "正在搜索 ${activeSites.count { state.buckets[it]?.busy == true }} 个来源")
-                if (!busy && merged.isEmpty() && failures.isEmpty()) Copy("当前条件下暂无结果", Modifier.padding(vertical = 16.dp))
-                if (!busy) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (pending > 0 && merged.isEmpty()) Loading(title = "正在搜索 $pending 个来源")
+                if (pending == 0 && merged.isEmpty() && failures.isEmpty()) {
+                    Copy(if (activeSites.isEmpty()) "此分类没有已选的搜索来源" else "当前条件下暂无结果",
+                        Modifier.fillMaxWidth().artworkPanel().padding(16.dp).semantics { liveRegion = LiveRegionMode.Polite })
+                }
+                if (pending == 0) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     activeSites.filter { state.buckets[it]?.more == true && state.buckets[it]?.error == null }
                         .forEach { id -> Action("加载 ${SiteRegistry.byIdOrDefault(id).name} 下一页") { state.load(app, query, id) } }
                 }

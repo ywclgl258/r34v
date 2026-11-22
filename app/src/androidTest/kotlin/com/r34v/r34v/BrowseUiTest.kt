@@ -46,9 +46,17 @@ class BrowseUiTest : ComposeUiCase() {
                 ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("播放器菜单").fetchSemanticsNodes().isNotEmpty() }
             }
         }
-        ready(); showControls(); ui.onNodeWithContentDescription("清晰度，当前 720p").performClick()
-        ui.onNode(hasText("720p") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role, androidx.compose.ui.semantics.Role.RadioButton))
-            .assertIsSelected(); f.shot("05-player-quality"); ui.onNodeWithText("480p").performScrollTo().performClick(); ready()
+        ready(); showControls()
+        // Startup quality adapts to the process-wide measured link speed.
+        val initialQuality = listOf("720p", "480p").first { label ->
+            ui.onAllNodesWithContentDescription("清晰度，当前 $label").fetchSemanticsNodes().isNotEmpty()
+        }
+        val changedQuality = if (initialQuality == "720p") "480p" else "720p"
+        ui.onNodeWithContentDescription("清晰度，当前 $initialQuality").performClick()
+        ui.onNode(hasText(initialQuality) and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role, androidx.compose.ui.semantics.Role.RadioButton))
+            .assertIsSelected(); f.shot("05-player-quality")
+        ui.onNodeWithText(changedQuality).performScrollTo().performClick(); ready()
+        assertEquals(changedQuality, f.app.library.string("quality"))
         showControls(); ui.onNodeWithContentDescription("播放速度，当前 1.0 倍").performClick()
         ui.onNodeWithText("2.0×").performScrollTo().assertIsDisplayed(); f.shot("05-player-speed")
         ui.onNodeWithText("取消").assertIsDisplayed()
@@ -59,10 +67,13 @@ class BrowseUiTest : ComposeUiCase() {
         ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("全屏").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithContentDescription("全屏").performClick(); ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("退出全屏").fetchSemanticsNodes().isNotEmpty() }
         f.shot("06-player-fullscreen"); back(f)
-        showControls(); ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("清晰度，当前 480p").fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithContentDescription("清晰度，当前 480p").assertExists()
+        // Reattaching the surface can buffer long enough for the existing adaptive
+        // policy to drop to 480p. The preference must still survive the transition.
+        val qualityControl = hasContentDescription("清晰度，当前 $changedQuality") or hasContentDescription("清晰度，当前 480p")
+        showControls(); ui.waitUntil(5000) { ui.onAllNodes(qualityControl).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNode(qualityControl).assertExists()
         ui.runOnIdle { activity.recreate() }; waitText("${f.video().title}")
         ui.waitUntil(15000) { f.app.library.watch(f.video().id)?.position?.let { it >= 1 } == true }
-        assertEquals("480p", f.app.library.string("quality")); assertEquals("2.0", f.app.library.string("native_speed"))
+        assertEquals(changedQuality, f.app.library.string("quality")); assertEquals("2.0", f.app.library.string("native_speed"))
     }
 }

@@ -103,7 +103,7 @@ class OptimizationIoTest : ComposeUiCase() {
             val status = hasAnyAncestor(row) and hasText("下载中", substring = true)
             fun percent(): Int = ui.onAllNodes(status).fetchSemanticsNodes().firstOrNull()
                 ?.config?.getOrNull(SemanticsProperties.Text)?.firstOrNull()?.text
-                ?.substringAfter("下载中 ")?.substringBefore('%')?.toIntOrNull() ?: 0
+                ?.substringAfter("下载中 · ")?.substringBefore('%')?.toIntOrNull() ?: 0
             f.videoThrottleMillis = 240
             try {
                 f.launchDownloads(); waitText("下载中心")
@@ -126,7 +126,7 @@ class OptimizationIoTest : ComposeUiCase() {
 
                 f.ins.runOnMainSync { f.app.playback.pause(key, false) }
                 ui.waitUntil(10000) { percent() > 0 }
-                val complete = hasAnyAncestor(row) and hasText("已下载 · 可离线播放", substring = true)
+                val complete = hasAnyAncestor(row) and hasText("已完成 ·", substring = true)
                 ui.waitUntil(20000) { ui.onAllNodes(complete).fetchSemanticsNodes().isNotEmpty() }
                 f.ins.runOnMainSync { f.app.playback.remove(key) }
                 ui.waitUntil(10000) { ui.onAllNodes(row).fetchSemanticsNodes().isEmpty() }
@@ -142,8 +142,10 @@ class OptimizationIoTest : ComposeUiCase() {
         runBlocking { f.app.galleryDownloads.add(f.video("ehentai")) }
         ui.waitUntil(20000) { f.app.galleryDownloads.task(f.video("ehentai"))?.state == GalleryDownloadState.COMPLETED }
         f.launchDownloads()
-        ui.onNodeWithTag("download-center").performScrollToNode(hasText("已下载 · 可离线打开", substring = true))
-        ui.waitUntil(15000) { ui.onAllNodesWithText("已下载 · 可离线打开", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        val row = hasTestTag("download-gallery:${f.app.galleryDownloads.key(f.video("ehentai"))}")
+        val offlineAction = hasAnyAncestor(row) and hasText("离线打开")
+        ui.onNodeWithTag("download-center").performScrollToNode(row)
+        ui.waitUntil(15000) { ui.onAllNodes(offlineAction).fetchSemanticsNodes().isNotEmpty() }
         runBlocking { delay(1200) }
         val id = MessageDigest.getInstance("SHA-256").digest(f.video("ehentai").id.toByteArray()).joinToString("") { "%02x".format(it) }
         val book = File(f.app.storage.layout().comics, "ehentai/$id")

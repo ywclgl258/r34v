@@ -177,12 +177,30 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
     val diskComics = restoredComics.filter { kind != 1 && (siteFilter == null || it.site == siteFilter) && textMatches(it.title, it.site) && diskStatus(it) }
     val diskVideos = restoredVideos.filter { kind != 2 && (siteFilter == null || it.site == siteFilter) && textMatches(it.title, it.site) && diskStatus(it) }
     val count = videos.size + books.size + legacy.size + diskComics.size + diskVideos.size
-    val advancedFilterCount = listOf(siteFilter, groupFilter).count { it != null }
-    val filtersActive = advancedFilterCount > 0 || kind != 0 || statusFilter != 0 || query.isNotBlank()
+    val kinds = listOf("全部内容", "视频", "图集")
+    val sortLabels = listOf("队列优先", "最近添加", "体积", "完成度", "标题")
+    val conditions = listOfNotNull(
+        kinds[kind].takeIf { kind != 0 },
+        siteFilter?.let { SiteRegistry.byIdOrDefault(it).name },
+        groupFilter?.takeIf { kind != 1 }?.let { "图集分组 · $it" },
+        sortLabels[sort].takeIf { sort != 0 },
+    )
+    val filtersActive = conditions.isNotEmpty() || statusFilter != 0 || query.isNotBlank()
+    fun clearFilters() {
+        kind = 0
+        statusFilter = 0
+        siteFilter = null
+        groupFilter = null
+        query = ""
+        sort = 0
+    }
     val failedVideos = videos.filter { it.first.state == Download.STATE_FAILED }
     val failedBooks = books.filter { it.id in snapshot.failedBookIds }
     val failedCount = failedVideos.size + failedBooks.size
     val retrying = "retry-failed" in busy
+    val batchChoices = videos.filter { it.first.state != Download.STATE_COMPLETED }.map { "v:${it.first.request.id}" to it.second.video.title } +
+        books.filter { !it.failedRemoval && it.state !in listOf(GalleryDownloadState.COMPLETED, GalleryDownloadState.REMOVING) }
+            .map { "g:${it.id}" to it.entry.title }
     LazyColumn(Modifier.fillMaxSize().testTag("download-center"), contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item("filters") {
             Row(
@@ -193,65 +211,82 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
                 TextField(
                     query, { query = it }, Modifier.weight(1f), singleLine = true,
                     label = { Text("搜索标题、来源或分组") },
-                    shape = RentalShape, colors = filledFieldColors(),
+                    shape = ArtworkShape, colors = rentalSearchFieldColors(),
                     leadingIcon = { Glyph(R.drawable.ic_search, null) },
                     trailingIcon = { if (query.isNotEmpty()) IconAction(R.drawable.ic_close, "清空下载搜索") { query = "" } },
                 )
                 TextAction({ showFilters = !showFilters }) {
-                    Text(if (advancedFilterCount == 0) "筛选" else "筛选 · $advancedFilterCount")
+                    Text(if (conditions.isEmpty()) "筛选" else "筛选 · ${conditions.size}")
                     Spacer(Modifier.width(4.dp))
                     Glyph(R.drawable.ic_chevron_down, null, Modifier.size(14.dp).rotate(if (showFilters) 180f else 0f))
                 }
             }
             AnimatedVisibility(showFilters) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+                    Selector(kinds[kind]) {
+                        dialogs.choose("下载类型", kinds, kind) { kind = it }
+                    }
                     Selector(siteFilter?.let { SiteRegistry.byIdOrDefault(it).name } ?: "全部站点") {
                         val owners = listOf<SiteContext?>(null) + SiteRegistry.all
                         dialogs.choose("下载来源", owners.map { it?.name ?: "全部站点" }, owners.indexOfFirst { it?.id == siteFilter }) {
                             siteFilter = owners[it]?.id
                         }
                     }
-                    val sortLabels = listOf("队列优先", "最近添加", "体积", "完成度", "标题")
                     Selector("排序 · ${sortLabels[sort]}") { dialogs.choose("下载排序", sortLabels, sort) { sort = it } }
                     val groups = snapshot.books.mapNotNull { it.group }.distinct()
-                    if (groups.isNotEmpty()) Selector(groupFilter ?: "全部分组") {
-                        dialogs.choose("下载分组", listOf("全部分组") + groups, (groups.indexOf(groupFilter) + 1).coerceAtLeast(0)) {
+                    if (kind != 1 && (groups.isNotEmpty() || groupFilter != null)) Selector(groupFilter ?: "全部图集分组") {
+                        dialogs.choose("图集分组", listOf("全部图集分组") + groups, (groups.indexOf(groupFilter) + 1).coerceAtLeast(0)) {
                             groupFilter = if (it == 0) null else groups[it - 1]
                         }
                     }
                 }
             }
-            Choices(listOf("全部内容", "视频", "图集"), kind) { kind = it }
             ContentTabs(listOf("全部状态", "进行中", "已完成", "需处理"), statusFilter) { statusFilter = it }
-            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
-                Selector(if (onlyUnmetered) "仅非计费网络" else "任意网络") {
-                    dialogs.choose("下载网络条件", listOf("任意网络", "仅非计费网络"), if (onlyUnmetered) 1 else 0) { app.downloadPolicy.setUnmetered(it == 1) }
+            if (conditions.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Copy(conditions.joinToString(" · "), Modifier.weight(1f))
+                    TextAction(::clearFilters) { Text("清空筛选") }
                 }
-                if (videos.isNotEmpty() || books.isNotEmpty()) TextAction({
-                    val choices = videos.filter { it.first.state != Download.STATE_COMPLETED }.map { "v:${it.first.request.id}" to it.second.video.title } +
-                        books.filter { !it.failedRemoval && it.state !in listOf(GalleryDownloadState.COMPLETED, GalleryDownloadState.REMOVING) }
-                            .map { "g:${it.id}" to it.entry.title }
-                    dialogs.content = {
-                        var selected by remember { mutableStateOf(choices.map { it.first }.toSet()) }
-                        AlertDialog(dialogs::dismiss, title = { Text("批量管理 · ${selected.size} 项") }, text = {
-                            Column(Modifier.verticalScroll(rememberScrollState())) {
-                                TextAction({ selected = if (selected.size == choices.size) emptySet() else choices.map { it.first }.toSet() }) { Text("全选 / 清空") }
-                                choices.forEach { (id, title) -> CheckRow(title, id in selected) { selected = if (it) selected + id else selected - id } }
-                            }
-                        }, confirmButton = {
-                            FlowRow {
-                                listOf(true to "暂停所选", false to "继续所选").forEach { (pause, label) -> TextAction({
-                                    dialogs.dismiss()
-                                    act("batch") { for (key in selected) {
-                                        if (key.startsWith("v:")) app.playback.pause(key.removePrefix("v:"), pause)
-                                        else if (pause) app.galleryDownloads.pause(key.removePrefix("g:"))
-                                        else snapshot.books.firstOrNull { it.id == key.removePrefix("g:") }?.let { app.galleryDownloads.add(it.entry, it.selectedPages) }
-                                    } }
-                                }, enabled = selected.isNotEmpty()) { Text(label) } }
-                            }
-                        }, dismissButton = { TextAction(dialogs::dismiss) { Text("取消") } })
+            }
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+                if (count > 0) Copy("$count 项下载", Modifier.weight(1f))
+                DownloadMenu("下载管理", R.drawable.ic_chevron_down) {
+                    DownloadMenuItem("网络条件 · ${if (onlyUnmetered) "仅非计费网络" else "任意网络"}") {
+                        dialogs.choose("下载网络条件", listOf("任意网络", "仅非计费网络"), if (onlyUnmetered) 1 else 0) {
+                            app.downloadPolicy.setUnmetered(it == 1)
+                        }
                     }
-                }, enabled = !retrying) { Text("批量管理") }
+                    if (batchChoices.isNotEmpty()) DownloadMenuItem("批量管理", enabled = !retrying) {
+                        val all = batchChoices.map { it.first }.toSet()
+                        dialogs.content = {
+                            var selected by remember { mutableStateOf(all) }
+                            AlertDialog(dialogs::dismiss, title = { Text("批量管理 · ${selected.size} 项") }, text = {
+                                Column(Modifier.verticalScroll(rememberScrollState())) {
+                                    TextAction({ selected = if (selected == all) emptySet() else all }) { Text("全选 / 清空") }
+                                    batchChoices.forEach { (id, title) ->
+                                        CheckRow(title, id in selected) { selected = if (it) selected + id else selected - id }
+                                    }
+                                }
+                            }, confirmButton = {
+                                FlowRow {
+                                    listOf(true to "暂停所选", false to "继续所选").forEach { (pause, label) ->
+                                        TextAction({
+                                            dialogs.dismiss()
+                                            act("batch") {
+                                                for (key in selected) {
+                                                    if (key.startsWith("v:")) app.playback.pause(key.removePrefix("v:"), pause)
+                                                    else if (pause) app.galleryDownloads.pause(key.removePrefix("g:"))
+                                                    else snapshot.books.firstOrNull { it.id == key.removePrefix("g:") }
+                                                        ?.let { app.galleryDownloads.add(it.entry, it.selectedPages) }
+                                                }
+                                            }
+                                        }, enabled = selected.isNotEmpty()) { Text(label) }
+                                    }
+                                }
+                            }, dismissButton = { TextAction(dialogs::dismiss) { Text("取消") } })
+                        }
+                    }
+                }
                 if (failedCount > 0 || retrying) TextAction({
                     dialogs.confirm("重试当前列表中的 $failedCount 项失败下载？", "重试失败项",
                         "视频沿用原清晰度，图集保留原选页和已保存的图页。") {
@@ -290,12 +325,12 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
         message?.let { text -> item("error") { EmptyState("下载任务读取失败", text) { refresh++ } } }
         if (!ready) item("loading") { Loading(title = "正在读取下载任务") }
         else if (count == 0 && message == null) item("empty") {
-            Column(Modifier.fillMaxWidth().clip(RentalShape).background(SurfaceColor).border(RentalBorder, RentalShape).padding(22.dp),
+            Column(Modifier.fillMaxWidth().artworkPanel().padding(22.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (filtersActive) {
                     Title("没有符合条件的下载", large = true)
                     Copy("试试其他关键词，或清空筛选条件。")
-                    Action("清空筛选", primary = true) { kind = 0; statusFilter = 0; siteFilter = null; groupFilter = null; query = "" }
+                    if (conditions.isEmpty()) Action("清空筛选", primary = true, click = ::clearFilters)
                 } else {
                     Glyph(R.drawable.ic_download, null, Modifier.size(24.dp))
                     Title("还没有下载内容", large = true)
@@ -304,7 +339,6 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
                 }
             }
         }
-        if (count > 0) item("result-count") { Copy("$count 项下载", Modifier.padding(top = 4.dp)) }
         items(books, key = { "gallery:${it.id}" }) { book ->
             val downloading = book.state in listOf(GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED)
             val damaged = book.id in snapshot.damagedBookIds
@@ -319,18 +353,34 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
                 GalleryDownloadState.COMPLETED -> when {
                     damaged -> DamagedDownload
                     book.partial -> "部分已保存"
-                    else -> "已下载 · 可离线打开"
+                    else -> "已完成"
                 }
                 GalleryDownloadState.REMOVING -> "正在删除"
             }
-            val pages = if (book.total > 0) "${book.pages} / ${if (book.partial) book.selectedPages?.size else book.total} 页（全书 ${book.total} 页）" else "等待获取页数"
-            val status = if (damaged) state else "$state · $pages · ${downloadSize(book.bytes)}"
+            val targetPages = book.selectedPages?.size ?: book.total
+            val pages = when {
+                completed -> "${book.pages} 页"
+                targetPages > 0 -> "${book.pages} / $targetPages 页"
+                else -> null
+            }
+            val status = if (damaged) state else listOfNotNull(state, pages, downloadSize(book.bytes)).joinToString(" · ")
             fun openSavedBook() {
                 val saved = snapshot.onDisk.firstOrNull { it.isComic && it.site == book.entry.site && it.id == book.entry.id }
                 if (saved != null) offline(saved) else comic(book.entry)
             }
+            fun confirmRemoval() {
+                dialogs.confirm("删除这份下载？", "删除", "将删除已下载图页，记录和收藏会保留。") {
+                    act(book.id) { app.galleryDownloads.remove(book.id) }
+                }
+            }
             DownloadTile("gallery:${book.id}", book.entry, SiteRegistry.byIdOrDefault(book.entry.site).category.itemNoun, status,
-                if (!damaged && book.total > 0) book.pages.toFloat() / (book.selectedPages?.size ?: book.total) else null, book.error,
+                if (!completed && !damaged && targetPages > 0) book.pages.toFloat() / targetPages else null, book.error,
+                menu = {
+                    DownloadMenuItem(if (expanded) "收起详情" else "任务详情") { expanded = !expanded }
+                    if (!book.failedRemoval && book.state != GalleryDownloadState.REMOVING) {
+                        DownloadMenuItem("删除", enabled = book.id !in busy, selected = ::confirmRemoval)
+                    }
+                },
                 details = {
                     if (expanded) {
                         Copy("当前阶段：${downloadStage(book.stage)} · ${downloadFailure(book.failure)}")
@@ -367,43 +417,51 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
                         if (downloading) Copy("优先级调整已保存，当前任务完成后按新顺序执行。")
                     }
                 }) {
-                if (damaged) {
-                    Action("重新下载", enabled = !retrying && book.id !in busy) {
+                if (book.failedRemoval) {
+                    Action("重试删除", primary = true, enabled = book.id !in busy, click = ::confirmRemoval)
+                } else if (damaged) {
+                    Action("重新下载", primary = true, enabled = !retrying && book.id !in busy) {
                         act(book.id) { app.galleryDownloads.add(book.entry, book.selectedPages, recheckSavedPages = true) }
                     }
                 } else if (completed && book.partial) {
                     Action("查看已存页", primary = true, click = ::openSavedBook)
                     TextAction({ act(book.id) { app.galleryDownloads.add(book.entry) } }) { Text("继续保存") }
-                } else if (!book.failedRemoval) Action(if (completed) "离线打开" else if (downloading) "暂停" else if (book.state == GalleryDownloadState.FAILED) "重试" else "继续",
-                    primary = completed, enabled = !retrying && book.id !in busy && book.state != GalleryDownloadState.REMOVING) {
+                } else if (book.state != GalleryDownloadState.REMOVING) Action(if (completed) "离线打开" else if (downloading) "暂停" else if (book.state == GalleryDownloadState.FAILED) "重试" else "继续",
+                    primary = !downloading, enabled = !retrying && book.id !in busy) {
                     if (completed) openSavedBook() else act(book.id) {
                         if (downloading) app.galleryDownloads.pause(book.id)
                         else if (book.id in snapshot.failedBookIds) app.galleryDownloads.retryFailed(book.id)
                         else app.galleryDownloads.add(book.entry, book.selectedPages)
                     }
                 }
-                TextAction({ expanded = !expanded }) { Text(if (expanded) "收起详情" else "任务详情") }
-                TextAction({ dialogs.confirm("删除这份下载？", "删除", "将删除已下载图页，记录和收藏会保留。") { act(book.id) { app.galleryDownloads.remove(book.id) } } }, enabled = book.id !in busy) { Text("删除") }
             }
         }
         items(diskComics, key = { "disk-comic:${it.site}:${it.id}" }) { record ->
             val available = record.offlineReady
             val state = when {
-                record.state == LibraryRecord.STATE_COMPLETED -> "可离线打开"
+                record.state == LibraryRecord.STATE_COMPLETED -> "已完成"
                 available -> "部分已保存"
                 else -> DamagedDownload
             }
             DownloadTile("gallery:${record.site}:${record.id}", record.video, "${SiteRegistry.byIdOrDefault(record.site).category.itemNoun} · ${if (record.sourceRoot == app.filesDir.absolutePath) "应用内" else "公共目录"}",
-                listOf(state, record.detail, downloadSize(record.bytes)).filter { it.isNotBlank() }.joinToString(" · ")) {
-                if (available) {
-                    Action(if (record.intactSelection.isNotEmpty()) "查看已存页" else "离线打开", primary = true) { offline(record) }
-                    TextAction({ dialogs.confirm("删除这份下载？", "删除", "将删除已下载图页。") { act("disk:${record.site}:${record.id}") {
-                        val book = app.galleryDownloads.task(record.video)
-                        if (book != null) app.galleryDownloads.remove(book.id) else withContext(Dispatchers.IO) {
-                            app.galleries.removeDownload(record.video); app.index.forgetComic(record.site, record.id)
+                listOf(state, record.detail, downloadSize(record.bytes)).filter { it.isNotBlank() }.joinToString(" · "),
+                menu = if (available) {
+                    {
+                        DownloadMenuItem("删除") {
+                            dialogs.confirm("删除这份下载？", "删除", "将删除已下载图页。") {
+                                act("disk:${record.site}:${record.id}") {
+                                    val book = app.galleryDownloads.task(record.video)
+                                    if (book != null) app.galleryDownloads.remove(book.id) else withContext(Dispatchers.IO) {
+                                        app.galleries.removeDownload(record.video)
+                                        app.index.forgetComic(record.site, record.id)
+                                    }
+                                }
+                            }
                         }
-                    } } }) { Text("删除") }
-                } else Action("重新下载") { video(record.video.copy(mediaKind = MediaKind.GALLERY), null, null) }
+                    }
+                } else null) {
+                if (available) Action(if (record.intactSelection.isNotEmpty()) "查看已存页" else "离线打开", primary = true) { offline(record) }
+                else Action("重新下载", primary = true) { video(record.video.copy(mediaKind = MediaKind.GALLERY), null, null) }
             }
         }
         items(videos, key = { "video:${it.first.request.id}" }) { (task, meta) ->
@@ -415,17 +473,24 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
             val bytes = progress?.bytes ?: task.bytesDownloaded
             val percent = progress?.percent ?: task.percentDownloaded
             val state = when (task.state) {
-                Download.STATE_COMPLETED -> if (damaged) DamagedDownload else "已下载 · 可离线播放"
-                Download.STATE_DOWNLOADING -> "下载中 ${percent.coerceAtLeast(0f).toInt()}%"
+                Download.STATE_COMPLETED -> if (damaged) DamagedDownload else "已完成"
+                Download.STATE_DOWNLOADING -> "下载中" + if (percent >= 0f) " · ${percent.toInt()}%" else ""
                 Download.STATE_STOPPED -> "已暂停"
                 Download.STATE_FAILED -> "下载失败"
-                else -> "等待下载 / 网络"
+                else -> "等待下载"
             }
             DownloadTile("video:${task.request.id}", meta.video, "视频 · ${meta.quality}",
                 if (damaged) state else "$state · ${downloadSize(bytes)}",
-                percent.takeIf { !damaged && it >= 0 }?.div(100f)) {
-                Action(if (completed) "离线播放" else if (damaged) "重新下载" else if (failed) "重试" else if (paused) "继续" else "暂停",
-                    primary = completed, enabled = !retrying && task.request.id !in busy) {
+                percent.takeIf { !completed && !damaged && it >= 0 }?.div(100f),
+                menu = {
+                    DownloadMenuItem("删除", enabled = task.request.id !in busy) {
+                        dialogs.confirm("删除这份视频下载？", "删除", "观看记录和收藏会保留。") {
+                            act(task.request.id) { app.playback.remove(task.request.id) }
+                        }
+                    }
+                }) {
+                Action(if (completed) "离线打开" else if (damaged) "重新下载" else if (failed) "重试" else if (paused) "继续" else "暂停",
+                    primary = completed || damaged || failed || paused, enabled = !retrying && task.request.id !in busy) {
                     if (completed) video(meta.video, task.request.id, null)
                     else act(task.request.id) {
                         if (task.state == Download.STATE_FAILED) app.playback.retryFailed(task.request.id)
@@ -433,38 +498,44 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
                         else app.playback.pause(task.request.id, !paused)
                     }
                 }
-                TextAction({ dialogs.confirm("删除这份视频下载？", "删除", "观看记录和收藏会保留。") { act(task.request.id) { app.playback.remove(task.request.id) } } },
-                    enabled = task.request.id !in busy) { Text("删除") }
             }
         }
         items(diskVideos, key = { "disk-video:${it.site}:${it.id}:${it.quality}" }) { record ->
             val available = record.offlineReady
+            val id = "disk:${record.cacheKey}"
             DownloadTile("disk-video:${record.site}:${record.id}:${record.quality}", record.video,
                 "视频 · ${record.quality} · ${if (record.sourceRoot == app.filesDir.absolutePath) "应用内" else "公共目录"}",
-                (if (available) "可离线播放" else DamagedDownload) + " · ${downloadSize(record.bytes)}") {
-                if (available) Action("离线播放", primary = true) { offline(record) }
-                else {
-                    val id = "disk:${record.cacheKey}"
-                    if (record.url.isNotBlank()) Action("重新下载", enabled = id !in busy) {
-                        act(id) { app.playback.redownloadDamaged(record.video, record.quality) }
+                (if (available) "已完成" else DamagedDownload) + " · ${downloadSize(record.bytes)}",
+                menu = {
+                    if (available) DownloadMenuItem("删除") {
+                        dialogs.confirm("删除这份视频下载？", "删除", "将删除所有下载位置中的这份视频，观看记录和收藏会保留。") {
+                            act(id) { app.playback.removeRestored(record) }
+                        }
+                    } else DownloadMenuItem("删除索引", enabled = id !in busy) {
+                        act(id) { withContext(Dispatchers.IO) { app.index.removeVideo(record.site, record.id, record.quality) } }
                     }
-                    TextAction({ act(id) { withContext(Dispatchers.IO) { app.index.removeVideo(record.site, record.id, record.quality) } } },
-                        enabled = id !in busy) { Text("删除索引") }
+                }) {
+                if (available) Action("离线打开", primary = true) { offline(record) }
+                else if (record.url.isNotBlank()) Action("重新下载", primary = true, enabled = id !in busy) {
+                    act(id) { app.playback.redownloadDamaged(record.video, record.quality) }
                 }
-                if (available) TextAction({ dialogs.confirm("删除这份视频下载？", "删除", "将删除所有下载位置中的这份视频，观看记录和收藏会保留。") {
-                    act("disk:${record.site}:${record.id}") { app.playback.removeRestored(record) }
-                } }) { Text("删除") }
             }
         }
         items(legacy, key = { "legacy:${it.site}:${it.id}" }) { local ->
             val entry = Video(local.id, local.title, app.library.watch(local.id, local.site)?.path.orEmpty(), local.thumb, site = local.site)
-            DownloadTile("legacy:${local.site}:${local.id}", entry, "视频 · ${local.quality}", "已下载 · 旧版本离线文件") {
-                Action("离线播放", primary = true) { video(entry, null, local.path) }
-                TextAction({ dialogs.confirm("删除这份视频下载？", "删除") { act("legacy:${local.site}:${local.id}") { withContext(Dispatchers.IO) { app.library.removeLocal(local.id, local.site) } } } }) { Text("删除") }
+            DownloadTile("legacy:${local.site}:${local.id}", entry, "视频 · ${local.quality}", "已完成 · 旧版本离线文件",
+                menu = {
+                    DownloadMenuItem("删除") {
+                        dialogs.confirm("删除这份视频下载？", "删除") {
+                            act("legacy:${local.site}:${local.id}") { withContext(Dispatchers.IO) { app.library.removeLocal(local.id, local.site) } }
+                        }
+                    }
+                }) {
+                Action("离线打开", primary = true) { video(entry, null, local.path) }
             }
         }
         if (ready) item("storage") {
-            HorizontalDivider(color = RaisedColor)
+            if (count == 0) HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("存储位置", style = MaterialTheme.typography.titleSmall)
@@ -477,12 +548,44 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
     }
 }
 
+@Composable private fun DownloadMenu(
+    label: String,
+    icon: Int,
+    iconOnly: Boolean = false,
+    items: @Composable DownloadMenuScope.() -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        if (iconOnly) IconAction(icon, label) { open = true }
+        else TextAction({ open = true }) {
+            Text(label)
+            Spacer(Modifier.width(4.dp))
+            Glyph(icon, null, Modifier.size(16.dp))
+        }
+        DropdownMenu(open, { open = false }, shape = ArtworkShape, containerColor = MaterialTheme.colorScheme.surface) {
+            DownloadMenuScope { open = false }.items()
+        }
+    }
+}
+
+private class DownloadMenuScope(private val close: () -> Unit) {
+    @Composable fun DownloadMenuItem(label: String, enabled: Boolean = true, selected: () -> Unit) {
+        DropdownMenuItem(text = { Text(label) }, onClick = { close(); selected() }, enabled = enabled)
+    }
+}
+
 @Composable private fun DownloadTile(id: String, entry: Video, type: String, status: String, progress: Float? = null,
-    error: String = "", details: @Composable ColumnScope.() -> Unit = {}, actions: @Composable FlowRowScope.() -> Unit) {
+    error: String = "", menu: (@Composable DownloadMenuScope.() -> Unit)? = null,
+    details: @Composable ColumnScope.() -> Unit = {}, actions: @Composable FlowRowScope.() -> Unit) {
     val site = SiteRegistry.byIdOrDefault(entry.site)
-    Column(Modifier.fillMaxWidth().testTag("download-$id"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            SiteImage(entry.thumb, site, Modifier.size(66.dp, 76.dp).clip(RentalShape))
+    val colors = MaterialTheme.colorScheme
+    val coverWidth = 66.dp
+    val coverGap = 12.dp
+    Column(Modifier.fillMaxWidth().testTag("download-$id").artworkPanel().padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(coverGap), verticalAlignment = Alignment.CenterVertically) {
+            SiteImage(entry.thumb, site, Modifier.size(coverWidth, 76.dp).clip(ArtworkShape),
+                fit = entry.mediaKind == MediaKind.GALLERY)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(entry.title.ifBlank { "未命名内容" }, style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -490,15 +593,17 @@ private data class VideoTransferProgress(val bytes: Long, val percent: Float)
                 Text(status, style = MaterialTheme.typography.bodyMedium)
                 if (progress != null) {
                     LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth().height(4.dp), color = BrandColor, trackColor = RentalEdge,
+                        modifier = Modifier.fillMaxWidth().height(4.dp), color = colors.primary, trackColor = colors.outline,
                         gapSize = 0.dp, drawStopIndicator = {})
                 }
             }
         }
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         details()
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), content = actions)
-        HorizontalDivider(color = RaisedColor)
+        Row(Modifier.fillMaxWidth().padding(start = coverWidth + coverGap), verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp), content = actions)
+            if (menu != null) DownloadMenu("${entry.title} 的任务操作", R.drawable.ic_more, iconOnly = true, items = menu)
+        }
     }
 }
 
@@ -522,4 +627,4 @@ private fun downloadFailure(failure: GalleryFailureKind?) = when (failure) {
     GalleryFailureKind.UNKNOWN, null -> "无分类错误"
 }
 
-private fun downloadSize(bytes: Long): String = if (bytes < 1024 * 1024) "${bytes / 1024} KB" else "${bytes / (1024 * 1024)} MB"
+private fun downloadSize(bytes: Long): String = if (bytes < 1024 * 1024) "${bytes / 1024}\u00A0KB" else "${bytes / (1024 * 1024)}\u00A0MB"

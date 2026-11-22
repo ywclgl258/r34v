@@ -105,8 +105,9 @@ fun ComposeDialogs.advancedSearch(app: R34Application, initial: SearchCondition,
                 }
                 if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
             }
-        }, shape = RoundedCornerShape(6.dp), containerColor = RentalInk, titleContentColor = RentalPaper,
-            textContentColor = RentalMuted, tonalElevation = 0.dp, confirmButton = {
+        }, shape = ArtworkShape, containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurfaceVariant, tonalElevation = 0.dp, confirmButton = {
             Row {
                 if (condition != SearchCondition()) TextAction({ condition = SearchCondition(); error = "" }) { Text("清空条件") }
                 Action("应用条件", primary = true) {
@@ -122,17 +123,19 @@ private val contentFilterFields = setOf(FilterField.BRAND, FilterField.CATEGORY,
 
 @Composable
 internal fun rentalSearchFieldColors(paper: Boolean = false): TextFieldColors {
-    val stock = if (paper) RentalPaper else RentalSurface
-    val ink = if (paper) RentalInk else RentalPaper
-    val label = if (paper) RentalInk.copy(alpha = .76f) else RentalMuted
+    val palette = LocalArtworkPalette.current
+    val stock = palette?.surface ?: if (paper) RentalPaper else RentalSurface
+    val ink = palette?.ink ?: if (paper) RentalInk else RentalPaper
+    val label = palette?.muted ?: if (paper) RentalInk.copy(alpha = .76f) else RentalMuted
+    val error = if (palette == null) RentalRed else MaterialTheme.colorScheme.error
     return TextFieldDefaults.colors(
         focusedContainerColor = stock, unfocusedContainerColor = stock, errorContainerColor = stock,
         focusedTextColor = ink, unfocusedTextColor = ink, errorTextColor = ink,
         focusedLabelColor = ink, unfocusedLabelColor = label, errorLabelColor = ink,
         focusedLeadingIconColor = ink, unfocusedLeadingIconColor = ink, errorLeadingIconColor = ink,
         focusedTrailingIconColor = ink, unfocusedTrailingIconColor = ink, errorTrailingIconColor = ink,
-        focusedIndicatorColor = RentalRed, unfocusedIndicatorColor = RentalEdge, errorIndicatorColor = RentalRed,
-        errorSupportingTextColor = RentalRed, cursorColor = ink, errorCursorColor = ink,
+        focusedIndicatorColor = palette?.accent ?: RentalRed, unfocusedIndicatorColor = palette?.edge ?: RentalEdge, errorIndicatorColor = error,
+        errorSupportingTextColor = error, cursorColor = ink, errorCursorColor = ink,
         selectionColors = TextSelectionColors(ink, ink.copy(alpha = .23f)),
     )
 }
@@ -141,7 +144,8 @@ internal fun rentalSearchFieldColors(paper: Boolean = false): TextFieldColors {
 private fun SearchFilterField(label: String, value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default, keyboardActions: KeyboardActions = KeyboardActions.Default) {
     TextField(value, onValueChange, modifier, label = { Text(label) }, singleLine = true,
-        shape = RoundedCornerShape(4.dp), colors = rentalSearchFieldColors(), keyboardOptions = keyboardOptions, keyboardActions = keyboardActions)
+        shape = if (LocalArtworkPalette.current == null) RoundedCornerShape(4.dp) else ArtworkShape,
+        colors = rentalSearchFieldColors(), keyboardOptions = keyboardOptions, keyboardActions = keyboardActions)
 }
 
 @Composable

@@ -22,36 +22,57 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
+@Composable internal fun rememberSmallGalleryPage(
+    page: Int,
+    size: Int,
+    permits: Semaphore,
+    load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage,
+): Pair<Bitmap?, Boolean> {
+    val loader by rememberUpdatedState(load)
+    var bitmap by remember(page, size) { mutableStateOf<Bitmap?>(null) }
+    var failed by remember(page, size) { mutableStateOf(false) }
+    LaunchedEffect(page, size) {
+        try {
+            bitmap = permits.withPermit {
+                val full = loader(page, false).bitmap
+                withContext(Dispatchers.Default) {
+                    val scale = minOf(1f, size.toFloat() / maxOf(full.width, full.height))
+                    full.scale((full.width * scale).toInt().coerceAtLeast(1), (full.height * scale).toInt().coerceAtLeast(1), true)
+                        .also { if (it !== full) full.recycle() }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            failed = true
+        }
+    }
+    return bitmap to failed
+}
+
 @Composable fun ReaderThumbnails(count: Int, current: Int, load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage, dismiss: () -> Unit, choose: (Int) -> Unit) {
     val permits = remember { Semaphore(2) }
     val grid = rememberLazyGridState((current - 1).coerceAtLeast(0))
+    val colors = MaterialTheme.colorScheme
     AlertDialog(dismiss, title = { Text("页面总览 · $current / $count") }, text = {
         LazyVerticalGrid(GridCells.Adaptive(84.dp), Modifier.fillMaxWidth().heightIn(max = 440.dp), state = grid, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(count, key = { it }) { index ->
-                var bitmap by remember(index) { mutableStateOf<Bitmap?>(null) }
-                var failed by remember(index) { mutableStateOf(false) }
-                LaunchedEffect(index) { try {
-                    bitmap = permits.withPermit {
-                        val full = load(index + 1, false).bitmap
-                        withContext(Dispatchers.Default) {
-                            val scale = minOf(1f, 240f / maxOf(full.width, full.height))
-                            full.scale((full.width * scale).toInt().coerceAtLeast(1), (full.height * scale).toInt().coerceAtLeast(1), true).also { if (it !== full) full.recycle() }
-                        }
-                    }
-                } catch (e: Exception) { if (e is CancellationException) throw e; failed = true } }
+                val (bitmap, failed) = rememberSmallGalleryPage(index + 1, 240, permits, load)
                 val selected = index + 1 == current
-                Column(Modifier.fillMaxWidth().clip(RentalShape).background(if (selected) RentalPaper else RentalSurface)
-                    .border(1.dp, if (selected) RentalPaper else RentalEdge, RentalShape)
+                Column(Modifier.fillMaxWidth().clip(ArtworkShape).background(if (selected) colors.primary else colors.surfaceVariant)
+                    .border(1.dp, if (selected) colors.primary else colors.outline, ArtworkShape)
                     .selectable(selected, role = Role.RadioButton) { choose(index + 1) }.padding(5.dp)
                     .semantics { contentDescription = "跳到第 ${index + 1} 页" }, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(Modifier.fillMaxWidth().aspectRatio(.7f).background(RentalInk), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxWidth().aspectRatio(.7f).clip(ArtworkShape).background(colors.background),
+                        contentAlignment = Alignment.Center) {
                         bitmap?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
                             ?: Copy(if (failed) "暂不可用" else "加载中")
                     }
-                    Text("第 ${index + 1} 页", Modifier.padding(top = 4.dp), color = if (selected) RentalInk else RentalMuted,
+                    Text("第 ${index + 1} 页", Modifier.padding(top = 4.dp), color = if (selected) colors.onPrimary else colors.onSurface,
                         style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
-    }, confirmButton = { TextAction(dismiss) { Text("关闭") } })
+    }, shape = ArtworkShape, containerColor = colors.surfaceContainer,
+        confirmButton = { TextAction(dismiss) { Text("关闭") } })
 }

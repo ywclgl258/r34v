@@ -13,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Text
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.semantics.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -54,7 +55,9 @@ class SiteAuthActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent { R34Theme {
-            Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
+            val palette = remember(site) { artworkPalette(site.category) }
+            ArtworkColors(palette) {
+            Column(Modifier.fillMaxSize().artworkBackground(palette).safeDrawingPadding().imePadding()) {
                 Row(verticalAlignment = Alignment.CenterVertically) { IconAction(R.drawable.ic_back, "取消登录") { finish() }; Title("${site.name} 官方登录") }
                 Copy("在官方论坛完成登录后，应用会验证本站权限。ExHentai 仍要求账号具备访问资格。", Modifier.padding(16.dp))
                 Copy(status, Modifier.padding(horizontal = 16.dp).semantics { liveRegion = LiveRegionMode.Polite })
@@ -65,8 +68,9 @@ class SiteAuthActivity : ComponentActivity() {
                     TextAction({ openedTarget = false; verificationMessage = false; cookies?.removeAllCookies { browser?.loadUrl(EhLogin.officialUrl) } }, enabled = !verifying) { Text("重新登录") }
                     TextAction({ runCatching { startActivity(Intent(Intent.ACTION_VIEW, EhLogin.officialUrl.toUri())) }.onFailure { toast("没有可用浏览器，请更新系统 WebView 或导入 Cookie") } }) { Text("用浏览器打开") }
                 }
-                HorizontalDivider(color = RentalEdge)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                 AndroidView(factory = { context -> FrameLayout(context).apply { createBrowser()?.let { addView(it, FrameLayout.LayoutParams(-1, -1)) } } }, modifier = Modifier.fillMaxWidth().weight(1f), onRelease = { releaseBrowser() })
+            }
             }
         } }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

@@ -24,14 +24,23 @@ class NewFeaturesUiTest : ComposeUiCase() {
     private fun ready(f: ComposeFixture, activity: PlayerActivity) { ui.waitUntil(20000) { var result = false; f.ins.runOnMainSync { result = engine(activity)?.playbackState == Player.STATE_READY }; result } }
 
     @Test fun crossSiteSearchShowsSuccessfulResultsWhenAnotherSiteFails() = ComposeFixture().use { f ->
+        val finishSlowSource = CompletableDeferred<Unit>()
         f.app.library.set("cross_search_sites", "r34v,hanime1")
         f.feedOverride = { site, request -> if (request.kind != FeedKind.SEARCH) null else {
-            if (site == "hanime1") throw IOException("这个来源暂时不可用")
+            if (site == "hanime1") {
+                finishSlowSource.await()
+                throw IOException("这个来源暂时不可用")
+            }
             FeedPage(listOf(f.video(site).copy(title = "跨站搜索成功结果")), request.page, 2, "search")
         } }
-        f.launch(); waitHome(); clickText("搜索"); clickText("多个站点")
-        ui.onNode(hasSetTextAction()).performTextInput("test query"); ui.onNodeWithContentDescription("提交搜索").performClick()
-        waitText("跨站搜索成功结果")
+        try {
+            f.launch(); waitHome(); clickText("搜索"); clickText("多个站点")
+            ui.onNode(hasSetTextAction()).performTextInput("test query"); ui.onNodeWithContentDescription("提交搜索").performClick()
+            waitText("跨站搜索成功结果")
+            ui.onNodeWithText("已加载 1 项 · 正在搜索 1 个来源").assertIsDisplayed()
+        } finally {
+            finishSlowSource.complete(Unit)
+        }
         ui.onNodeWithTag("cross-search-results").performScrollToNode(hasText("这个来源暂时不可用")); waitText("这个来源暂时不可用")
         assertEquals("r34v", f.app.library.siteId)
         assertTrue(f.requests.any { it.first == "hanime1" && it.second.kind == FeedKind.SEARCH })
@@ -154,6 +163,14 @@ class NewFeaturesUiTest : ComposeUiCase() {
         f.launch(); waitHome(); ui.onNodeWithContentDescription("设置").performClick()
         ui.onNodeWithText("备份与恢复").performScrollTo().performClick(); waitText("选择位置并导出")
         ui.onNodeWithText("选择位置并导出").assertIsNotEnabled()
+        ui.onNode(hasSetTextAction() and hasText("备份密码")).performTextReplacement("fixture1")
+        val confirmation = ui.onNode(hasSetTextAction() and hasText("再次输入密码"))
+        confirmation.performTextReplacement("fixture2")
+        ui.onNodeWithText("两次输入的密码不一致").assertIsDisplayed()
+        ui.onNodeWithText("选择位置并导出").assertIsNotEnabled()
+        confirmation.performTextReplacement("fixture1")
+        ui.onNodeWithText("两次输入的密码不一致").assertDoesNotExist()
+        ui.onNodeWithText("选择位置并导出").assertIsEnabled()
         clickText("恢复备份"); waitText("选择备份文件"); ui.onNodeWithText("选择备份文件").assertIsEnabled()
         f.shot("features-backup")
     }
@@ -206,12 +223,15 @@ class NewFeaturesUiTest : ComposeUiCase() {
         if (android.os.Build.VERSION.SDK_INT >= 33) f.ins.uiAutomation.executeShellCommand("pm grant ${f.ins.targetContext.packageName} android.permission.POST_NOTIFICATIONS").close()
         f.launchDownloads(); waitText("下载中心"); f.imageDelayMillis = 2500
         runBlocking { f.app.galleryDownloads.add(f.video("ehentai")); f.app.galleryDownloads.add(f.video("nhentai")) }
-        waitText("批量管理"); ui.onNodeWithTag("download-center").performScrollToNode(hasText("批量管理")); clickText("批量管理"); clickText("暂停所选")
+        ui.onNodeWithTag("download-center").performScrollToNode(hasText("下载管理"))
+        clickText("下载管理"); clickText("批量管理"); clickText("暂停所选")
         try { ui.waitUntil(15000) { f.app.galleryDownloads.tasks().filter { it.entry.id == f.video("ehentai").id }.let { it.size == 2 && it.all { book -> book.state == GalleryDownloadState.PAUSED } } } }
         catch (e: Throwable) { println("Batch pause state: ${f.app.galleryDownloads.tasks().map { it.id to it.state }}"); f.shot("batch-pause-timeout"); throw e }
-        ui.onNodeWithTag("download-center").performScrollToNode(hasText("批量管理")); clickText("批量管理"); clickText("继续所选")
+        ui.onNodeWithTag("download-center").performScrollToNode(hasText("下载管理"))
+        clickText("下载管理"); clickText("批量管理"); clickText("继续所选")
         ui.waitUntil(10000) { f.app.galleryDownloads.tasks().filter { it.entry.id == f.video("ehentai").id }.all { it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING) } }
-        ui.onNodeWithTag("download-center").performScrollToNode(hasText("任意网络")); clickText("任意网络"); clickText("仅非计费网络")
+        ui.onNodeWithTag("download-center").performScrollToNode(hasText("下载管理"))
+        clickText("下载管理"); clickText("网络条件 · 任意网络"); clickText("仅非计费网络")
         ui.waitUntil(5000) { f.app.library.bool("download_unmetered") }
         f.shot("features-batch-downloads")
     }

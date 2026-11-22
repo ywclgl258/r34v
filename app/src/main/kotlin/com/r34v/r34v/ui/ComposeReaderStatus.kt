@@ -40,10 +40,11 @@ import java.util.Date
         "电量 $battery%".takeIf { value.showBattery && battery in 0..100 },
         "$page / $total".takeIf { value.showPage }, "${page * 100 / total.coerceAtLeast(1)}%".takeIf { value.showProgress })
     if (parts.isEmpty()) return
+    val colors = MaterialTheme.colorScheme
     val opacity = if (LocalReduceTransparency.current) 1f else .84f
     Text(parts.joinToString("  ·  "), modifier.padding(end = 12.dp, bottom = 10.dp).testTag("reader-status")
-        .clip(RentalShape).background(RentalInk.copy(alpha = opacity)).padding(horizontal = 10.dp, vertical = 5.dp),
-        color = RentalPaper, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, style = MaterialTheme.typography.labelMedium)
+        .clip(ArtworkPill).background(colors.background.copy(alpha = opacity)).padding(horizontal = 10.dp, vertical = 5.dp),
+        color = colors.onBackground, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, style = MaterialTheme.typography.labelMedium)
 }
 
 fun readerStatusOptions(dialogs: ComposeDialogs, current: ReadingBehavior, save: (ReadingBehavior) -> Unit) {

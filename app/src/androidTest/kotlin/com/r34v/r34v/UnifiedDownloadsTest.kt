@@ -152,19 +152,67 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         val clip = f.video("r34v")
         f.launchPlayer(); ui.waitUntil(15000) { ui.onAllNodesWithText("下载").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithText("下载").performScrollTo().performClick(); waitText("选择下载清晰度"); clickText("720p")
-        ui.waitUntil(20000) { f.app.playback.downloads().any { f.app.playback.metadata(it)?.video?.id == f.video().id } }
-        f.app.library.switchSite("exhentai"); f.launchDownloads(); waitText("下载中心")
-        ui.onNodeWithText("全部内容").assertExists(); ui.onNodeWithText("图页缓存").assertDoesNotExist()
-        ui.onNodeWithTag("download-center").performScrollToNode(hasTestTag("download-gallery:${task(f, "exhentai")!!.id}"))
-        ui.onNodeWithTag("download-gallery:${task(f, "exhentai")!!.id}").assertExists()
-        ui.onNodeWithTag("download-center").performScrollToIndex(0)
+        val clipId = f.app.playback.key(clip, "720p")
+        ui.waitUntil(20000) { f.app.playback.downloads().any { it.request.id == clipId && it.state == Download.STATE_COMPLETED } }
+        f.app.library.switchSite("exhentai")
+        val downloads = f.launchDownloads()
+        waitText("下载中心")
+        ui.onNodeWithText("全部内容").assertDoesNotExist()
+        ui.onNodeWithText("图页缓存").assertDoesNotExist()
+        val center = ui.onNodeWithTag("download-center")
+        val bookTag = hasTestTag("download-gallery:${task(f, "exhentai")!!.id}")
+        center.performScrollToNode(bookTag)
+        ui.onNode(bookTag).assertExists()
+        center.performScrollToIndex(0)
+        // Let the system toast from adding the MP4 leave the comparison frame.
+        android.os.SystemClock.sleep(2200)
         f.shot("22-unified-downloads")
-        ui.onNode(hasText("视频", substring = false) and hasAnyAncestor(hasTestTag("download-center"))).performClick()
-        val clipTag = "download-video:${f.app.playback.key(clip, "720p")}"
-        ui.onNodeWithTag("download-center").performScrollToNode(hasTestTag(clipTag))
-        ui.onNodeWithTag(clipTag).assertIsDisplayed()
+        clickText("筛选")
+        clickText("全部内容")
+        waitText("下载类型")
+        clickText("视频")
+        clickText("筛选 · 1")
+        val clipTag = hasTestTag("download-video:$clipId")
+        center.performScrollToNode(clipTag)
+        ui.onNode(clipTag).assertIsDisplayed()
+        ui.onNode(bookTag).assertDoesNotExist()
         f.shot("23-video-downloads")
-        runBlocking { f.app.playback.downloads().filter { f.app.playback.metadata(it)?.video?.id == f.video("r34v").id }.forEach { f.app.playback.remove(it.request.id) } }
+
+        val imageRequests = f.imageRequests.size
+        val galleryCalls = f.galleryCalls.size
+        f.videoStatus = 503
+        f.offline = true
+        try {
+            repeat(3) {
+                ui.onNode(hasAnyAncestor(clipTag) and hasText("离线打开")).performClick()
+                waitForDecodedVideo(f)
+                back(f)
+                // The system Back action can outlive Compose and accessibility becoming idle.
+                ui.waitUntil(10000) {
+                    var returned = false
+                    f.ins.runOnMainSync { returned = downloads.hasWindowFocus() }
+                    returned && center.isDisplayed()
+                }
+                ui.onNodeWithText("清空筛选").assertExists()
+                center.performScrollToNode(clipTag)
+                ui.onNode(clipTag).assertIsDisplayed()
+            }
+            center.performScrollToIndex(0)
+            clickText("清空筛选")
+            ui.onNodeWithText("筛选 · 1").assertDoesNotExist()
+            clickText("筛选"); clickText("全部站点"); waitText("下载来源")
+            val sheetOption = hasText(SiteRegistry.EXHENTAI.name) and hasClickAction() and !hasTestTag("site-entry-exhentai")
+            ui.onNode(sheetOption).performScrollTo().assertIsDisplayed().performClick()
+            clickText("筛选 · 1")
+            ui.onNode(clipTag).assertDoesNotExist()
+            center.performScrollToNode(bookTag)
+            ui.onNode(hasAnyAncestor(bookTag) and hasText("离线打开")).performClick()
+            ui.waitUntil(15000) { ui.onAllNodesWithTag("reader-page-1").fetchSemanticsNodes().isNotEmpty() }
+            assertEquals(galleryCalls, f.galleryCalls.size)
+            assertEquals(imageRequests, f.imageRequests.size)
+        } finally {
+            f.ins.runOnMainSync { f.app.playback.remove(clipId) }
+        }
     }
 
     @Test fun backgroundDownloadAndTimeoutKeepSavedPages() = ComposeFixture().use { f ->

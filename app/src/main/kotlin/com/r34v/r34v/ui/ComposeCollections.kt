@@ -109,8 +109,7 @@ fun ComposeDialogs.selectVideos(videos: List<Video>, action: (List<Video>) -> Un
         if (previousView != (shelf.id to view)) { listState.scrollToItem(0); previousView = shelf.id to view }
     }
     Column(Modifier.fillMaxSize().then(if (shortWindow) Modifier.verticalScroll(rememberScrollState()) else Modifier), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        val jacket = RoundedCornerShape(4.dp)
-        Row(Modifier.fillMaxWidth().background(RentalSurface, jacket).border(1.dp, RentalEdge, jacket),
+        Row(Modifier.fillMaxWidth().artworkPanel(),
             verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) IconAction(com.r34v.r34v.R.drawable.ic_back, "返回我的片库", click = onBack)
             TextAction({ val choices = shelves.displayOrder(); dialogs.choose("切换片单", choices.map { it.name }, choices.indexOf(shelf)) { selected = choices[it].id } }, Modifier.weight(1f)) { Title(shelf.name, Modifier.weight(1f), true); Glyph(com.r34v.r34v.R.drawable.ic_chevron_down, null) }
@@ -119,7 +118,8 @@ fun ComposeDialogs.selectVideos(videos: List<Video>, action: (List<Video>) -> Un
         }
         if (searching) TextField(query, { query = it.take(200) }, Modifier.fillMaxWidth(), label = { Text("片单内标题或来源") }, singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { keyboard?.hide(); focus.clearFocus() }),
-            trailingIcon = { if (query.isNotEmpty()) IconAction(com.r34v.r34v.R.drawable.ic_close, "清空片单搜索") { query = "" } }, colors = filledFieldColors())
+            trailingIcon = { if (query.isNotEmpty()) IconAction(com.r34v.r34v.R.drawable.ic_close, "清空片单搜索") { query = "" } },
+            shape = ArtworkShape, colors = rentalSearchFieldColors())
         Copy("${entries.size} / ${shelf.entries.size} 部 · ${listOf("全部", "未完成", "已完成")[status]} · ${order.title}")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!queryEditing) TextAction({ editing = true }) { Text("合集设置") }

@@ -21,6 +21,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -43,12 +45,14 @@ import kotlinx.coroutines.launch
 @Composable fun Modifier.cinemaGlass(radius: Int = 16): Modifier = liquidSurface(radius)
 
 @Composable fun BrandWordmark() {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-        Text("R34V", color = RentalPaper, fontSize = if (LocalUiDensity.current.compact) 24.sp else 29.sp,
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Serif, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-            fontWeight = FontWeight.Black, letterSpacing = (-1.3).sp)
-        RentalStripes(Modifier.size(24.dp, 16.dp))
-    }
+    val palette = LocalArtworkPalette.current ?: artworkPalette(SiteCategory.VIDEO)
+    Text(androidx.compose.ui.text.buildAnnotatedString {
+        append("R34")
+        pushStyle(androidx.compose.ui.text.SpanStyle(color = palette.accent))
+        append("V")
+        pop()
+    }, color = palette.ink, fontSize = if (LocalUiDensity.current.compact) 24.sp else 29.sp,
+        fontWeight = FontWeight.Black, letterSpacing = (-1.6).sp)
 }
 
 @Composable fun ProfileAction(click: () -> Unit) {
@@ -56,37 +60,67 @@ import kotlinx.coroutines.launch
 }
 
 @Composable fun CinemaNavigation(selectedTab: String, choose: (String) -> Unit) {
-    val landscape = windowSizeDp().width > windowSizeDp().height
     val compact = LocalUiDensity.current.compact
     val motion = LocalMotionEnabled.current
-    val tabs = listOf(Triple("siteHome", "首页", R.drawable.ic_home), Triple("explore", "发现", R.drawable.ic_explore),
-        Triple("search", "搜索", R.drawable.ic_search), Triple("library", "片库", R.drawable.ic_bookmark), Triple("home", "我的", R.drawable.ic_person))
-    val tabHeight = ((if (compact || landscape) 54 else 66) + ((LocalDensity.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp
-    Column(Modifier.fillMaxWidth().background(RentalInk).navigationBarsPadding().testTag("primary-navigation"),
+    val palette = LocalArtworkPalette.current ?: artworkPalette(SiteCategory.VIDEO)
+    val animation = if (motion) tween<Color>(330, easing = FastOutSlowInEasing) else snap()
+    val shellTop = animateColorAsState(lerp(palette.raised, palette.ink, .08f),
+        animation, label = "dockShellTop")
+    val shellBase = animateColorAsState(lerp(palette.surface, palette.bottom, .45f),
+        animation, label = "dockShellBase")
+    val trayTop = animateColorAsState(lerp(palette.surface, palette.bottom, .56f),
+        animation, label = "dockTrayTop")
+    val trayBase = animateColorAsState(lerp(palette.surface, palette.bottom, .75f),
+        animation, label = "dockTrayBase")
+    val activeTop = animateColorAsState(lerp(palette.top, palette.accent, .40f),
+        animation, label = "dockActiveTop")
+    val activeBase = animateColorAsState(lerp(palette.middle, palette.accent, .27f),
+        animation, label = "dockActiveBase")
+    val tabs = listOf(Triple("siteHome", "首页", R.drawable.ic_dock_home), Triple("explore", "发现", R.drawable.ic_dock_discover),
+        Triple("search", "搜索", R.drawable.ic_dock_search), Triple("library", "片库", R.drawable.ic_dock_library), Triple("home", "我的", R.drawable.ic_person))
+    val tabHeight = (48 + ((LocalDensity.current.fontScale - 1f).coerceAtLeast(0f) * 20)).dp
+    val shape = ArtworkPill
+    val reduced = LocalReduceTransparency.current
+    val edge = if (reduced) palette.edge else palette.ink.copy(alpha = .16f)
+    Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 18.dp)
+        .padding(top = 8.dp, bottom = 7.dp).testTag("primary-navigation"),
         horizontalAlignment = Alignment.CenterHorizontally) {
-        HorizontalDivider(color = RentalEdge.copy(alpha = .55f))
-        BoxWithConstraints(Modifier.widthIn(max = 620.dp).fillMaxWidth().height(tabHeight)) {
-            val slot = maxWidth / tabs.size
-            val index = tabs.indexOfFirst { it.first == selectedTab }
-            if (index >= 0) {
-                val markWidth = 26.dp
-                val left = animateDpAsState(slot * index + (slot - markWidth) / 2,
-                    if (motion) tween(210, easing = FastOutSlowInEasing) else snap(), label = "navigationPosition")
-                Box(Modifier.offset { androidx.compose.ui.unit.IntOffset(left.value.roundToPx(), 0) }
-                    .size(markWidth, 3.dp).background(RentalRed, RentalShape))
-            }
-            Row(Modifier.fillMaxSize().selectableGroup()) {
-                tabs.forEach { (key, name, icon) ->
-                    val selected = selectedTab == key
-                    val ink by animateColorAsState(if (selected) RentalPaper else RentalMuted,
-                        if (motion) tween(140) else snap(), label = "tabInk")
-                    Column(Modifier.weight(1f).fillMaxHeight().selectable(selected, role = Role.Tab) { choose(key) },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically)) {
-                        Icon(androidx.compose.ui.res.painterResource(icon), null, Modifier.size(if (compact) 18.dp else 21.dp),
-                            tint = if (selected) RentalRed else ink)
-                        Text(name, color = ink, style = MaterialTheme.typography.labelMedium,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
+        Box(Modifier.widthIn(max = 444.dp).fillMaxWidth()
+            .shadow(if (reduced) 0.dp else 3.dp, shape).clip(shape)
+            .drawWithCache {
+                val shell = Brush.verticalGradient(listOf(shellTop.value, shellBase.value))
+                onDrawBehind { drawRect(shell) }
+            }.border(1.dp, edge, shape).padding(4.dp)) {
+            Box(Modifier.matchParentSize().clip(shape).drawWithCache {
+                val tray = Brush.verticalGradient(listOf(trayTop.value, trayBase.value))
+                onDrawBehind { drawRect(tray) }
+            })
+            BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 4.dp).height(tabHeight)) {
+                val slot = maxWidth / tabs.size
+                val index = tabs.indexOfFirst { it.first == selectedTab }.coerceAtLeast(0)
+                val left = animateDpAsState(slot * index,
+                    if (motion) tween(200, easing = FastOutSlowInEasing) else snap(), label = "navigationPosition")
+                Box(Modifier.offset { androidx.compose.ui.unit.IntOffset(left.value.roundToPx(), 0) }.size(slot, tabHeight)
+                    .padding(horizontal = 4.dp, vertical = 3.dp).clip(shape)
+                    .drawWithCache {
+                        val fill = Brush.verticalGradient(listOf(activeTop.value, activeBase.value))
+                        onDrawBehind { drawRect(fill) }
+                    })
+                Row(Modifier.fillMaxSize().selectableGroup()) {
+                    tabs.forEach { (key, name, icon) ->
+                        val selected = selectedTab == key
+                        val interaction = remember { MutableInteractionSource() }
+                        val focused by interaction.collectIsFocusedAsState()
+                        val ink = if (selected) palette.ink else palette.muted
+                        Column(Modifier.weight(1f).fillMaxHeight().clip(shape)
+                            .selectable(selected, interactionSource = interaction, indication = LocalIndication.current, role = Role.Tab) { choose(key) }
+                            .then(if (focused) Modifier.border(2.dp, ink, shape) else Modifier)
+                            .rentalKeyPress(interaction), horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically)) {
+                            Icon(androidx.compose.ui.res.painterResource(icon), null, Modifier.size(if (compact) 18.dp else 20.dp), tint = ink)
+                            Text(name, color = ink, style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium, maxLines = 1)
+                        }
                     }
                 }
             }
@@ -105,6 +139,8 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
     automatic: Boolean,
     loadAutomatically: () -> Unit,
     toggleWaiting: (Video) -> Unit,
+    openDetails: (Video) -> Unit,
+    onFeatured: (Video) -> Unit,
 ) {
     val list = state.list
     LaunchedEffect(list) {
@@ -147,10 +183,13 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
     }
     LaunchedEffect(state, shelves) {
         snapshotFlow {
-            val visible = list.layoutInfo.visibleItemsInfo
+            // The list includes items drawn only in its top content padding. Those
+            // must not take over the work anchor from the first visible shelf.
+            val firstVisible = list.firstVisibleItemIndex
+            val visible = list.layoutInfo.visibleItemsInfo.filter { it.index >= firstVisible }
             if (state.restorePosition != null || list.isScrollInProgress || visible.isEmpty()) null
             else {
-                val atTop = list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset == 0
+                val atTop = firstVisible == 0 && list.firstVisibleItemScrollOffset == 0
                 val kept = !atTop && state.restoredWork != null && visible.any { item ->
                     (item.key as? String)?.let { shelves[it] }?.layoutInfo?.visibleItemsInfo?.any { it.key == state.restoredWork } == true
                 }
@@ -168,12 +207,19 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
     LaunchedEffect(nearEnd, videos.size, busy, error, hasNext, automatic, position) {
         if (position == null && nearEnd && hasNext && automatic && !busy && error == null) loadAutomatically()
     }
-    LazyColumn(Modifier.fillMaxSize().background(RentalInk).semantics { contentDescription = "内容列表" }, state = list,
-        contentPadding = PaddingValues(bottom = 40.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(Modifier.fillMaxSize().semantics { contentDescription = "内容列表" }, state = list,
+        contentPadding = PaddingValues(top = 8.dp, bottom = 26.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items(rows, key = { it.key }) { row ->
             when (row.key) {
-                "hero" -> CinemaHero(features, saved, play, toggleWaiting)
-                "home-inset" -> Spacer(Modifier.height(LocalSourceTopInset.current))
+                "hero" -> Column {
+                    Row(Modifier.padding(horizontal = pagePadding), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        ArtworkShortcut("精选")
+                        if (popular.isNotEmpty()) ArtworkShortcut("人气") { browse(FeedRequest(FeedKind.POPULAR)) }
+                        ArtworkShortcut("最新") { browse(FeedRequest()) }
+                    }
+                    CinemaHero(features, saved, play, toggleWaiting, openDetails, onFeatured)
+                }
+                "home-inset" -> Spacer(Modifier.height(4.dp))
                 "cached" -> Copy("当前显示离线列表缓存", Modifier.padding(horizontal = pagePadding))
                 "continue" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     CinemaShelfTitle("继续观看", Modifier.padding(horizontal = pagePadding))
@@ -188,10 +234,10 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
                         onDispose { if (shelves[row.key] == shelf) shelves.remove(row.key) }
                     }
                     when (row.key) {
-                        "popular" -> PosterShelf("人气榜 Top 10", row.works, true, { browse(FeedRequest(FeedKind.POPULAR)) }, play, favorite, shelf)
-                        "latest-0" -> PosterShelf("最新更新", row.works, false, { browse(FeedRequest()) }, play, favorite, shelf)
-                        "rated" -> PosterShelf("高分佳作", row.works, false, { browse(FeedRequest(FeedKind.RATED)) }, play, favorite, shelf)
-                        else -> PosterRow(row.works, false, play, favorite, shelf)
+                        "popular" -> PosterShelf("人气榜 Top 10", row.works, true, { browse(FeedRequest(FeedKind.POPULAR)) }, openDetails, favorite, shelf)
+                        "latest-0" -> PosterShelf("最新更新", row.works, false, { browse(FeedRequest()) }, openDetails, favorite, shelf)
+                        "rated" -> PosterShelf("高分佳作", row.works, false, { browse(FeedRequest(FeedKind.RATED)) }, openDetails, favorite, shelf)
+                        else -> PosterRow(row.works, false, openDetails, favorite, shelf)
                     }
                 }
             }
@@ -209,20 +255,17 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
 }
 
 @Composable private fun CinemaShelfTitle(title: String, modifier: Modifier = Modifier) {
-    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Spacer(Modifier.size(4.dp, 16.dp).background(RentalRed))
-        Text(title, Modifier.semantics { heading() }, color = RentalPaper, fontSize = 19.sp, lineHeight = 23.sp,
-            fontWeight = FontWeight.Black)
-    }
+    Text(title, modifier.semantics { heading() }, color = MaterialTheme.colorScheme.onSurface,
+        fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.Bold)
 }
 
 @Composable private fun ShelfHeading(title: String, more: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         CinemaShelfTitle(title, Modifier.weight(1f))
         TextAction(more, Modifier.semantics { contentDescription = "查看全部$title" }) {
-            Text("查看全部", color = RentalMuted, style = MaterialTheme.typography.labelMedium)
+            Text("查看全部", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.width(4.dp))
-            CompositionLocalProvider(LocalContentColor provides RentalMuted) {
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) {
                 Glyph(R.drawable.ic_chevron_right, null, Modifier.size(12.dp))
             }
         }
@@ -230,26 +273,26 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
 }
 
 @Composable private fun PosterShelf(title: String, videos: List<Video>, ranked: Boolean, more: () -> Unit,
-    play: (Video) -> Unit, favorite: (Video) -> Unit, state: LazyListState) {
+    openDetails: (Video) -> Unit, favorite: (Video) -> Unit, state: LazyListState) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         ShelfHeading(title, more = more)
-        PosterRow(videos, ranked, play, favorite, state)
+        PosterRow(videos, ranked, openDetails, favorite, state)
     }
 }
 
-@Composable private fun PosterRow(videos: List<Video>, ranked: Boolean, play: (Video) -> Unit, favorite: (Video) -> Unit, state: LazyListState) {
+@Composable private fun PosterRow(videos: List<Video>, ranked: Boolean, openDetails: (Video) -> Unit, favorite: (Video) -> Unit, state: LazyListState) {
     val gap = 8.dp
     val columns = if (ranked) 3 else 2
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val cardWidth = ((maxWidth - 32.dp - gap * (columns - 1)) / columns).coerceAtMost(if (ranked) 154.dp else 248.dp)
         LazyRow(state = state, contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(gap)) {
             itemsIndexed(videos, key = { _, video -> video.entryKey }) { index, video ->
-                val shape = RoundedCornerShape(if (ranked) 3.dp else 4.dp)
+                val shape = RoundedCornerShape(12.dp)
                 Box(Modifier.width(cardWidth).aspectRatio(if (ranked) .72f else 1.5f)
                     .testTag("poster-${video.site}-${video.id}").clip(shape)
-                    .combinedClickable(onClickLabel = "播放 ${video.title}", onLongClickLabel = "收藏或取消收藏 ${video.title}",
-                        onClick = { play(video) }, onLongClick = { favorite(video) })
-                    .border(1.dp, RentalEdge.copy(alpha = .4f), shape)) {
+                    .combinedClickable(onClickLabel = "查看 ${video.title} 详情", onLongClickLabel = "收藏或取消收藏 ${video.title}",
+                        onClick = { openDetails(video) }, onLongClick = { favorite(video) })
+                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = .35f), shape)) {
                     if (ranked) RankedSleeve(video, index) else LandscapeSleeve(video)
                 }
             }
@@ -258,26 +301,28 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
 }
 
 @Composable private fun RankedSleeve(video: Video, index: Int) {
+    val colors = MaterialTheme.colorScheme
     Box(Modifier.fillMaxSize()) {
         SiteImage(video.thumb, SiteRegistry.byIdOrDefault(video.site), Modifier.fillMaxSize())
         Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-            .38f to Color.Transparent, 1f to RentalInk
+            .38f to Color.Transparent, 1f to colors.background
         )))
         Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(horizontal = 8.dp, vertical = 7.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text((index + 1).toString().padStart(2, '0'), color = RentalPaper, fontSize = 23.sp,
+            Text((index + 1).toString().padStart(2, '0'), color = colors.primary, fontSize = 23.sp,
                 lineHeight = 24.sp, fontWeight = FontWeight.Black)
-            Text(video.title, color = RentalPaper, fontSize = 13.sp, lineHeight = 17.sp,
+            Text(video.title, color = colors.onBackground, fontSize = 13.sp, lineHeight = 17.sp,
                 fontWeight = FontWeight.SemiBold, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
 
 @Composable private fun LandscapeSleeve(video: Video) {
+    val colors = MaterialTheme.colorScheme
     Box(Modifier.fillMaxSize().padding(1.dp)) {
         SiteImage(video.thumb, SiteRegistry.byIdOrDefault(video.site), Modifier.fillMaxSize())
         Box(Modifier.matchParentSize().background(Brush.verticalGradient(
-            0f to Color.Transparent, .35f to Color.Transparent, 1f to RentalInk.copy(alpha = .98f)
+            0f to Color.Transparent, .35f to Color.Transparent, 1f to colors.background.copy(alpha = .98f)
         )))
         if (video.duration.isNotBlank()) Text(video.duration, Modifier.align(Alignment.TopEnd).padding(5.dp)
             .background(Color.Black.copy(alpha = .8f), RoundedCornerShape(2.dp)).padding(horizontal = 4.dp, vertical = 1.dp),
@@ -285,7 +330,7 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
         Column(Modifier.align(Alignment.BottomStart).padding(7.dp)) {
             Text(video.title, color = Color.White, fontSize = 14.sp, lineHeight = 17.sp, fontWeight = FontWeight.Bold,
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (video.rating.isNotBlank()) Text(video.rating, color = RentalPaper, fontSize = 10.sp, lineHeight = 13.sp)
+            if (video.rating.isNotBlank()) Text(video.rating, color = colors.onSurfaceVariant, fontSize = 10.sp, lineHeight = 13.sp)
         }
     }
 }
@@ -302,32 +347,17 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
             }
         }
         LinearProgressIndicator(progress = { if (watch.duration > 0) (watch.position.toFloat() / watch.duration).coerceIn(0f, 1f) else 0f },
-            modifier = Modifier.fillMaxWidth().height(2.dp), color = BrandColor, trackColor = Color.White.copy(alpha = .13f), gapSize = 0.dp, drawStopIndicator = {})
+            modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.outline, gapSize = 0.dp, drawStopIndicator = {})
         Column(Modifier.padding(top = 7.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(watch.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, lineHeight = 16.sp)
-            Text("已观看 ${watch.position / 60} 分钟", color = MutedColor, fontSize = 11.sp, lineHeight = 14.sp)
+            Text("已观看 ${watch.position / 60} 分钟", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, lineHeight = 14.sp)
         }
     }
 }
 
-@Composable private fun HeroAction(text: String, icon: Int, primary: Boolean, selected: Boolean, modifier: Modifier, click: () -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    val light = primary && !focused
-    Button(click, modifier.minimumInteractiveComponentSize().heightIn(min = 48.dp).rentalKeyPress(interaction).semantics { if (!primary) this.selected = selected },
-        shape = RoundedCornerShape(4.dp), interactionSource = interaction, elevation = null,
-        border = if (primary) null else BorderStroke(1.dp, if (selected) RentalRed else RentalEdge),
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (focused) ControlFocusColor else if (light) RentalPaper else if (selected) RentalRed else Color.Transparent,
-            contentColor = if (light || selected && !focused) RentalInk else RentalPaper)) {
-        Glyph(icon, null, Modifier.size(17.dp))
-        Spacer(Modifier.width(4.dp))
-        Text(text, fontSize = 13.sp, lineHeight = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-    }
-}
-
-@Composable fun CinemaHero(entries: List<Pair<Video, String>>, saved: Set<String>, play: (Video) -> Unit, favorite: (Video) -> Unit) {
+@Composable fun CinemaHero(entries: List<Pair<Video, String>>, saved: Set<String>, play: (Video) -> Unit,
+    favorite: (Video) -> Unit, openDetails: (Video) -> Unit, onFeatured: (Video) -> Unit) {
     val pager = rememberPagerState { entries.size }
     val scope = rememberCoroutineScope()
     var paused by rememberSaveable { mutableStateOf(false) }
@@ -343,72 +373,91 @@ private data class HomeRow(val key: String, val works: List<Video> = emptyList()
         onDispose { owner.lifecycle.removeObserver(observer); accessibility.removeTouchExplorationStateChangeListener(listener) }
     }
     val motion = LocalMotionEnabled.current
-    LaunchedEffect(paused, active, motion, touchExploration, pager.isScrollInProgress, pager.currentPage, entries) {
-        if (entries.size > 1 && !paused && active && !touchExploration && motion && !pager.isScrollInProgress) {
-            delay(6500); pager.animateScrollToPage((pager.currentPage + 1) % entries.size)
+    val palette = LocalArtworkPalette.current ?: artworkPalette(SiteCategory.VIDEO)
+    val dragging by pager.interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(dragging) { if (dragging) paused = true }
+    LaunchedEffect(entries, pager.settledPage) { entries.getOrNull(pager.settledPage)?.let { onFeatured(it.first) } }
+    LaunchedEffect(paused, active, motion, touchExploration, dragging, entries) {
+        if (entries.size <= 1 || paused || !active || touchExploration || !motion || dragging) return@LaunchedEffect
+        while (true) {
+            snapshotFlow { pager.isScrollInProgress }.first { !it }
+            delay(6500)
+            if (!pager.isScrollInProgress) {
+                pager.animateScrollToPage((pager.settledPage + 1) % entries.size, animationSpec = tween(330, easing = FastOutSlowInEasing))
+            }
         }
     }
 
     val window = windowSizeDp()
-    val artworkHeight = (window.height * .19f).dp.coerceIn(112.dp, 170.dp)
-    val shape = RoundedCornerShape(6.dp)
-    Box(Modifier.testTag("home-carousel").padding(start = 16.dp, end = 16.dp, top = LocalSourceTopInset.current + 10.dp)) {
+    val artworkHeight = (window.height * .33f).dp.coerceIn(168.dp, 305.dp)
+    Column(Modifier.testTag("home-carousel").padding(horizontal = 16.dp)) {
         HorizontalPager(pager, Modifier.fillMaxWidth().semantics { contentDescription = "首页精选轮播" },
             key = { entries[it].first.entryKey }) { index ->
             val (video, ranking) = entries[index]
             val site = SiteRegistry.byIdOrDefault(video.site)
-            Column(Modifier.fillMaxWidth().clip(shape).background(RentalSurface).border(1.dp, RentalEdge.copy(alpha = .55f), shape)) {
-                SiteImage(video.thumb, site, Modifier.fillMaxWidth().height(artworkHeight).testTag("featured-artwork"))
-                Column(Modifier.fillMaxWidth().rentalStock().padding(horizontal = 12.dp, vertical = 9.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(listOf(ranking, video.duration).filter(String::isNotBlank).joinToString(" · "),
-                            Modifier.weight(1f), color = RentalMuted, style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        RentalStripes(Modifier.size(26.dp, 10.dp))
-                    }
-                    Text(video.title, Modifier.semantics { heading() }, color = RentalPaper,
-                        fontSize = 25.sp, lineHeight = 29.sp, fontWeight = FontWeight.Black,
+            Box(Modifier.fillMaxWidth().heightIn(min = artworkHeight).clip(ArtworkShape).background(palette.bottom)) {
+                SiteImage(video.thumb, site, Modifier.matchParentSize().testTag("featured-artwork").then(
+                    if (motion) Modifier.graphicsLayer {
+                        val offset = (pager.currentPage - index + pager.currentPageOffsetFraction).coerceIn(-1f, 1f)
+                        alpha = 1f - kotlin.math.abs(offset) * .34f
+                        translationX = size.width * offset * .12f
+                        scaleX = 1.06f; scaleY = 1.06f
+                    } else Modifier
+                ))
+                Box(Modifier.matchParentSize().background(Brush.verticalGradient(
+                    .20f to Color.Transparent, .62f to palette.bottom.copy(alpha = .70f), 1f to palette.bottom)))
+                Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 64.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(video.title, Modifier.semantics { heading() }, color = Color(0xfffff9fc),
+                        fontSize = 28.sp, lineHeight = 32.sp, fontWeight = FontWeight.Black,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    val isSaved = "${video.site}:${video.id}" in saved
-                    Row(Modifier.widthIn(max = 290.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        HeroAction("播放", R.drawable.ic_play, true, false, Modifier.weight(1f)) { play(video) }
-                        HeroAction(if (isSaved) "已加入" else "稍后看",
-                            if (isSaved) R.drawable.ic_check else R.drawable.ic_bookmark, false, isSaved,
-                            Modifier.weight(1f).semantics {
-                                contentDescription = if (isSaved) "从我的片单移除 ${video.title}" else "加入我的片单 ${video.title}"
-                            }) { favorite(video) }
+                    Text(listOf(ranking, video.duration).filter(String::isNotBlank).joinToString(" · "),
+                        color = Color(0xfff6e5ee), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val isSaved = video.entryKey in saved
+                    Row(Modifier.widthIn(max = 420.dp).fillMaxWidth().padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ArtworkAction("播放", Modifier.weight(1f), R.drawable.ic_play) { play(video) }
+                        ArtworkAction("详情", Modifier.weight(1f), primary = false) { openDetails(video) }
+                        IconButton({ favorite(video) }, Modifier.size(48.dp).semantics { selected = isSaved }) {
+                            Box(Modifier.size(41.dp).background(if (isSaved) palette.accent else palette.surface, CircleShape),
+                                contentAlignment = Alignment.Center) {
+                                CompositionLocalProvider(LocalContentColor provides if (isSaved) palette.onAccent else palette.ink) {
+                                    Glyph(if (isSaved) R.drawable.ic_check else R.drawable.ic_bookmark,
+                                        if (isSaved) "从我的片单移除 ${video.title}" else "加入我的片单 ${video.title}", Modifier.size(19.dp))
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        if (entries.size > 1) Row(Modifier.align(Alignment.TopEnd).padding(top = artworkHeight - 48.dp).fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color.Transparent, RentalInk.copy(alpha = .84f)))),
-            verticalAlignment = Alignment.CenterVertically) {
-            val markers = rememberLazyListState()
-            LaunchedEffect(pager.currentPage) {
-                if (markers.layoutInfo.visibleItemsInfo.none { it.index == pager.currentPage }) {
-                    markers.scrollToItem(pager.currentPage)
-                }
-            }
-            LazyRow(Modifier.weight(1f), state = markers) {
-                items(entries.size) { index ->
-                    val selected = pager.currentPage == index
+        if (entries.size > 1) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.size(48.dp))
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Center) {
+                repeat(entries.size) { index ->
+                    val selected = pager.settledPage == index
                     val markWidth by animateDpAsState(if (selected) 16.dp else 7.dp,
                         if (motion) tween(180) else snap(), label = "carouselMarker")
-                    Box(Modifier.size(48.dp).selectable(selected, role = Role.Tab) {
+                    Box(Modifier.widthIn(max = 48.dp).weight(1f, fill = false).size(48.dp).selectable(selected, role = Role.Tab) {
                         paused = true
-                        scope.launch { if (motion) pager.animateScrollToPage(index) else pager.scrollToPage(index) }
+                        scope.launch {
+                            if (motion) pager.animateScrollToPage(index, animationSpec = tween(330, easing = FastOutSlowInEasing))
+                            else pager.scrollToPage(index)
+                        }
                     }.semantics { contentDescription = "精选第 ${index + 1} 页" }, contentAlignment = Alignment.Center) {
-                        Box(Modifier.size(markWidth, 3.dp).background(if (selected) RentalRed else RentalPaper))
+                        Box(Modifier.size(markWidth, 4.dp).background(if (selected) palette.accent else palette.muted.copy(alpha = .65f), CircleShape))
                     }
                 }
             }
-            IconButton({ paused = !paused }, Modifier.size(48.dp)) {
-                CompositionLocalProvider(LocalContentColor provides RentalPaper) {
-                    Glyph(if (paused) R.drawable.ic_play else R.drawable.ic_pause,
-                        if (paused) "继续轮播" else "暂停轮播", Modifier.size(17.dp))
+            if (motion && !touchExploration) {
+                IconButton({ paused = !paused }, Modifier.size(48.dp)) {
+                    CompositionLocalProvider(LocalContentColor provides palette.ink) {
+                        Glyph(if (paused) R.drawable.ic_play else R.drawable.ic_pause,
+                            if (paused) "继续轮播" else "暂停轮播", Modifier.size(17.dp))
+                    }
                 }
+            } else {
+                Spacer(Modifier.size(48.dp))
             }
         }
     }

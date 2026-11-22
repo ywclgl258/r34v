@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     dialogs: ComposeDialogs, play: (Video) -> Unit, favorite: (Video) -> Unit, scroll: (Float, Boolean) -> Unit,
     permissionDenied: () -> Unit = {}, saved: Set<String> = emptySet(), continuing: List<Watch> = emptyList(),
     browse: (FeedRequest) -> Unit = {},
+    openDetails: (Video) -> Unit = play, resumeGallery: (Video) -> Unit = play,
+    onArtwork: ((ArtworkPalette) -> Unit)? = null,
     subscribe: ((Subscription) -> Unit)? = null, subscribed: Boolean = false,
     browseToolbar: (@Composable (refresh: () -> Unit) -> Unit)? = null, sort: (FeedRequest) -> Unit) {
     val scope = rememberCoroutineScope(); val adapter = remember(site) { AdapterRegistry.adapter(site, app.network) }
@@ -114,7 +116,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     // already visible heading makes LazyGrid preserve that heading and skip the hero.
     if (!loaded || needsRestorePage || waitingForRanking) {
         val failure = error
-        Column(Modifier.fillMaxSize().background(RentalInk)) {
+        Column(Modifier.fillMaxSize()) {
             if (browseToolbar != null) Box(Modifier.padding(horizontal = gridInset)) { browseToolbar(::refresh) }
             Box(Modifier.fillMaxWidth().weight(1f).padding(top = if (home && site.mediaKind == MediaKind.VIDEO) 120.dp else 0.dp),
                 contentAlignment = Alignment.Center) {
@@ -137,17 +139,32 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         }
         val waitingRevision by app.library.personal.changes.collectAsState()
         val waiting = remember(waitingRevision) { app.library.personal.shelves().first { it.id == PersonalLibrary.WATCH_LATER }.entries.map { it.video.entryKey }.toSet() }
+        var featured by remember(state) { mutableStateOf<Video?>(null) }
+        if (onArtwork != null) {
+            val cover = featured?.thumb ?: ranked.firstOrNull()?.first?.thumb.orEmpty()
+            val palette = rememberArtworkPalette(site, cover)
+            LaunchedEffect(palette) { onArtwork(palette) }
+        }
         CinemaHome(videos, ranked, popularVideos, ratedVideos, continuing, waiting, cached, busy, error,
             next <= total, { if (state.restartRequired) refresh() else load() }, play, favorite, browse, scroll, state, state.emptyPages < 3, { load(true) },
-            toggleWaiting = { video -> if (app.library.personal.contains(video)) app.library.personal.remove(video) else app.library.personal.add(video) })
+            toggleWaiting = { video -> if (app.library.personal.contains(video)) app.library.personal.remove(video) else app.library.personal.add(video) },
+            openDetails = openDetails, onFeatured = { featured = it })
         return
     }
     val grid = state.grid
     val hasGalleryStage = home && site.mediaKind == MediaKind.GALLERY && videos.isNotEmpty()
+    val progress = if (hasGalleryStage) app.library.readings(site.id)
+        .firstOrNull { it.page < it.pages && app.library.allowed(it.entry, site.id) } else null
+    if (home && onArtwork != null) {
+        val cover = (if (site.category == SiteCategory.COMIC) progress?.entry else null)?.thumb
+            ?: videos.firstOrNull()?.thumb.orEmpty()
+        val palette = rememberArtworkPalette(site, cover)
+        LaunchedEffect(palette) { onArtwork(palette) }
+    }
     LaunchedEffect(grid, position) {
         if (position != null) {
             val index = videos.indexOfFirst { it.entryKey == position.work }
-            if (index >= 0) grid.scrollToItem(index + if (hasGalleryStage) 2 else 1)
+            if (index >= 0) grid.scrollToItem(index + 1)
             state.finishRestoring(found = index >= 0)
         }
     }
@@ -176,29 +193,45 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     val nearEnd by remember { derivedStateOf { grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= grid.layoutInfo.totalItemsCount - 7 } == true } }
     LaunchedEffect(nearEnd, next, busy, position) { if (position == null && nearEnd && loaded && next <= total && !busy && error == null) load(true) }
     val width = windowSizeDp().width
-    val columns = if (LocalConfiguration.current.fontScale > 1.5f && width < 400) 1 else if (width >= 1280) 6 else if (width >= 1024) 5 else if (width >= 840) 4 else if (width >= 600) 3 else 2
-    val gridModifier = Modifier.fillMaxSize().background(RentalInk)
+    val columns = when {
+        LocalConfiguration.current.fontScale > 1.5f && width < 400 -> 1
+        width >= 1280 -> 6
+        width >= 1024 -> 5
+        width >= 840 -> 4
+        width >= 600 || home && site.category == SiteCategory.COMIC && width >= 360 -> 3
+        else -> 2
+    }
+    val gridModifier = Modifier.fillMaxSize()
         .semantics { contentDescription = "内容列表" }
     LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns),
         if (browseToolbar != null) gridModifier.testTag("discover-feed") else gridModifier,
         state = grid, contentPadding = PaddingValues(start = gridInset, end = gridInset,
-            top = if (browseToolbar != null) 0.dp else 16.dp, bottom = if (browseToolbar != null) 24.dp else 132.dp),
+            top = if (browseToolbar != null) 0.dp else 8.dp, bottom = 26.dp),
         horizontalArrangement = Arrangement.spacedBy(9.dp),
         verticalItemSpacing = 10.dp) {
-        if (hasGalleryStage) item(span = StaggeredGridItemSpan.FullLine, key = "gallery-stage") {
-            val progress = app.library.readings(site.id).firstOrNull { it.page < it.pages && app.library.allowed(it.entry, site.id) }
-            val entry = progress?.entry ?: videos.first()
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Title(if (progress != null) "继续${site.category.verb}" else if (site.category == SiteCategory.PHOTO) "打开一组新视角" else "翻开下一本", large = true)
-                MediaResumeHero(entry, if (progress != null) "第 ${progress.page} / ${progress.pages} ${if (site.category == SiteCategory.PHOTO) "张" else "页"}" else site.name,
-                    if (progress != null) "继续${site.category.verb}" else "开始${site.category.verb}", play)
-                Spacer(Modifier.height(8.dp))
-            }
-        }
         item(span = StaggeredGridItemSpan.FullLine, key = "heading") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (browseToolbar != null) browseToolbar(::refresh)
-                else Title(if (home) { if (site.mediaKind == MediaKind.GALLERY) "最新${adapter.itemNoun}" else if (site.id == "r34v") "最新视频" else "最新上传" } else adapter.feedTitle(request))
+                else if (hasGalleryStage) {
+                    val comic = site.category == SiteCategory.COMIC
+                    Column(Modifier.testTag(if (comic) "comic-stage" else "photo-stage")) {
+                        if (!adapter.supportsLanguage) {
+                            val shortcuts = remember(adapter, request) { adapter.sections.mapNotNull { section ->
+                                section.feed?.takeIf { it != request && adapter.indexSection(it) == null }?.let { section.title to it }
+                            }.take(2) }
+                            if (shortcuts.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                                ArtworkShortcut("全部")
+                                shortcuts.forEach { (title, feed) -> ArtworkShortcut(title) { browse(feed) } }
+                            }
+                        }
+                        if (progress != null) GalleryResumeCard(progress.entry, "继续${site.category.verb}",
+                            "第 ${progress.page} / ${progress.pages} ${if (comic) "页" else "张"}") { resumeGallery(progress.entry) }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Title("最新${adapter.itemNoun}", Modifier.weight(1f))
+                            if (progress == null) TextAction({ play(videos.first()) }) { Text("开始${site.category.verb}") }
+                        }
+                    }
+                } else Title(if (home) "最新${adapter.itemNoun}" else adapter.feedTitle(request))
                 if (cached) Copy("当前显示离线列表缓存")
                 if (!home && browseToolbar == null) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     val options = adapter.sortsFor(request)
@@ -263,7 +296,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                         else if (feed != null) changeFeed(feed.copy(language = request.language))
                     }
                 }
-            } else Text(title, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.titleMedium, color = RentalPaper,
+            } else Text(title, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (sorts.size > 1) {
                 val selectedSort = sorts.indexOf(request.sort).coerceAtLeast(0)
@@ -281,7 +314,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                     }
                 }
             }
-            TextAction(refresh) { Text("刷新", color = RentalMuted) }
+            TextAction(refresh) { Text("刷新", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
         if (hasFeedSelection || selectedLanguage != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically) {
@@ -291,22 +324,24 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                 if (selectedLanguage != null) add(selectedLanguage.title)
             }.joinToString(" · ")
             Text(summary, Modifier.weight(1f).padding(start = 8.dp),
-                style = MaterialTheme.typography.labelMedium, color = RentalMuted,
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             TextAction({
                 if (selectedLanguage != null) changeLanguage(default.language)
                 changeFeed(default)
-            }) { Text("清除筛选", color = RentalMuted) }
+            }) { Text("清除筛选", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
-        HorizontalDivider(color = RentalEdge.copy(alpha = .45f))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .55f))
     }
 }
 
 @Composable private fun BrowseSelector(title: String, modifier: Modifier, click: () -> Unit) {
-    TextButton(onClick = click, modifier = modifier.heightIn(min = 48.dp).widthIn(min = 48.dp), shape = RentalShape,
-        colors = ButtonDefaults.textButtonColors(contentColor = RentalPaper),
+    val palette = LocalArtworkPalette.current
+    val shape = if (palette == null) RentalShape else ArtworkPill
+    TextButton(onClick = click, modifier = modifier.heightIn(min = 48.dp).widthIn(min = 48.dp), shape = shape,
+        colors = ButtonDefaults.textButtonColors(contentColor = palette?.ink ?: RentalPaper),
         contentPadding = PaddingValues(0.dp)) {
-        Row(Modifier.clip(RentalShape).background(RentalSurface).heightIn(min = 36.dp).padding(horizontal = 9.dp),
+        Row(Modifier.clip(shape).background(palette?.surface ?: RentalSurface).heightIn(min = 36.dp).padding(horizontal = 9.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             Text(title, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)

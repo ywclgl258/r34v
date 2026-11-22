@@ -184,6 +184,21 @@ abstract class ComposeUiCase {
     @get:Rule val ui = createEmptyComposeRule()
     fun waitText(text: String) { ui.waitUntil(15000) { runCatching { ui.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }.getOrDefault(false) } }
     fun waitCovers() { ui.waitUntil(15000) { ui.onAllNodesWithTag("cover-ready", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }; ui.waitForIdle() }
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    fun waitForDecodedVideo(fixture: ComposeFixture, position: LongRange = 0L..Long.MAX_VALUE) {
+        val field = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
+        ui.waitUntil(15000) {
+            var ready = false
+            fixture.ins.runOnMainSync {
+                val activity = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                    .filterIsInstance<PlayerActivity>().firstOrNull()
+                val player = activity?.let { field.get(it) as? androidx.media3.common.Player }
+                ready = player != null && player.playbackState == androidx.media3.common.Player.STATE_READY &&
+                    player.videoSize.width > 0 && player.currentPosition in position
+            }
+            ready
+        }
+    }
     fun waitHome() { ui.waitUntil(15000) { listOf("personal-home", "home-carousel", "video-stage", "comic-stage", "photo-stage").any { ui.onAllNodesWithTag(it).fetchSemanticsNodes().isNotEmpty() } }; ui.waitForIdle() }
     fun openSourceHome() { clickText("首页"); waitHome() }
     fun openPersonalHome() {

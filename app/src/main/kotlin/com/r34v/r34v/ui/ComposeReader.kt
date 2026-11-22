@@ -110,7 +110,7 @@ data class ReaderJump(val serial: Int, val page: Int, val offset: Int = 0)
                     if (number != first + 1) { zoom = 1f; pan = Offset.Zero }
                 }
             }
-            Box(Modifier.fillMaxWidth().aspectRatio(ratio).clipToBounds().background(CanvasColor).testTag("reader-page-$number").semantics { stateDescription = "缩放 $zoom" }
+            Box(Modifier.fillMaxWidth().aspectRatio(ratio).clipToBounds().background(androidx.compose.ui.graphics.Color.Black).testTag("reader-page-$number").semantics { stateDescription = "缩放 $zoom" }
                 .pointerInput(number) { detectTapGestures(onTap = { currentToggle() }, onDoubleTap = { zoom = if (zoom > 1f) 1f else 2f; pan = Offset.Zero }) }
                 .pointerInput(number) { awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -133,7 +133,7 @@ data class ReaderJump(val serial: Int, val page: Int, val offset: Int = 0)
                         val crop = 1f + cropPercent / 100f; scaleX = zoom * crop; scaleY = zoom * crop; translationX = pan.x; translationY = pan.y
                     }, contentScale = when (fit) { ReaderFit.WIDTH -> ContentScale.FillWidth; ReaderFit.HEIGHT -> ContentScale.FillHeight; ReaderFit.ORIGINAL -> ContentScale.None })
                     error != null -> Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) { Copy("第 $number 页：$error"); Action("重试此页") { buffer.retry(number) } }
-                    else -> CircularProgressIndicator(Modifier.size(32.dp), color = BrandColor)
+                    else -> CircularProgressIndicator(Modifier.size(32.dp), color = androidx.compose.material3.MaterialTheme.colorScheme.primary)
                 }
             }
         }

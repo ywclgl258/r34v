@@ -35,22 +35,23 @@ import kotlinx.coroutines.*
     val current = entries.firstOrNull { it.video.entryKey == selected }
     BackHandler(current != null) { selected = null }
     val compact = LocalUiDensity.current.compact
+    val colors = MaterialTheme.colorScheme
     Row(modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(if (compact) 14.dp else 18.dp)) {
         if (wide || current == null) LazyColumn(Modifier.weight(1f).testTag("catalog-list"), state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
             if (header != null) item(key = "catalog-header") { header() }
             if (entries.isEmpty()) item { Copy("当前条件下暂无作品") }
             items(entries, key = { it.video.entryKey }) { entry ->
                 val site = SiteRegistry.byIdOrDefault(entry.video.site)
-                val coverShape = RentalShape
-                Row(Modifier.fillMaxWidth().clip(RentalShape).background(if (selected == entry.video.entryKey) RentalSurface else Color.Transparent)
+                val coverShape = RoundedCornerShape(9.dp)
+                Row(Modifier.fillMaxWidth().clip(ArtworkShape).background(if (selected == entry.video.entryKey) colors.surface else Color.Transparent)
                     .clickable(role = Role.Button) { if (wide) selected = entry.video.entryKey else play(entry.video) }
                     .padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     val gallery = entry.video.mediaKind == MediaKind.GALLERY || site.mediaKind == MediaKind.GALLERY
                     val thumb = if (!gallery) Modifier.size(78.dp, 54.dp) else Modifier.size(56.dp, 72.dp)
                     SiteImage(entry.video.thumb, site, thumb.clip(coverShape)
-                        .border(RentalBorder, coverShape), fit = gallery)
+                        .border(1.dp, colors.outline, coverShape), fit = gallery)
                     Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(entry.video.title, color = RentalPaper,
+                        Text(entry.video.title, color = colors.onSurface,
                             style = MaterialTheme.typography.titleMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         Copy("${site.name} · ${entry.progress}")
                         if (entry.offline) Copy(entry.downloadState)
@@ -63,7 +64,7 @@ import kotlinx.coroutines.*
                         }
                     }
                 }
-                HorizontalDivider(color = RentalEdge.copy(alpha = .5f))
+                HorizontalDivider(color = colors.outline.copy(alpha = .58f))
             }
         }
         if (wide || current != null) Column(Modifier.weight(if (wide) 1.2f else 1f).testTag("catalog-detail").verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp)) {
@@ -91,6 +92,7 @@ import kotlinx.coroutines.*
     val shelf = snapshot.shelves.firstOrNull { it.id == selected }
     val smart = snapshot.smartShelves.firstOrNull { it.id == selected }
     val configuration = LocalConfiguration.current
+    val colors = MaterialTheme.colorScheme
     val shelfColumns = if (windowSizeDp().width >= 840 && configuration.fontScale <= 1.3f) 2 else 1
     if (shelf != null) Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         ShelfScreen(app, dialogs, play, download, shelf.id, catalog, onBack = { selected = "" }, discover = search)
@@ -108,17 +110,16 @@ import kotlinx.coroutines.*
                                     app.localLibrary.imageUri(favorite.video.id, favorite.page).orEmpty()
                                 } else favorite.imageUrl.ifBlank { favorite.video.thumb }
                             }
-                            val sleeve = RoundedCornerShape(4.dp)
-                            Column(Modifier.weight(1f).clip(sleeve).background(RentalSurface).border(1.dp, RentalEdge, sleeve)
+                            Column(Modifier.weight(1f).artworkPanel()
                                 .clickable(role = Role.Button) { image(favorite) }.padding(1.dp)) {
                                 SiteImage(thumbnail, SiteRegistry.byIdOrDefault(favorite.video.site), Modifier.fillMaxWidth().height(210.dp), true)
-                                Column(Modifier.fillMaxWidth().background(RentalPaper).rentalStock().padding(10.dp),
+                                Column(Modifier.fillMaxWidth().padding(10.dp),
                                     verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Text(favorite.video.title, color = RentalInk, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text(favorite.video.title, color = colors.onSurface, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                     Text("${SiteRegistry.byIdOrDefault(favorite.video.site).name} · 第 ${favorite.page} 页",
-                                        color = RentalInk.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall)
+                                        color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                                 }
-                                TextAction({ app.library.personal.toggleImageFavorite(favorite.video, favorite.page, favorite.pageUrl, favorite.imageUrl) }) { Text("取消收藏", color = RentalMuted) }
+                                TextAction({ app.library.personal.toggleImageFavorite(favorite.video, favorite.page, favorite.pageUrl, favorite.imageUrl) }) { Text("取消收藏") }
                             }
                         }
                         if (row.size < shelfColumns) Spacer(Modifier.weight(1f))
@@ -149,21 +150,20 @@ import kotlinx.coroutines.*
             val columns = if (configuration.fontScale > 1.3f || windowSizeDp().width < 360) 2 else 4
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 shortcuts.chunked(columns).forEach { row -> Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(RentalSurface).rentalStock()
-                        .border(1.dp, RentalEdge.copy(alpha = .75f), RoundedCornerShape(4.dp)),
+                    Modifier.fillMaxWidth().artworkPanel(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     row.forEachIndexed { index, (label, icon) ->
-                        if (index > 0) Spacer(Modifier.size(1.dp, 28.dp).background(RentalEdge.copy(alpha = .6f)))
+                        if (index > 0) Spacer(Modifier.size(1.dp, 28.dp).background(colors.outline.copy(alpha = .60f)))
                         val target = Modifier.weight(1f).heightIn(min = 56.dp).clickable(role = Role.Button) { task(label) }
                         if (configuration.fontScale > 1.3f) Row(target.padding(12.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            CompositionLocalProvider(LocalContentColor provides RentalPaper) { Glyph(icon, null, Modifier.size(24.dp)) }
-                            Text(label, color = RentalPaper, style = MaterialTheme.typography.labelLarge)
+                            Glyph(icon, null, Modifier.size(24.dp))
+                            Text(label, color = colors.onSurface, style = MaterialTheme.typography.labelLarge)
                         } else Column(target.padding(horizontal = 4.dp, vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                            CompositionLocalProvider(LocalContentColor provides RentalPaper) { Glyph(icon, null, Modifier.size(22.dp)) }
-                            Text(label, color = RentalPaper, style = MaterialTheme.typography.labelLarge)
+                            Glyph(icon, null, Modifier.size(22.dp))
+                            Text(label, color = colors.onSurface, style = MaterialTheme.typography.labelLarge)
                         }
                     }
                 } }
@@ -228,8 +228,7 @@ import kotlinx.coroutines.*
 }
 
 @Composable internal fun LibraryNotice(title: String, body: String, action: (@Composable () -> Unit)? = null) {
-    val shape = RoundedCornerShape(4.dp)
-    Column(Modifier.fillMaxWidth().clip(shape).background(RentalSurface).rentalStock().border(1.dp, RentalEdge, shape)
+    Column(Modifier.fillMaxWidth().artworkPanel()
         .padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Title(title)
         Copy(body)
@@ -238,46 +237,47 @@ import kotlinx.coroutines.*
 }
 
 @Composable private fun ShelfCover(title: String, subtitle: String, covers: List<Video>, modifier: Modifier = Modifier, note: String = "", pinned: Boolean = false, click: () -> Unit) {
-    val sleeve = RoundedCornerShape(4.dp)
-    Row(modifier.fillMaxWidth().clip(sleeve).border(1.dp, RentalEdge, sleeve).background(RentalPaper).rentalStock()
-        .clickable(role = Role.Button, onClick = click).padding(2.dp),
+    val colors = MaterialTheme.colorScheme
+    Row(modifier.fillMaxWidth().artworkPanel()
+        .clickable(role = Role.Button, onClick = click).padding(7.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        val thumb = Modifier.size(94.dp, 70.dp).clip(RoundedCornerShape(2.dp))
+        val thumb = Modifier.size(94.dp, 70.dp).clip(RoundedCornerShape(9.dp))
         if (covers.isEmpty()) {
-            Box(thumb.background(RentalSurface).rentalStock(), contentAlignment = Alignment.Center) {
+            Box(thumb.background(colors.surfaceVariant), contentAlignment = Alignment.Center) {
                 EmptyTapeArt(Modifier.size(66.dp, 39.dp))
             }
-        } else Row(thumb.background(RentalSurface), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+        } else Row(thumb.background(colors.surfaceVariant), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
             covers.take(3).forEach { video ->
                 SiteImage(video.thumb, SiteRegistry.byIdOrDefault(video.site), Modifier.weight(1f).fillMaxHeight())
             }
         }
         Column(Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 7.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(title, color = RentalInk, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(subtitle, color = RentalInk.copy(alpha = .76f), style = MaterialTheme.typography.bodySmall)
-            if (pinned) Text("已置顶", color = RentalInk, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
-            if (note.isNotBlank()) Text(note, color = RentalInk.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(title, color = colors.onSurface, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(subtitle, color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            if (pinned) Text("已置顶", color = colors.primary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+            if (note.isNotBlank()) Text(note, color = colors.onSurfaceVariant, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        CompositionLocalProvider(LocalContentColor provides RentalInk) {
+        CompositionLocalProvider(LocalContentColor provides colors.onSurfaceVariant) {
             Glyph(R.drawable.ic_chevron_right, null, Modifier.padding(end = 8.dp).size(16.dp))
         }
     }
 }
 
 @Composable private fun EmptyTapeArt(modifier: Modifier) {
-    val shape = RoundedCornerShape(3.dp)
-    Canvas(modifier.clip(shape).background(RentalInk).border(1.dp, RentalMuted.copy(alpha = .65f), shape)) {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(5.dp)
+    Canvas(modifier.clip(shape).background(colors.background).border(1.dp, colors.outline, shape)) {
         val w = size.width
         val h = size.height
-        drawRect(RentalPaper, Offset(w * .10f, h * .14f), Size(w * .8f, h * .16f))
-        drawRect(RentalRed, Offset(w * .10f, h * .26f), Size(w * .8f, h * .06f))
-        drawRect(RentalSurface, Offset(w * .12f, h * .42f), Size(w * .76f, h * .38f))
+        drawRect(colors.onSurfaceVariant, Offset(w * .10f, h * .14f), Size(w * .8f, h * .16f))
+        drawRect(colors.primary, Offset(w * .10f, h * .26f), Size(w * .8f, h * .06f))
+        drawRect(colors.surfaceVariant, Offset(w * .12f, h * .42f), Size(w * .76f, h * .38f))
         for (x in listOf(.25f, .75f)) {
             val center = Offset(w * x, h * .61f)
-            drawCircle(RentalMuted, h * .145f, center)
-            drawCircle(RentalInk, h * .060f, center)
+            drawCircle(colors.onSurfaceVariant, h * .145f, center)
+            drawCircle(colors.background, h * .060f, center)
         }
-        drawRect(RentalBlue.copy(alpha = .65f), Offset(w * .40f, h * .55f), Size(w * .20f, h * .12f))
+        drawRect(colors.outline, Offset(w * .40f, h * .55f), Size(w * .20f, h * .12f))
     }
 }
 

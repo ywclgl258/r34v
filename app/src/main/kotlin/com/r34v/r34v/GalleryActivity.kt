@@ -9,6 +9,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import kotlin.math.roundToInt
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -38,6 +40,7 @@ import com.r34v.r34v.data.*
 import com.r34v.r34v.data.adapter.*
 import com.r34v.r34v.ui.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
 
 class GalleryActivity : ComponentActivity() {
     private val app get() = application as R34Application
@@ -142,8 +145,10 @@ class GalleryActivity : ComponentActivity() {
         if (reading && !controlsVisible) bars.hide(WindowInsetsCompat.Type.systemBars()) else bars.show(WindowInsetsCompat.Type.systemBars())
     }
     @Composable private fun Content() {
-        ExportHost()
         BackHandler { when { reading && !controlsVisible -> controlsVisible = true; reading -> { saveProgress(); reading = false; controlsVisible = true }; else -> finish() } }
+        val category = if (site.category == SiteCategory.COMIC) SiteCategory.COMIC else SiteCategory.PHOTO
+        val palette = rememberArtworkPalette(site, entry.thumb.takeUnless { gate }.orEmpty(), category, cachedOnly = offlineOnly)
+        val readerOpen = reading && detail != null && !gate && error == null
         val screenBrightness = if (reading && readingBehavior.brightnessPercent >= 0) (readingBehavior.brightnessPercent / 100f).coerceAtLeast(.02f) else -1f
         val keepScreenOn = reading && readingBehavior.keepAwake
         SideEffect {
@@ -152,19 +157,16 @@ class GalleryActivity : ComponentActivity() {
             if (keepScreenOn) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
-        if (reading && detail != null && !gate && error == null) {
-            ReaderScene()
-            dialogs.Host()
-            if (thumbnails) ReaderThumbnails(detail!!.pageCount, page, ::loadStripPage, { thumbnails = false }) { target -> thumbnails = false; reader(target) }
-            return
-        }
-        Column(Modifier.fillMaxSize().background(if (reading) CanvasColor else RentalInk)
+        ArtworkColors(palette) {
+        ExportHost()
+        if (readerOpen) {
+            Box(Modifier.fillMaxSize().artworkReveal(entry.entryKey)) { ReaderScene(palette) }
+        } else Column(Modifier.fillMaxSize().artworkBackground(palette)
             .then(if (reading && !controlsVisible) Modifier.displayCutoutPadding() else Modifier.safeDrawingPadding())) {
             if (!reading || controlsVisible || gate || error != null) Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconAction(R.drawable.ic_back, "返回") { if (reading) { saveProgress(); reading = false; controlsVisible = true } else finish() }
-                if (!reading) RentalStripes(Modifier.size(22.dp, 14.dp))
                 Text(if (reading) entry.title else site.name, Modifier.weight(1f).padding(start = 8.dp),
-                    color = if (reading) Color.White else RentalPaper, style = MaterialTheme.typography.titleMedium,
+                    color = palette.ink, style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (reading) {
                     IconAction(R.drawable.ic_search, "页面缩略图总览") { thumbnails = true }
@@ -173,7 +175,6 @@ class GalleryActivity : ComponentActivity() {
                     IconAction(R.drawable.ic_fullscreen, "全屏${actionVerb}") { controlsVisible = false }
                 }
             }
-            if (!reading) HorizontalDivider(color = RentalRed.copy(alpha = .72f))
             when {
                 gate -> EmptyState("ExHentai 必须登录并具备访问权限", "请在官方页面完成登录，再验证本站访问权限。", "官方网页登录") { officialLogin.launch(Intent(this@GalleryActivity, SiteAuthActivity::class.java).putExtra("site", site.id)) }
                 error != null -> Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
@@ -192,8 +193,9 @@ class GalleryActivity : ComponentActivity() {
         }
         dialogs.Host()
         if (thumbnails && detail != null) ReaderThumbnails(detail!!.pageCount, page, ::loadStripPage, { thumbnails = false }) { target -> thumbnails = false; reader(target) }
+        }
     }
-    @Composable private fun ReaderScene() {
+    @Composable private fun ReaderScene(palette: ArtworkPalette) {
         val gallery = detail ?: return
         @Suppress("UNUSED_VARIABLE") val observedRevision = revision
         val imageSaved = store.personal.isImageFavorite(entry, page)
@@ -221,7 +223,8 @@ class GalleryActivity : ComponentActivity() {
                 if (target > 0) reader(target) else slideshowRunning = false
             }
         }
-        val chromeEdge = RentalInk.copy(alpha = if (reduceTransparency) 1f else .82f)
+        val chromeEdge = palette.bottom.copy(alpha = if (reduceTransparency) 1f else .88f)
+        val chromeSurface = palette.surface.copy(alpha = if (reduceTransparency) 1f else .92f)
         Box(Modifier.fillMaxSize().background(Color.Black).displayCutoutPadding()) {
             if (readerMode == ReaderMode.STRIP) ComicReader(gallery.pageCount, jump, ::loadStripPage,
                 { autoPageRunning = false; slideshowRunning = false; controlsVisible = !controlsVisible }, positionChanged, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent)
@@ -229,7 +232,7 @@ class GalleryActivity : ComponentActivity() {
                 { autoPageRunning = false; slideshowRunning = false; controlsVisible = !controlsVisible }, positionChanged, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent, readerPreferences.doubleCover, currentPage = page)
             androidx.compose.animation.AnimatedVisibility(controlsVisible, Modifier.align(Alignment.TopCenter),
                 enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
-                Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Black, chromeEdge)))
+                Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(chromeSurface, chromeEdge)))
                     .statusBarsPadding(), contentAlignment = Alignment.Center) {
                     Row(Modifier.widthIn(max = 760.dp).fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically) {
@@ -238,7 +241,7 @@ class GalleryActivity : ComponentActivity() {
                             fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (app.queue.session(intent.getStringExtra("queue_session"), entry) != null)
                             IconAction(R.drawable.ic_chevron_right, "片单接续", click = ::queueTools)
-                        CompositionLocalProvider(LocalContentColor provides if (imageSaved) RentalRed else RentalPaper) {
+                        CompositionLocalProvider(LocalContentColor provides if (imageSaved) palette.accent else palette.ink) {
                             IconAction(if (imageSaved) R.drawable.ic_check else R.drawable.ic_bookmark,
                                 if (imageSaved) "已收藏当前图片，点击取消" else "收藏当前图片", click = ::toggleCurrentImageFavorite)
                         }
@@ -249,7 +252,7 @@ class GalleryActivity : ComponentActivity() {
             if (!controlsVisible) ReaderStatusBar(readingBehavior, page, gallery.pageCount, Modifier.align(Alignment.BottomEnd))
             androidx.compose.animation.AnimatedVisibility(controlsVisible, Modifier.align(Alignment.BottomCenter),
                 enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
-                Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(chromeEdge, Color.Black)))
+                Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(chromeEdge, chromeSurface)))
                     .navigationBarsPadding(), contentAlignment = Alignment.Center) {
                     Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 2.dp)) {
                         if (autoPageRunning || slideshowRunning) TextAction({ autoPageRunning = false; slideshowRunning = false }, Modifier.fillMaxWidth()) {
@@ -266,8 +269,8 @@ class GalleryActivity : ComponentActivity() {
                         }
                         if (gallery.pageCount > 1) {
                             Slider(slider, { slider = it }, Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 12.dp).semantics { contentDescription = "${itemNoun}${actionVerb}进度" }, valueRange = 1f..gallery.pageCount.toFloat(),
-                                thumb = { RentalSeekThumb() },
-                                track = { state -> RentalSeekTrack((state.value - 1f) / (gallery.pageCount - 1)) },
+                                thumb = { ArtworkSeekThumb() },
+                                track = { state -> ArtworkSeekTrack((state.value - 1f) / (gallery.pageCount - 1)) },
                                 onValueChangeFinished = { reader(slider.roundToInt().coerceIn(1, gallery.pageCount)) })
                         }
                     }
@@ -348,9 +351,10 @@ class GalleryActivity : ComponentActivity() {
     }
 
     @Composable private fun GalleryAction(label: String, icon: Int, modifier: Modifier, active: Boolean? = null, click: () -> Unit) {
-        val tint = if (active == true) RentalInk else RentalPaper
-        Column(modifier.heightIn(min = 54.dp).clip(RentalShape)
-            .background(if (active == true) RentalPaper else Color.Transparent)
+        val colors = MaterialTheme.colorScheme
+        val tint = if (active == true) colors.onPrimary else colors.onSurface
+        Column(modifier.heightIn(min = 54.dp).clip(ArtworkPill)
+            .background(if (active == true) colors.primary else Color.Transparent)
             .clickable(role = Role.Button, onClick = click).semantics { if (active != null) selected = active }.padding(vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically)) {
             CompositionLocalProvider(LocalContentColor provides tint) { Glyph(icon, null, Modifier.size(19.dp)) }
@@ -444,39 +448,56 @@ class GalleryActivity : ComponentActivity() {
                 // The saved book can still be opened when its local cover is unavailable.
             }
         }
-        Box(modifier.background(RentalSurface), contentAlignment = Alignment.Center) {
+        Box(modifier.background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
             if (bytes != null) AsyncImage(bytes, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-            else CompositionLocalProvider(LocalContentColor provides RentalMuted) { Glyph(R.drawable.ic_bookmark, null, Modifier.size(34.dp)) }
+            else Glyph(R.drawable.ic_bookmark, null, Modifier.size(34.dp))
         }
     }
 
-    @Composable private fun GalleryJacket(gallery: GalleryDetail, metadata: String, startLabel: String, open: () -> Unit) {
+    @Composable private fun GalleryJacket(gallery: GalleryDetail, metadata: String, startLabel: String, startPage: Int, open: () -> Unit) {
         val comic = site.category == SiteCategory.COMIC
-        BoxWithConstraints(Modifier.fillMaxWidth().testTag(if (comic) "comic-stage" else "photo-stage")
-            .clip(RentalShape).background(RentalSurface).border(RentalBorder, RentalShape).padding(3.dp)) {
-            val artFraction = if (maxWidth >= 600.dp) .34f else .40f
-            Box(Modifier.matchParentSize()) {
-                JacketCover(gallery, Modifier.fillMaxWidth(artFraction).fillMaxHeight())
-            }
-            Column(Modifier.align(Alignment.CenterEnd).fillMaxWidth(1f - artFraction)
-                .background(RentalPaper).rentalStock().heightIn(min = if (comic) 192.dp else 178.dp)
-                .padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(itemNoun, Modifier.weight(1f), color = RentalInk.copy(alpha = .78f),
-                        style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                    RentalStripes(Modifier.size(24.dp, 9.dp))
+        val heading: @Composable () -> Unit = {
+            Text(entry.title, Modifier.semantics { heading() }, color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
+            Copy(metadata)
+        }
+        Column(Modifier.fillMaxWidth().testTag(if (comic) "comic-stage" else "photo-stage"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (comic) {
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Bottom) {
+                    JacketCover(gallery, Modifier.size(108.dp, 158.dp).clip(RoundedCornerShape(12.dp)))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) { heading() }
                 }
-                Text(entry.title, Modifier.semantics { heading() }, color = RentalInk, fontSize = 21.sp, lineHeight = 25.sp,
-                    fontWeight = FontWeight.Black)
-                Text(metadata, color = RentalInk.copy(alpha = .82f), style = MaterialTheme.typography.bodySmall)
-                Button(open, Modifier.heightIn(min = 48.dp), shape = RentalShape,
-                    colors = ButtonDefaults.buttonColors(containerColor = RentalInk, contentColor = RentalPaper),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
-                    Glyph(if (comic) R.drawable.ic_bookmark else R.drawable.ic_explore, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text(startLabel, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                }
+            } else {
+                val height = (windowSizeDp().height * .36f).dp.coerceIn(185.dp, 352.dp)
+                JacketCover(gallery, Modifier.fillMaxWidth().height(height).clip(ArtworkShape))
+                heading()
+                PhotoPageShortcuts(gallery, startPage)
             }
+            ArtworkAction(startLabel, Modifier.fillMaxWidth(),
+                if (comic) R.drawable.ic_bookmark else R.drawable.ic_fullscreen, click = open)
+        }
+    }
+
+    @Composable private fun PhotoPageShortcuts(gallery: GalleryDetail, current: Int) {
+        val pages = remember(gallery, offlineOnly, current) {
+            if (offlineOnly) gallery.downloadedPages.sorted().take(3)
+            else (current.coerceIn(1, (gallery.pageCount - 2).coerceAtLeast(1))..gallery.pageCount).take(3)
+        }
+        val permits = remember { Semaphore(1) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            pages.forEach { target -> key(entry.entryKey, target) {
+                val (bitmap, _) = rememberSmallGalleryPage(target, 148, permits, ::loadStripPage)
+                val shape = RoundedCornerShape(9.dp)
+                Box(Modifier.size(54.dp).clip(shape).background(MaterialTheme.colorScheme.surface)
+                    .border(1.dp, if (target == current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, shape)
+                    .clickable(role = Role.Button) { reader(target) }
+                    .semantics { contentDescription = "浏览第 $target 张" }, contentAlignment = Alignment.Center) {
+                    bitmap?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+                        ?: Text(target.toString(), style = MaterialTheme.typography.labelMedium)
+                }
+            } }
+            Spacer(Modifier.weight(1f))
+            TextAction({ thumbnails = true }) { Text("全部 ${gallery.pageCount} 张") }
         }
     }
 
@@ -495,17 +516,17 @@ class GalleryActivity : ComponentActivity() {
         }
         val downloadRevision by app.galleryDownloads.changes.collectAsState()
         val download = remember(downloadRevision, entry.id, entry.site) { app.galleryDownloads.task(entry) }
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 28.dp),
+        Column(Modifier.fillMaxSize().artworkReveal(entry.entryKey).verticalScroll(rememberScrollState()).padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             val comic = site.category == SiteCategory.COMIC
             val metadata = listOf("${gallery.pageCount} ${if (comic) "页" else "张"}", gallery.language.takeIf { comic }.orEmpty(), entry.rating)
                 .filter(String::isNotBlank).joinToString(" · ")
-            GalleryJacket(gallery, metadata, startLabel) { reader(startPage, startOffset) }
+            GalleryJacket(gallery, metadata, startLabel, startPage) { reader(startPage, startOffset) }
             if (offlineOnly) Copy(if (gallery.downloadedPages.size == gallery.pageCount) "已下载整本 · ${gallery.pageCount} 页 · 离线$verb"
                 else "部分保存 · ${gallery.downloadedPages.size} / ${gallery.pageCount} 页 · 仅已存页可离线$verb")
             if (gallery.alternativeTitle.isNotBlank() && gallery.alternativeTitle != entry.title) Copy(gallery.alternativeTitle)
 
-            Row(Modifier.fillMaxWidth().clip(RentalShape).background(RentalSurface).border(RentalBorder, RentalShape).padding(3.dp),
+            Row(Modifier.fillMaxWidth().clip(ArtworkShape).background(MaterialTheme.colorScheme.surface).padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 val favorite = store.isFavorite("gallery", entry.id, site.id)
@@ -513,13 +534,13 @@ class GalleryActivity : ComponentActivity() {
                     store.toggleFavorite(Favorite("gallery", entry.id, entry.title, entry.url, entry.thumb, entry.duration, site = site.id), site.id)
                     revision++
                 }
-                VerticalDivider(Modifier.height(24.dp), color = RentalEdge)
+                VerticalDivider(Modifier.height(24.dp), color = MaterialTheme.colorScheme.outline)
                 val saved = app.library.personal.contains(entry)
                 GalleryAction(if (saved) "已稍后看" else "稍后看", R.drawable.ic_history, Modifier.weight(1f), saved) {
                     if (saved) app.library.personal.remove(entry) else app.library.personal.add(entry)
                     revision++
                 }
-                if (entry.site != SiteRegistry.LOCAL.id) VerticalDivider(Modifier.height(24.dp), color = RentalEdge)
+                if (entry.site != SiteRegistry.LOCAL.id) VerticalDivider(Modifier.height(24.dp), color = MaterialTheme.colorScheme.outline)
                 if (entry.site != SiteRegistry.LOCAL.id) GalleryAction(
                     when (download?.state) {
                         GalleryDownloadState.DOWNLOADING -> "下载中"
@@ -529,7 +550,7 @@ class GalleryActivity : ComponentActivity() {
                         GalleryDownloadState.COMPLETED -> if (download.partial) "继续所选页" else "已离线"
                         else -> if (site.category != SiteCategory.COMIC) "下载全部" else "下载整本"
                     }, R.drawable.ic_download, Modifier.weight(1f)) { downloadAction(download) }
-                VerticalDivider(Modifier.height(24.dp), color = RentalEdge)
+                VerticalDivider(Modifier.height(24.dp), color = MaterialTheme.colorScheme.outline)
                 IconAction(R.drawable.ic_more, "更多图集操作") { galleryMoreOptions(download) }
             }
             if (!offlineOnly && gallery.embeddedVideos.isNotEmpty()) {
@@ -548,7 +569,7 @@ class GalleryActivity : ComponentActivity() {
             }
             if (gallery.cached && !offlineOnly) Copy("当前使用已保存的$noun 信息；已保存图页可离线$verb，整本下载可在下载中心查看。")
             if (gallery.description.isNotBlank()) Expandable("简介", expandedInitially = true) {
-                Text(gallery.description, style = MaterialTheme.typography.bodyMedium, color = RentalMuted)
+                Text(gallery.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             gallery.groups.filterValues { it.isNotEmpty() }.forEach { (name, links) ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

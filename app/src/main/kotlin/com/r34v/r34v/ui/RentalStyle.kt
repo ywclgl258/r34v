@@ -83,26 +83,15 @@ internal val LocalMotionEnabled = staticCompositionLocalOf { true }
     }
 }
 
-@Composable internal fun RentalSeekThumb(enabled: Boolean = true) {
-    Box(Modifier.size(12.dp, 18.dp).background(if (enabled) RentalPaper else RentalMuted, RentalShape),
-        contentAlignment = Alignment.Center) {
-        Box(Modifier.size(2.dp, 8.dp).background(RentalInk))
-    }
-}
-
-@Composable internal fun RentalSeekTrack(fraction: Float) {
-    Box(Modifier.fillMaxWidth().height(4.dp).clip(RentalShape).background(RentalEdge)) {
-        Box(Modifier.fillMaxWidth(fraction.coerceIn(0f, 1f)).fillMaxHeight().background(RentalRed))
-    }
-}
-
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable internal fun RentalTag(label: String, longClickLabel: String, onLongClick: () -> Unit, onClick: () -> Unit) {
+    val palette = LocalArtworkPalette.current
+    val shape = if (palette != null) ArtworkPill else RentalShape
     Box(Modifier.widthIn(min = 48.dp).heightIn(min = 48.dp)
-        .clip(RentalShape).combinedClickable(role = Role.Button, onLongClickLabel = longClickLabel, onLongClick = onLongClick, onClick = onClick),
+        .clip(shape).combinedClickable(role = Role.Button, onLongClickLabel = longClickLabel, onLongClick = onLongClick, onClick = onClick),
         contentAlignment = Alignment.Center) {
-        Text(label, Modifier.background(RentalSurface, RentalShape).border(RentalBorder, RentalShape)
-            .padding(horizontal = 10.dp, vertical = 6.dp), color = RentalPaper, style = MaterialTheme.typography.labelLarge)
+        Text(label, Modifier.background(palette?.surface ?: RentalSurface, shape).border(1.dp, palette?.edge ?: RentalEdge, shape)
+            .padding(horizontal = 10.dp, vertical = 6.dp), color = palette?.ink ?: RentalPaper, style = MaterialTheme.typography.labelLarge)
     }
 }
 
@@ -141,12 +130,15 @@ private val printInks = listOf(RentalRed, RentalPaper, RentalBlue)
 }
 
 @Composable internal fun RentalSiteSwitch(name: String, compact: Boolean, click: () -> Unit) {
+    val palette = LocalArtworkPalette.current
     Box(Modifier.heightIn(min = 48.dp).widthIn(min = 48.dp)
         .clickable(role = Role.Button, onClick = click)
         .semantics { contentDescription = "切换站点，当前 $name" }, contentAlignment = Alignment.Center) {
-        Row(Modifier.border(1.dp, RentalEdge, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 5.dp),
+        val shape = if (palette != null) ArtworkPill else RentalShape
+        val surface = palette?.let { Modifier.background(it.surface, shape) } ?: Modifier.border(1.dp, RentalEdge, shape)
+        Row(surface.padding(horizontal = 10.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            if (!compact) Text(name, Modifier.widthIn(max = 110.dp), color = RentalPaper,
+            if (!compact) Text(name, Modifier.widthIn(max = 110.dp), color = palette?.ink ?: RentalPaper,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
             Glyph(R.drawable.ic_chevron_down, null, Modifier.size(14.dp))
         }

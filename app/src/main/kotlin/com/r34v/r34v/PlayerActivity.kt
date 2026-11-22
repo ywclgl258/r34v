@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -92,6 +93,7 @@ class PlayerActivity : ComponentActivity() {
     private var presented = false
     private var autoFullscreenApplied = false
     private var resumePlay = true
+    private var showingCover by mutableStateOf(false)
     private var pendingError: Throwable? = null
     private var hintJob: Job? = null
     private var locked by mutableStateOf(false)
@@ -125,7 +127,8 @@ class PlayerActivity : ComponentActivity() {
         userRate = playbackPreferences.defaultRate
         fullscreen = savedInstanceState?.getBoolean("fullscreen") ?: false
         autoFullscreenApplied = savedInstanceState?.getBoolean("autoFullscreenApplied") ?: false
-        resumePlay = savedInstanceState?.getBoolean("resumePlay") ?: true
+        showingCover = savedInstanceState?.getBoolean("showingCover") ?: !intent.getBooleanExtra("autoplay", true)
+        resumePlay = savedInstanceState?.getBoolean("resumePlay") ?: !showingCover
         pipMode = Build.VERSION.SDK_INT >= 26 && isInPictureInPictureMode
         locked = savedInstanceState?.getBoolean("locked") ?: false
         pauseAt = savedInstanceState?.getLong("pauseAt") ?: 0L
@@ -249,7 +252,7 @@ class PlayerActivity : ComponentActivity() {
                     }
                     Player.STATE_READY -> { phase = null; presented = true; bufferingSince = 0
                         if (created.duration > 0 && !loop.validFor(created.duration)) { loop = VideoLoopRange(); gestureHint("片源时长已变更，循环区间已清除") }
-                        if (!autoFullscreenApplied && store.bool("auto_fullscreen")) { autoFullscreenApplied = true; fullscreen = true }
+                        if (!showingCover && !autoFullscreenApplied && store.bool("auto_fullscreen")) { autoFullscreenApplied = true; fullscreen = true }
                         startPendingAutoDownload() }
                     Player.STATE_ENDED -> { phase = null; bufferingSince = 0
                         if (loop.active && created.playWhenReady) { created.seekTo(loop.startMs); created.play() }
@@ -347,30 +350,104 @@ class PlayerActivity : ComponentActivity() {
         SideEffect { applyFullscreen() }
         val engine = remember(engineRevision) { player }
         @Suppress("UNUSED_VARIABLE") val changed = revision
-
-        Column(Modifier.fillMaxSize().background(if (fullscreen || pipMode) Color.Black else RentalInk)
-            .then(if (pipMode) Modifier else if (fullscreen) Modifier.displayCutoutPadding() else Modifier.safeDrawingPadding())) {
-            Box((if (fullscreen || pipMode) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(minOf(windowSizeDp().width * 9f / 16f, windowSizeDp().height * .55f).dp)).testTag("player-surface")) {
+        val palette = rememberArtworkPalette(SiteRegistry.byIdOrDefault(video.site), video.thumb, SiteCategory.VIDEO,
+            cachedOnly = offline || !showingCover)
+        val coverVisible = showingCover && !fullscreen && !pipMode
+        ArtworkColors(palette) {
+        Column(Modifier.fillMaxSize().then(if (fullscreen || pipMode) Modifier.background(Color.Black) else Modifier.artworkBackground(palette))
+            .then(when {
+                pipMode -> Modifier
+                fullscreen -> Modifier.displayCutoutPadding()
+                coverVisible -> Modifier.navigationBarsPadding().displayCutoutPadding()
+                else -> Modifier.safeDrawingPadding()
+            })) {
+            if (!coverVisible) Box((if (fullscreen || pipMode) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(minOf(windowSizeDp().width * 9f / 16f, windowSizeDp().height * .55f).dp))
+                .background(Color.Black).testTag("player-surface")) {
                 AndroidView(factory = { context -> PlayerView(context).also { view ->
                     playerView = view; view.useController = false; view.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER); installGestures(view); view.player = engine
                 } }, modifier = Modifier.fillMaxSize(), update = { it.player = engine }, onRelease = { it.player = null; playerView = null })
-                if (phase != null) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .75f)), contentAlignment = Alignment.Center) { Loading(title = phase!!) }
-                if (hint.isNotBlank()) Text(hint, Modifier.align(Alignment.Center).background(RentalInk, RentalShape)
-                    .padding(horizontal = 12.dp, vertical = 8.dp), color = RentalPaper)
+                phase?.let { loading ->
+                    Box(Modifier.fillMaxSize().background(palette.bottom.copy(alpha = .84f)), contentAlignment = Alignment.Center) {
+                        Loading(title = loading)
+                    }
+                }
+                if (hint.isNotBlank()) Text(hint, Modifier.align(Alignment.Center).background(palette.bottom, ArtworkPill)
+                    .padding(horizontal = 14.dp, vertical = 8.dp), color = palette.ink)
                 if (!pipMode) {
-                    if (locked) Action("解锁画面", modifier = Modifier.align(Alignment.CenterStart).padding(12.dp)) { locked = false; controls = true }
-                    else if (controls || failureVisible) VideoControls(engine)
+                    if (locked) ArtworkAction("解锁画面", Modifier.align(Alignment.CenterStart).padding(12.dp), primary = false) { locked = false; controls = true }
+                    else if (controls || failureVisible) VideoControls(engine, palette)
                     if (loop.startMs >= 0 && !controls && !locked) TextAction(::loopOptions,
-                        Modifier.align(Alignment.BottomEnd).padding(8.dp).background(RentalInk, RentalShape)) {
+                        Modifier.align(Alignment.BottomEnd).padding(8.dp).background(palette.bottom, ArtworkPill)) {
                         Text(loopLabel(), Modifier.testTag("video-loop-range"))
                     }
                 }
             }
-            if (!fullscreen && !pipMode) Details()
+            if (!fullscreen && !pipMode) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                if (coverVisible) PosterDetails(palette)
+                Details(showTitle = !coverVisible)
+            }
         }
         dialogs.Host()
+        }
     }
-    @Composable private fun BoxScope.VideoControls(engine: ExoPlayer?) {
+
+    @Composable private fun PosterDetails(palette: ArtworkPalette) {
+        val source = SiteRegistry.byIdOrDefault(video.site)
+        val height = (windowSizeDp().height * .42f).dp.coerceIn(220.dp, 390.dp)
+        Box(Modifier.fillMaxWidth().heightIn(min = height).artworkReveal(video.entryKey).testTag("video-poster-detail")) {
+            SiteImage(video.thumb, source, Modifier.matchParentSize())
+            Box(Modifier.matchParentSize().background(Brush.verticalGradient(
+                0f to palette.bottom.copy(alpha = .48f), .30f to Color.Transparent, .53f to Color.Transparent, 1f to palette.bottom)))
+            Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 9.dp, vertical = 3.dp),
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                IconButton({ finish() }) {
+                    Box(Modifier.size(38.dp).background(palette.bottom.copy(alpha = .87f), CircleShape), contentAlignment = Alignment.Center) {
+                        Glyph(R.drawable.ic_back, "返回", Modifier.size(19.dp))
+                    }
+                }
+                val favorite = store.isFavorite("video", video.id, video.site)
+                IconButton(::toggleVideoFavorite, Modifier.semantics { selected = favorite }) {
+                    Box(Modifier.size(38.dp).background(palette.bottom.copy(alpha = .87f), CircleShape), contentAlignment = Alignment.Center) {
+                        Glyph(if (favorite) R.drawable.ic_check else R.drawable.ic_bookmark, if (favorite) "已收藏" else "收藏", Modifier.size(19.dp))
+                    }
+                }
+            }
+            Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 64.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(video.title, Modifier.semantics { heading() }, color = palette.ink,
+                    style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
+                val metadata = listOf(video.duration, video.type).filter(String::isNotBlank).joinToString(" · ")
+                if (metadata.isNotBlank()) Copy(metadata)
+                val external = detail?.takeIf { it.streams.isEmpty() }?.externalPlayers?.firstOrNull()
+                ArtworkAction(if (external == null) "立即播放" else external.label, Modifier.fillMaxWidth(), R.drawable.ic_play) {
+                    if (external != null) openExternalPlayer(external)
+                    else startPosterPlayback()
+                }
+            }
+        }
+    }
+
+    private fun startPosterPlayback() {
+        showingCover = false
+        resumePlay = true
+        if (player?.playbackState == Player.STATE_READY && !autoFullscreenApplied && store.bool("auto_fullscreen")) {
+            autoFullscreenApplied = true
+            fullscreen = true
+        }
+        if (failureVisible) restart()
+        else player?.play()
+    }
+
+    private fun openExternalPlayer(link: Link) {
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, link.url.toUri())) }
+            .onFailure { toast("没有可用的浏览器") }
+    }
+
+    private fun toggleVideoFavorite() {
+        store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site)
+        revision++
+    }
+    @Composable private fun BoxScope.VideoControls(engine: ExoPlayer?, palette: ArtworkPalette) {
         var current by remember(engine) { mutableLongStateOf(position) }; var duration by remember(engine) { mutableLongStateOf(0) }; var scrubbing by remember { mutableStateOf(false) }
         LaunchedEffect(engine) { while (isActive) { if (!scrubbing) current = engine?.currentPosition?.coerceAtLeast(0) ?: position; duration = engine?.duration?.coerceAtLeast(0) ?: 0; delay(500) } }
         var focused by remember { mutableStateOf(false) }
@@ -381,10 +458,12 @@ class PlayerActivity : ComponentActivity() {
                 controls = false
             }
         }
-        val plate = Modifier.clip(RentalShape)
-            .background(if (LocalReduceTransparency.current) RentalInk else RentalInk.copy(alpha = .88f))
-            .border(1.dp, RentalEdge.copy(alpha = .7f), RentalShape)
-        Box(Modifier.fillMaxSize().padding(8.dp).onFocusChanged { focused = it.hasFocus }.focusGroup()) {
+        val opaque = LocalReduceTransparency.current
+        val plate = Modifier.clip(ArtworkPill)
+            .background(Brush.verticalGradient(listOf(palette.surface, palette.bottom).map { it.copy(alpha = if (opaque) 1f else .94f) }))
+            .border(1.dp, palette.edge, ArtworkPill)
+        Box(Modifier.fillMaxSize().padding(8.dp).artworkReveal(Unit).onFocusChanged { focused = it.hasFocus }.focusGroup()
+            .testTag("artwork-player-controls")) {
             Row(Modifier.align(Alignment.TopStart).then(plate)) {
                 IconAction(R.drawable.ic_back, "返回") { if (fullscreen) fullscreen = false else finish() }
             }
@@ -397,50 +476,52 @@ class PlayerActivity : ComponentActivity() {
                 IconAction(R.drawable.ic_more, "播放器菜单", click = ::playbackOptions)
                 IconAction(R.drawable.ic_fullscreen, if (fullscreen) "退出全屏" else "全屏") { fullscreen = !fullscreen }
             }
-            if (failureVisible) Action("重试", primary = true, modifier = Modifier.align(Alignment.Center), click = ::restart)
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().then(plate)) {
+            if (failureVisible) ArtworkAction("重试", modifier = Modifier.align(Alignment.Center), click = ::restart)
+            Column(Modifier.align(Alignment.BottomCenter).widthIn(max = 760.dp).fillMaxWidth()) {
                 if (loop.startMs >= 0) TextAction(::loopOptions, Modifier.align(Alignment.End).padding(horizontal = 8.dp)) {
                     Text(loopLabel(), Modifier.testTag("video-loop-range"))
                 }
-                Row(Modifier.fillMaxWidth().padding(end = 10.dp), verticalAlignment = Alignment.CenterVertically,
+                Row(Modifier.fillMaxWidth().then(plate).padding(start = 3.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     val playing = engine?.isPlaying == true
                     IconButton(onClick = {
                         engine?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); if (it.isPlaying) it.pause() else it.play() }
                     }, enabled = engine != null, modifier = Modifier.size(48.dp)) {
-                        Box(Modifier.size(31.dp).background(if (engine == null) RentalMuted else RentalPaper, RentalShape),
+                        Box(Modifier.size(36.dp).background(if (engine == null) palette.edge else palette.accent, CircleShape),
                             contentAlignment = Alignment.Center) {
-                            CompositionLocalProvider(LocalContentColor provides RentalInk) {
+                            CompositionLocalProvider(LocalContentColor provides if (engine == null) palette.ink else palette.onAccent) {
                                 Glyph(if (playing) R.drawable.ic_pause else R.drawable.ic_play, if (playing) "暂停" else "播放", Modifier.size(17.dp))
                             }
                         }
                     }
-                    Text(timeText(current), color = RentalPaper, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                    Text(timeText(current), color = palette.ink, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
                     Slider(current.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)), { scrubbing = true; current = it.toLong() }, Modifier.weight(1f).heightIn(min = 48.dp).semantics { contentDescription = "播放进度" },
                         valueRange = 0f..duration.toFloat().coerceAtLeast(1f), enabled = duration > 0, onValueChangeFinished = { engine?.seekTo(current); scrubbing = false },
-                        thumb = { RentalSeekThumb(enabled = duration > 0) },
-                        track = { state -> RentalSeekTrack(if (duration > 0) state.value / duration.toFloat() else 0f) })
-                    Text(timeText(duration), color = RentalMuted, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                        thumb = { ArtworkSeekThumb(duration > 0) },
+                        track = { state -> ArtworkSeekTrack(if (duration > 0) state.value / duration else 0f) })
+                    Text(timeText(duration), color = palette.muted, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
                 }
             }
         }
     }
     @Composable private fun PlaybackSetting(value: String, description: String, enabled: Boolean, click: () -> Unit) {
-        TextButton(onClick = click, enabled = enabled, shape = RentalShape,
+        val colors = MaterialTheme.colorScheme
+        TextButton(onClick = click, enabled = enabled, shape = ArtworkPill,
             modifier = Modifier.widthIn(max = 88.dp).heightIn(min = 48.dp).semantics { contentDescription = description },
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-            colors = ButtonDefaults.textButtonColors(contentColor = RentalPaper, disabledContentColor = RentalMuted)) {
+            colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurface, disabledContentColor = colors.onSurfaceVariant)) {
             Text(value, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelMedium, maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             if (enabled) Glyph(R.drawable.ic_chevron_down, null, Modifier.size(12.dp))
         }
     }
     @Composable private fun CompactTool(icon: Int, label: String, active: Boolean? = null, click: () -> Unit) {
-        val ink = if (active == true) RentalInk else RentalPaper
-        Row(Modifier.heightIn(min = 48.dp).clip(RentalShape)
+        val colors = MaterialTheme.colorScheme
+        val ink = if (active == true) colors.onPrimary else colors.onSurface
+        Row(Modifier.heightIn(min = 48.dp).clip(ArtworkPill)
             .clickable(role = Role.Button, onClick = click).semantics { if (active != null) selected = active }
-            .padding(vertical = 4.dp).border(1.dp, if (active == true) RentalPaper else RentalEdge, RentalShape)
-            .background(if (active == true) RentalPaper else RentalSurface, RentalShape).padding(horizontal = 9.dp, vertical = 9.dp),
+            .padding(vertical = 4.dp).border(1.dp, if (active == true) colors.primary else colors.outline, ArtworkPill)
+            .background(if (active == true) colors.primary else colors.surface, ArtworkPill).padding(horizontal = 10.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             CompositionLocalProvider(LocalContentColor provides ink) { Glyph(icon, null, Modifier.size(16.dp)) }
             Text(label, color = ink, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold)
@@ -454,50 +535,45 @@ class PlayerActivity : ComponentActivity() {
         }
     } }
 
-    @Composable private fun Details() {
+    @Composable private fun Details(showTitle: Boolean) {
         @Suppress("UNUSED_VARIABLE") val changed = revision
         val personalRevision by app.library.personal.changes.collectAsState()
         val waiting = remember(personalRevision, video.entryKey) { app.library.personal.contains(video) }
-        Column(Modifier.fillMaxSize().background(RentalInk).verticalScroll(rememberScrollState())
-            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Column(Modifier.fillMaxWidth().clip(RentalShape).background(RentalPaper).rentalStock()
-                .padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(SiteRegistry.byIdOrDefault(video.site).name, Modifier.weight(1f), color = RentalInk.copy(alpha = .75f),
-                        style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                    RentalStripes(Modifier.size(30.dp, 11.dp))
+        val colors = MaterialTheme.colorScheme
+        Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (showTitle) {
+                    Text(video.title, Modifier.semantics { heading() }, color = colors.onSurface,
+                        style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+                    val metadata = listOf(video.duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
+                    if (metadata.isNotBlank()) Copy(metadata)
                 }
-                Text(video.title, Modifier.semantics { heading() }, color = RentalInk,
-                    style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-                val metadata = listOf(video.duration, video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
-                if (metadata.isNotBlank()) Text(metadata, color = RentalInk.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall)
-                HorizontalDivider(Modifier.padding(vertical = 2.dp), color = RentalInk.copy(alpha = .24f))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    val indicator = if (failureVisible) Color(0xff9f3027) else RentalInk
-                    Spacer(Modifier.size(5.dp).background(indicator, CircleShape))
-                    Text(status, color = indicator, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    val indicator = if (failureVisible) Color(0xffffb0b9) else colors.onSurfaceVariant
+                    Spacer(Modifier.size(5.dp).background(if (failureVisible) indicator else colors.primary, CircleShape))
+                    Text(status, color = indicator, style = MaterialTheme.typography.labelMedium)
                 }
             }
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp),
                 itemVerticalAlignment = Alignment.CenterVertically) {
-                val favorite = store.isFavorite("video", video.id, video.site)
-                CompactTool(R.drawable.ic_bookmark, if (favorite) "已收藏" else "收藏", active = favorite) {
-                    store.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site); revision++
+                if (showTitle) {
+                    val favorite = store.isFavorite("video", video.id, video.site)
+                    CompactTool(R.drawable.ic_bookmark, if (favorite) "已收藏" else "收藏", active = favorite, click = ::toggleVideoFavorite)
                 }
                 CompactTool(R.drawable.ic_history, "稍后看 / 合集", active = waiting, click = ::shelfOptions)
                 if (!offline && detail?.streams?.isNotEmpty() == true) CompactTool(R.drawable.ic_download, "下载") { download() }
                 IconButton(onClick = ::playbackOptions, modifier = Modifier.size(48.dp)) {
-                    Box(Modifier.size(39.dp).border(RentalBorder, RentalShape).background(RentalSurface, RentalShape), contentAlignment = Alignment.Center) {
-                        CompositionLocalProvider(LocalContentColor provides RentalPaper) { Glyph(R.drawable.ic_more, "更多播放操作", Modifier.size(18.dp)) }
+                    Box(Modifier.size(39.dp).background(colors.surface, CircleShape), contentAlignment = Alignment.Center) {
+                        Glyph(R.drawable.ic_more, "更多播放操作", Modifier.size(18.dp))
                     }
                 }
             }
             val players = detail?.externalPlayers.orEmpty()
-            if (players.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                players.forEach { link -> Action(link.label, primary = true) {
-                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, link.url.toUri())) }
-                        .onFailure { toast("没有可用的浏览器") }
-                } }
+            val extraPlayers = if (!showTitle && detail?.streams?.isEmpty() == true) players.drop(1) else players
+            if (extraPlayers.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                extraPlayers.forEach { link -> ArtworkAction(link.label) { openExternalPlayer(link) } }
             }
             QueueNextAction(this@PlayerActivity, video, intent.getStringExtra("queue_session"), dialogs)
             if (timerRemaining > 0) TextAction(::sleepTimer) { Text("将在 ${timeText(timerRemaining)} 后暂停") }
@@ -518,15 +594,18 @@ class PlayerActivity : ComponentActivity() {
                 } } } }
                 if (data.comments.isNotEmpty()) Expandable("评论 · ${data.comments.size}") {
                     data.comments.forEachIndexed { index, comment ->
-                        if (index > 0) HorizontalDivider(color = RentalEdge.copy(alpha = .5f))
+                        if (index > 0) HorizontalDivider(color = colors.outline.copy(alpha = .5f))
                         Text(listOf(comment.author, comment.date).filter(String::isNotBlank).joinToString(" · "),
-                            color = RentalMuted, style = MaterialTheme.typography.labelMedium)
+                            color = colors.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
                         TimestampText(comment.text, mediaDuration, ::seekTimestamp)
                     }
                 }
                 val relatedVideos = data.related.filter(store::allowed).take(24)
                 if (relatedVideos.isNotEmpty()) { Title("相关推荐"); relatedVideos.chunked(2).forEach { pair -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    pair.forEach { related -> MediaCard(related, Modifier.weight(1f)) { startActivity(Intent(this@PlayerActivity, PlayerActivity::class.java).putExtra("video", store.gson.toJson(related))) } }; if (pair.size == 1) Spacer(Modifier.weight(1f))
+                    pair.forEach { related -> MediaCard(related, Modifier.weight(1f)) {
+                        startActivity(Intent(this@PlayerActivity, PlayerActivity::class.java)
+                            .putExtra("video", store.gson.toJson(related)).putExtra("autoplay", false))
+                    } }; if (pair.size == 1) Spacer(Modifier.weight(1f))
                 } } }
             }
         }
@@ -679,7 +758,7 @@ class PlayerActivity : ComponentActivity() {
     private fun savePosition() { val exo = player ?: return; position = exo.currentPosition.coerceAtLeast(0); val duration = exo.duration.takeIf { it > 0 } ?: durationSeconds(video.duration) * 1000
         store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000, quality = stream?.label.orEmpty(), site = video.site))
     }
-    override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); outState.putBoolean("fullscreen", fullscreen); outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied); outState.putBoolean("resumePlay", player?.playWhenReady ?: resumePlay); outState.putBoolean("locked", locked); outState.putLong("pauseAt", pauseAt); outState.putLong("loopA", loop.startMs); outState.putLong("loopB", loop.endMs); super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); outState.putBoolean("fullscreen", fullscreen); outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied); outState.putBoolean("resumePlay", player?.playWhenReady ?: resumePlay); outState.putBoolean("showingCover", showingCover); outState.putBoolean("locked", locked); outState.putLong("pauseAt", pauseAt); outState.putLong("loopA", loop.startMs); outState.putLong("loopB", loop.endMs); super.onSaveInstanceState(outState) }
     override fun onResume() {
         super.onResume()
         window.decorView.post {

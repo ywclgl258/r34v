@@ -8,11 +8,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.semantics.*
@@ -39,6 +42,7 @@ private fun InputStream.readBackup(): ByteArray {
     var mode by rememberSaveable { mutableIntStateOf(0) }
     var password by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
+    var confirmationSubmitted by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var pending by rememberSaveable { mutableStateOf<String?>(null) }
@@ -76,21 +80,40 @@ private fun InputStream.readBackup(): ByteArray {
     }
     // 预览被清空/组件离开时释放授权，恢复完成后不再占着文件。
     DisposableEffect(Unit) { onDispose { previousUri?.let(::releasePersisted); previousUri = null } }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        if (!busy) Choices(listOf("导出备份", "恢复备份"), mode) { mode = it; preview = null; status = null; password = ""; confirmation = "" }
+    val focus = LocalFocusManager.current
+    val colors = MaterialTheme.colorScheme
+    val mismatch = confirmation != password && (confirmationSubmitted ||
+        confirmation.isNotEmpty() && confirmation.length >= password.length)
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+        .padding(horizontal = LocalUiDensity.current.pagePadding).padding(top = 8.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (!busy) ContentTabs(listOf("导出备份", "恢复备份"), mode) {
+            focus.clearFocus()
+            mode = it; preview = null; status = null; password = ""; confirmation = ""; confirmationSubmitted = false
+        }
         Copy("备份包含收藏、标签订阅、观看与阅读进度、片单、书签、屏蔽词和设置。下载文件仍由下载中心管理，恢复后请重新登录站点账号。")
+        Column(Modifier.fillMaxWidth().artworkReveal(mode to (preview != null)).artworkPanel().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (preview == null) {
-            if (mode == 0 || sourceUri != null) TextField(password, { password = it; status = null }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text("备份密码") },
-                singleLine = true, visualTransformation = PasswordVisualTransformation(), colors = filledFieldColors(),
-                shape = RentalShape,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-            if (mode == 0) TextField(confirmation, { confirmation = it }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text("再次输入密码") },
-                singleLine = true, visualTransformation = PasswordVisualTransformation(), colors = filledFieldColors(),
-                shape = RentalShape,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+            if (mode == 0 || sourceUri != null) TextField(password, { password = it; status = null; confirmationSubmitted = false }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text("备份密码") },
+                singleLine = true, visualTransformation = PasswordVisualTransformation(), colors = rentalSearchFieldColors(),
+                shape = ArtworkShape,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password,
+                    imeAction = if (mode == 0) ImeAction.Next else ImeAction.Done))
+            if (mode == 0) TextField(confirmation, { confirmation = it; confirmationSubmitted = false }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text("再次输入密码") },
+                singleLine = true, visualTransformation = PasswordVisualTransformation(), colors = rentalSearchFieldColors(),
+                shape = ArtworkShape, isError = mismatch,
+                supportingText = if (mismatch) ({ Text("两次输入的密码不一致") }) else null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = {
+                    confirmationSubmitted = true
+                    if (confirmation == password) focus.clearFocus()
+                }))
             if (mode == 0) {
                 Copy("密码至少 8 个字符。恢复备份时需要此密码。")
-                Action("选择位置并导出", primary = true, enabled = !busy && password.length >= 8 && confirmation == password) {
+                Action("选择位置并导出", Modifier.fillMaxWidth(), primary = true,
+                    enabled = !busy && password.length >= 8 && confirmation == password) {
+                    focus.clearFocus()
                     busy = true; status = null
                     val secret = password.toCharArray()
                     scope.launch {
@@ -107,8 +130,9 @@ private fun InputStream.readBackup(): ByteArray {
                     }
                 }
             } else {
-                Action(if (sourceUri == null) "选择备份文件" else "重新选择文件", enabled = !busy) { status = null; import.launch(arrayOf("*/*")) }
-                if (sourceUri != null) Action("解密并预览", primary = true, enabled = !busy && password.isNotEmpty()) {
+                Action(if (sourceUri == null) "选择备份文件" else "重新选择文件",
+                    Modifier.fillMaxWidth(), primary = sourceUri == null, enabled = !busy) { status = null; import.launch(arrayOf("*/*")) }
+                if (sourceUri != null) Action("解密并预览", Modifier.fillMaxWidth(), primary = true, enabled = !busy && password.isNotEmpty()) {
                     busy = true; status = null
                     val secret = password.toCharArray(); val uri = requireNotNull(sourceUri).toUri()
                     scope.launch {
@@ -126,9 +150,14 @@ private fun InputStream.readBackup(): ByteArray {
         } else {
             val backup = preview!!
             Title("恢复预览")
-            Text(backup.summary())
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                backup.summary().lineSequence().forEach { item ->
+                    Text(item, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            HorizontalDivider(color = colors.outline)
             Copy("记录将合并去重，并保留时间较新的观看与阅读进度。设置使用备份中的值。")
-            Action("合并恢复", primary = true, enabled = !busy) {
+            Action("合并恢复", Modifier.fillMaxWidth(), primary = true, enabled = !busy) {
                 busy = true
                 scope.launch {
                     try { withContext(Dispatchers.IO) { app.library.restoreBackup(backup) }; preview = null; status = "已合并恢复"; restored() }
@@ -138,7 +167,11 @@ private fun InputStream.readBackup(): ByteArray {
             }
             TextAction({ preview = null }, enabled = !busy) { Text("取消恢复") }
         }
+        }
         if (busy) Loading(title = if (preview == null) "正在处理备份" else "正在合并数据")
-        status?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
+        status?.let { message ->
+            Text(message, Modifier.fillMaxWidth().artworkPanel().padding(14.dp)
+                .semantics { liveRegion = LiveRegionMode.Polite }, style = MaterialTheme.typography.bodyMedium)
+        }
     }
 }
