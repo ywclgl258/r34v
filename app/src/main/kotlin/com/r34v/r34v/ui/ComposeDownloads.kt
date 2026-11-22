@@ -25,6 +25,7 @@ import androidx.media3.exoplayer.offline.Download
 import com.r34v.r34v.R
 import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
+import com.r34v.r34v.downloads.failedRemoval
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
@@ -35,6 +36,7 @@ private data class DownloadSnapshot(
     /** Rebuilt from the storage tree; the only list that survives an uninstall. */
     val onDisk: List<LibraryRecord> = emptyList(),
     val root: String = "",
+    val failedBookIds: Set<String> = emptySet(),
 )
 
 @Composable fun DownloadCenter(app: R34Application, resumed: Boolean, dialogs: ComposeDialogs,
@@ -88,7 +90,8 @@ private data class DownloadSnapshot(
                             task.copy(state = GalleryDownloadState.FAILED, error = "下载图页不完整，请重新下载") else task
                     }
                     val legacy = SiteRegistry.all.flatMap { owner -> app.library.localVideos(owner.id).map { it.copy(site = owner.id) } }
-                    DownloadSnapshot(tasks, checked, legacy, disk, root)
+                    DownloadSnapshot(tasks, checked, legacy, disk, root,
+                        books.filter { it.state == GalleryDownloadState.FAILED && !it.failedRemoval }.mapTo(mutableSetOf()) { it.id })
                 }
                 ready = true; message = null
             } catch (e: Exception) { if (e is CancellationException) throw e; ready = true; message = e.message ?: "下载任务读取失败" }
@@ -143,6 +146,10 @@ private data class DownloadSnapshot(
     val count = videos.size + books.size + legacy.size + diskComics.size + diskVideos.size
     val advancedFilterCount = listOf(siteFilter, groupFilter).count { it != null }
     val filtersActive = advancedFilterCount > 0 || kind != 0 || statusFilter != 0 || query.isNotBlank()
+    val failedVideos = videos.filter { it.first.state == Download.STATE_FAILED }
+    val failedBooks = books.filter { it.id in snapshot.failedBookIds }
+    val failedCount = failedVideos.size + failedBooks.size
+    val retrying = "retry-failed" in busy
     LazyColumn(Modifier.fillMaxSize().testTag("download-center"), contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item("filters") {
             Row(
@@ -189,7 +196,8 @@ private data class DownloadSnapshot(
                 }
                 if (videos.isNotEmpty() || books.isNotEmpty()) TextAction({
                     val choices = videos.filter { it.first.state != Download.STATE_COMPLETED }.map { "v:${it.first.request.id}" to it.second.video.title } +
-                        books.filter { it.state !in listOf(GalleryDownloadState.COMPLETED, GalleryDownloadState.REMOVING) }.map { "g:${it.id}" to it.entry.title }
+                        books.filter { !it.failedRemoval && it.state !in listOf(GalleryDownloadState.COMPLETED, GalleryDownloadState.REMOVING) }
+                            .map { "g:${it.id}" to it.entry.title }
                     dialogs.content = {
                         var selected by remember { mutableStateOf(choices.map { it.first }.toSet()) }
                         AlertDialog(dialogs::dismiss, title = { Text("批量管理 · ${selected.size} 项") }, text = {
@@ -204,13 +212,40 @@ private data class DownloadSnapshot(
                                     act("batch") { for (key in selected) {
                                         if (key.startsWith("v:")) app.playback.pause(key.removePrefix("v:"), pause)
                                         else if (pause) app.galleryDownloads.pause(key.removePrefix("g:"))
-                                        else snapshot.books.firstOrNull { it.id == key.removePrefix("g:") }?.let { app.galleryDownloads.add(it.entry) }
+                                        else snapshot.books.firstOrNull { it.id == key.removePrefix("g:") }?.let { app.galleryDownloads.add(it.entry, it.selectedPages) }
                                     } }
                                 }, enabled = selected.isNotEmpty()) { Text(label) } }
                             }
                         }, dismissButton = { TextAction(dialogs::dismiss) { Text("取消") } })
                     }
-                }) { Text("批量管理") }
+                }, enabled = !retrying) { Text("批量管理") }
+                if (failedCount > 0 || retrying) TextAction({
+                    dialogs.confirm("重试当前列表中的 $failedCount 项失败下载？", "重试失败项",
+                        "视频沿用原清晰度，图集保留原选页和已保存的图页。") {
+                        act("retry-failed") {
+                            val errors = mutableListOf<String>()
+                            var accepted = 0
+                            suspend fun retry(title: String, enqueue: suspend () -> Boolean) {
+                                try {
+                                    if (enqueue()) accepted++
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    errors += "$title · ${e.message ?: "无法重试"}"
+                                }
+                            }
+                            for ((task, meta) in failedVideos) {
+                                retry("${meta.video.title} · ${meta.quality}") { app.playback.retryFailed(task.request.id) }
+                            }
+                            for (book in failedBooks) retry(book.entry.title) { app.galleryDownloads.retryFailed(book.id) }
+                            val summary = "已提交 $accepted 项重试"
+                            val skipped = failedCount - accepted - errors.size
+                            val results = listOfNotNull(summary, "$skipped 项状态已变化".takeIf { skipped > 0 },
+                                errors.joinToString("\n").takeIf { errors.isNotEmpty() })
+                            dialogs.message("重试结果", results.joinToString("\n"))
+                        }
+                    }
+                }, enabled = busy.isEmpty()) { Text(if (retrying) "正在重试" else "重试失败项 · $failedCount") }
             }
             if (!networkAllowed) Copy("正在等待${if (onlyUnmetered) "非计费网络" else "网络连接"}，手动暂停的任务会保持暂停。")
             if (batch.total > 0) {
@@ -246,7 +281,7 @@ private data class DownloadSnapshot(
                 GalleryDownloadState.DOWNLOADING -> "下载中"
                 GalleryDownloadState.PAUSED -> "已暂停"
                 GalleryDownloadState.RETRY_WAIT -> "等待限流"
-                GalleryDownloadState.FAILED -> "下载失败"
+                GalleryDownloadState.FAILED -> if (book.failedRemoval) "删除失败" else "下载失败"
                 GalleryDownloadState.COMPLETED -> if (book.partial) "部分已保存" else "已下载 · 可离线打开"
                 GalleryDownloadState.REMOVING -> "正在删除"
             }
@@ -292,9 +327,13 @@ private data class DownloadSnapshot(
                 if (completed && book.partial) {
                     Action("查看已存页", primary = true) { comic(book.entry) }
                     TextAction({ act(book.id) { app.galleryDownloads.add(book.entry) } }) { Text("继续保存") }
-                } else Action(if (completed) "离线打开" else if (downloading) "暂停" else if (book.state == GalleryDownloadState.FAILED) "重试" else "继续",
-                    primary = completed, enabled = book.id !in busy && book.state != GalleryDownloadState.REMOVING) {
-                    if (completed) comic(book.entry) else act(book.id) { if (downloading) app.galleryDownloads.pause(book.id) else app.galleryDownloads.add(book.entry) }
+                } else if (!book.failedRemoval) Action(if (completed) "离线打开" else if (downloading) "暂停" else if (book.state == GalleryDownloadState.FAILED) "重试" else "继续",
+                    primary = completed, enabled = !retrying && book.id !in busy && book.state != GalleryDownloadState.REMOVING) {
+                    if (completed) comic(book.entry) else act(book.id) {
+                        if (downloading) app.galleryDownloads.pause(book.id)
+                        else if (book.id in snapshot.failedBookIds) app.galleryDownloads.retryFailed(book.id)
+                        else app.galleryDownloads.add(book.entry, book.selectedPages)
+                    }
                 }
                 TextAction({ expanded = !expanded }) { Text(if (expanded) "收起详情" else "任务详情") }
                 TextAction({ dialogs.confirm("删除这份下载？", "删除", "将删除已下载图页，记录和收藏会保留。") { act(book.id) { app.galleryDownloads.remove(book.id) } } }, enabled = book.id !in busy) { Text("删除") }
@@ -329,10 +368,12 @@ private data class DownloadSnapshot(
             }
             DownloadTile("video:${task.request.id}", meta.video, "视频 · ${meta.quality}", "$state · ${downloadSize(task.bytesDownloaded)}",
                 task.percentDownloaded.takeIf { it >= 0 }?.div(100f)) {
-                Action(if (completed) "离线播放" else if (paused || failed) "继续" else "暂停", primary = completed, enabled = task.request.id !in busy) {
+                Action(if (completed) "离线播放" else if (failed) "重试" else if (paused) "继续" else "暂停",
+                    primary = completed, enabled = !retrying && task.request.id !in busy) {
                     if (completed) video(meta.video, task.request.id, null)
                     else act(task.request.id) {
-                        if (failed) {
+                        if (task.state == Download.STATE_FAILED) app.playback.retryFailed(task.request.id)
+                        else if (failed) {
                             val detail = app.repository.detail(meta.video.url)
                             app.playback.add(meta.video, detail.streams.firstOrNull { it.label == meta.quality } ?: detail.streams.first())
                         } else app.playback.pause(task.request.id, !paused)

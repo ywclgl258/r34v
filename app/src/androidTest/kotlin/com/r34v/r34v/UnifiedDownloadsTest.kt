@@ -1,9 +1,12 @@
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 package com.r34v.r34v
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.compose.ui.test.*
+import androidx.media3.exoplayer.offline.Download
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.r34v.r34v.data.*
 import com.r34v.r34v.downloads.GalleryDownloadStore
@@ -12,6 +15,8 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
 class UnifiedDownloadsTest : ComposeUiCase() {
@@ -69,6 +74,66 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         runBlocking { f.app.galleryDownloads.remove(task(f, "hitomi")!!.id) }
         assertNull(task(f, "hitomi"))
         assertTrue(root.walkTopDown().filter { it.isFile }.all { it.absolutePath in original })
+    }
+
+    @Test fun batchRetryKeepsQualityAndSelectedPagesAndSkipsPausedAndRemovalFailures() = ComposeFixture().use { f ->
+        notifications(f)
+        val clip = f.video("r34v")
+        val clipId = f.app.playback.key(clip, "480p")
+        val automaticRefreshAttempted = AtomicBoolean()
+        try {
+            f.launchPlayer()
+            waitText("下载")
+            f.videoStatus = 503
+            f.detailHook = { automaticRefreshAttempted.set(true); throw IOException("Fixture source unavailable") }
+            ui.onNodeWithText("下载").performScrollTo().performClick()
+            waitText("选择下载清晰度"); clickText("480p")
+            ui.waitUntil(25000) { automaticRefreshAttempted.get() &&
+                f.app.playback.downloads().any { it.request.id == clipId && it.state == Download.STATE_FAILED } }
+
+            f.launchDownloads(); waitText("下载中心")
+            f.brokenPage = 3
+            runBlocking { f.app.galleryDownloads.add(f.video("ehentai"), listOf(1, 3, 5)) }
+            ui.waitUntil(25000) { task(f)?.state == GalleryDownloadState.FAILED }
+            val savedRequests = f.imageRequests.count { it == ("ehentai" to 1) }
+            assertTrue(savedRequests > 0)
+            runBlocking {
+                val paused = f.app.galleryDownloads.add(f.video("hitomi"))
+                f.app.galleryDownloads.pause(paused.id)
+            }
+            val deleting = f.video("nhentai")
+            val deletingId = f.app.galleryDownloads.key(deleting)
+            val failedRemoval = GalleryDownload(deletingId, deleting, GalleryDownloadState.FAILED,
+                failure = GalleryFailureKind.STORAGE, error = "删除失败，请重试删除：Fixture directory unavailable")
+            assertTrue(f.ins.targetContext.getSharedPreferences("gallery_downloads_v1", Context.MODE_PRIVATE).edit()
+                .putString(deletingId, f.app.library.gson.toJson(failedRemoval)).commit())
+            assertFalse(runBlocking { f.app.galleryDownloads.retryFailed(deletingId) })
+
+            ui.onNode(hasSetTextAction()).performTextReplacement("ehentai")
+            waitText("重试失败项 · 1")
+            ui.onNodeWithContentDescription("清空下载搜索").performClick()
+            waitText("重试失败项 · 2")
+            f.brokenPage = 0
+            clickText("重试失败项 · 2"); clickText("重试失败项")
+            ui.waitUntil(15000) { ui.onAllNodesWithText("已提交 1 项重试", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithText("Fixture source unavailable", substring = true).assertIsDisplayed()
+            clickText("关闭")
+            done(f)
+            assertTrue(f.app.playback.downloads().any { it.request.id == clipId && it.state == Download.STATE_FAILED })
+
+            f.videoStatus = 0; f.detailHook = null
+            clickText("重试失败项 · 1"); clickText("重试失败项")
+            waitText("已提交 1 项重试"); clickText("关闭")
+            ui.waitUntil(20000) { f.app.playback.downloads().any { it.request.id == clipId && it.state == Download.STATE_COMPLETED } }
+            assertEquals(listOf(1, 3, 5), task(f)!!.completedPages)
+            assertTrue(task(f)!!.partial)
+            assertEquals(savedRequests, f.imageRequests.count { it == ("ehentai" to 1) })
+            assertEquals(GalleryDownloadState.PAUSED, task(f, "hitomi")?.state)
+            assertEquals(failedRemoval, task(f, "nhentai"))
+            ui.waitUntil(10000) { ui.onAllNodesWithText("重试失败项 · 1").fetchSemanticsNodes().isEmpty() }
+        } finally {
+            f.ins.runOnMainSync { f.app.playback.remove(clipId) }
+        }
     }
 
     @Test fun unifiedCenterShowsVideoAndIsolatedBooksAcrossSites() = ComposeFixture().use { f ->

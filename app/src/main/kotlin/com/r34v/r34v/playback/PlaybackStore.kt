@@ -127,10 +127,8 @@ class PlaybackStore(private val context: Context, private val network: Network, 
                         val job = scope.launch {
                             try {
                                 val meta = metadata(download) ?: return@launch
-                                val site = SiteRegistry.byIdOrDefault(meta.site)
-                                val detail = AdapterRegistry.adapter(site, network).detail(meta.video.url)
+                                val fresh = refreshedStream(meta) ?: return@launch
                                 ensureActive()
-                                val fresh = detail.streams.firstOrNull { it.label == meta.quality } ?: return@launch
                                 add(meta.video, fresh, generation)
                             } catch (error: CancellationException) {
                                 throw error
@@ -248,6 +246,26 @@ class PlaybackStore(private val context: Context, private val network: Network, 
             }.build()
 
     fun add(video: Video, stream: Stream) = add(video, stream, null)
+
+    private suspend fun refreshedStream(meta: DownloadMeta): Stream? {
+        val site = SiteRegistry.byIdOrDefault(meta.site)
+        return AdapterRegistry.adapter(site, network).detail(meta.video.url).streams.firstOrNull { it.label == meta.quality }
+    }
+
+    suspend fun retryFailed(id: String): Boolean = withContext(Dispatchers.Main.immediate) {
+        val generation = generations[id] ?: 0L
+        refreshJobs[id]?.join()
+        val downloadIndex = manager.downloadIndex
+        val failed = withContext(Dispatchers.IO) { downloadIndex.getDownload(id) }
+        if (failed?.state != Download.STATE_FAILED || id in submitted || removals.containsKey(id)) return@withContext false
+        val meta = checkNotNull(metadata(failed)) { "无法读取视频下载记录" }
+        val fresh = checkNotNull(refreshedStream(meta)) { "原清晰度 ${meta.quality} 暂不可用" }
+        val state = withContext(Dispatchers.IO) { downloadIndex.getDownload(id)?.state }
+        if (state != Download.STATE_FAILED || id in submitted || removals.containsKey(id) || generation != (generations[id] ?: 0L)) return@withContext false
+        add(meta.video, fresh, generation)
+        true
+    }
+
     private fun add(video: Video, stream: Stream, expectedGeneration: Long?) {
         storage.checkDownloadsAllowed()
         val site = SiteRegistry.byIdOrDefault(video.site)

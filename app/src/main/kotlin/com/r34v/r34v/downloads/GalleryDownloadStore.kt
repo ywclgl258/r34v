@@ -73,6 +73,15 @@ class GalleryDownloadStore(private val context: Context, private val repository:
         value
     }
 
+    suspend fun retryFailed(id: String): Boolean = withContext(Dispatchers.IO) {
+        repository.checkDownloadsAllowed()
+        val queued = updateIf(id, { it.state == GalleryDownloadState.FAILED && !it.failedRemoval }) {
+            it.copy(state = GalleryDownloadState.QUEUED, error = "", failure = null, retryAt = 0)
+        }
+        if (queued && networkAllowed()) startService()
+        queued
+    }
+
     private fun startService(keepQueued: Boolean = false) {
         try { ContextCompat.startForegroundService(context, Intent(context, GalleryDownloadService::class.java)) }
         catch (e: Exception) {
@@ -124,7 +133,7 @@ class GalleryDownloadStore(private val context: Context, private val repository:
             try { repository.removeDownload(record.entry) }
             catch (e: Exception) {
                 if (e is CancellationException) throw e
-                update(id) { it.copy(state = GalleryDownloadState.FAILED, failure = GalleryFailureKind.STORAGE, error = "删除失败，请重试删除：${e.message}") }
+                update(id) { it.copy(state = GalleryDownloadState.FAILED, failure = GalleryFailureKind.STORAGE, error = "$REMOVAL_FAILURE_PREFIX${e.message}") }
                 throw e
             }
             runCatching { index.forgetComic(record.entry.site, record.entry.id) }
@@ -257,3 +266,8 @@ class GalleryDownloadStore(private val context: Context, private val repository:
         error("不可达的重试状态")
     }
 }
+
+private const val REMOVAL_FAILURE_PREFIX = "删除失败，请重试删除："
+
+internal val GalleryDownload.failedRemoval: Boolean
+    get() = state == GalleryDownloadState.FAILED && error.startsWith(REMOVAL_FAILURE_PREFIX)
