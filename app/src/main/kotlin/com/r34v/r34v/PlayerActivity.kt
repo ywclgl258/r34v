@@ -49,11 +49,14 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.*
 import androidx.media3.exoplayer.*
+import androidx.media3.exoplayer.hls.HlsDataSourceFactory
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.r34v.r34v.data.*
 import com.r34v.r34v.playback.BufferPlan
 import com.r34v.r34v.playback.HlsDownloads
+import com.r34v.r34v.playback.HlsSeekSession
 import com.r34v.r34v.playback.StallPolicy
 import com.r34v.r34v.playback.StreamSelection
 import com.r34v.r34v.ui.*
@@ -66,6 +69,7 @@ class PlayerActivity : ComponentActivity() {
     private var detail by mutableStateOf<Detail?>(null)
     private var stream by mutableStateOf<Stream?>(null)
     private var player: ExoPlayer? = null
+    private var hlsSeekSession: HlsSeekSession? = null
     private var playerView: PlayerView? = null
     private var engineRevision by mutableIntStateOf(0)
     private var fullscreen by mutableStateOf(false)
@@ -281,10 +285,17 @@ class PlayerActivity : ComponentActivity() {
             else app.playback.item(video, value)
         val hlsKey = HlsDownloads.mime(value.url)?.let { app.playback.key(video, value.label) }
         val streamingCache = store.bool("stream_cache")
-        // 会话 seek 缓存：只服务在线渐进流（离线/下载/本地文件/HLS 各自有更快的本地路径）。
-        val sessionKey = if (local == null && !offline && offlineId == null && cachedKey == null && hlsKey == null && store.bool("seek_cache", true))
-            "${video.site}:${video.id}:${value.label}" else null
-        val mediaSource = DefaultMediaSourceFactory(app.playback.sourceFactory(offline && local == null, video.site, sourceRoot, hlsKey, streamingCache, sessionKey)).createMediaSource(item)
+        val seekEnabled = local == null && !offline && offlineId == null && cachedKey == null && store.bool("seek_cache", true)
+        val sessionKey = if (seekEnabled && hlsKey == null) app.playback.key(video, value.label) else null
+        val sources = app.playback.sourceFactory(offline && local == null, video.site, sourceRoot, hlsKey, streamingCache, sessionKey)
+        hlsSeekSession?.close()
+        val hlsSeek = if (seekEnabled && hlsKey != null && !streamingCache) app.playback.openHlsSeekSession() else null
+        hlsSeekSession = hlsSeek
+        val mediaSource = if (hlsSeek != null) {
+            val chunks = app.playback.sourceFactory(siteId = video.site, sourceRoot = sourceRoot, hlsKey = hlsKey, hlsSeek = hlsSeek)
+            HlsMediaSource.Factory(HlsDataSourceFactory { type -> (if (type == C.DATA_TYPE_MEDIA) chunks else sources).createDataSource() })
+                .setPlaylistParserFactory(hlsSeek.playlistParsers).createMediaSource(item)
+        } else DefaultMediaSourceFactory(sources).createMediaSource(item)
         engine.setMediaSource(mediaSource, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
     }
     private fun playbackError(error: Throwable) { pendingError = error; phase = null; status = "播放失败：${error.message}"; failureVisible = true; controls = true; locked = false }
@@ -674,7 +685,17 @@ class PlayerActivity : ComponentActivity() {
         }
     }
     override fun onPause() { resumePlay = player?.playWhenReady ?: resumePlay; savePosition(); if (!pipMode && !enteringPip) player?.pause(); super.onPause() }
-    override fun onStop() { savePosition(); playerView?.player = null; player?.release(); player = null; appliedPlan = null; engineRevision++; super.onStop() }
+    override fun onStop() {
+        savePosition()
+        playerView?.player = null
+        player?.release()
+        player = null
+        hlsSeekSession?.close()
+        hlsSeekSession = null
+        appliedPlan = null
+        engineRevision++
+        super.onStop()
+    }
     private fun gestureHint(value: String) { hintJob?.cancel(); hint = value; hintJob = lifecycleScope.launch { delay(1000); hint = "" } }
     @Suppress("ClickableViewAccessibility") private fun installGestures(view: PlayerView) {
         val audio = getSystemService(AudioManager::class.java); var start = 0L; var x = 0f; var y = 0f; var mode = 0; var seek = 0L; var hold = false; var brightness = .5f; var volume = 0

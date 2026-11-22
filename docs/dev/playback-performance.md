@@ -31,7 +31,7 @@
 ## 优化顺序
 
 1. 单档直接起播已实现，复测见下文。高码率单档弱网仍待覆盖。多档选档后续可区分真实传输采样和网络类型的默认估值，HLS 的实测速率可取自媒体分片。预跑在尚无媒体传输时观察到 2.40 Mbps 的初始估值，Media3 的网络类型回调可携带默认估值，当前 `LinkSpeed` 接受所有正值回调。[带宽估算源码](https://github.com/androidx/media/blob/1.9.2/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/upstream/DefaultBandwidthMeter.java#L389-L431) · [应用带宽估算](../../app/src/main/kotlin/com/r34v/r34v/playback/LinkSpeed.kt)
-2. 为点播 HLS 验证有容量上限的单次会话回拖缓存，按作品和媒体资源 URI 隔离分片，保持全局流式缓存的现有默认设置。用默认 HLS 作为基线，复测目标分片重读、首帧和回拖耗时，并检查持续播放中的缓存写入开销。缓冲窗口沿用当前配置，便于比较。
+2. 点播 HLS 支持有容量上限的会话回拖缓存，使用独立会话和完整分片 URI 隔离资源。下文记录开关对照和全局流式缓存的结果。[会话缓存](../../app/src/main/kotlin/com/r34v/r34v/playback/HlsSeekSession.kt)
 
 ## 单档直接起播复测
 
@@ -51,6 +51,26 @@
 | HLS · 直接起播 | 1090（1071–1182） | 1334（1261–1336） | 4（4–5） | 3650（3408–3909） | 1067（1029–1121） |
 
 改动前每次单档起播会发出一次同步测速，改动后 12 次单档起播均为 0 次。弱网 MP4 跳过了中位数 12.83 秒的测速，首帧少等 12.74 秒。HLS 原测速只传播放列表，首帧收益较小。弱网再缓冲次数的中位数保持在 MP4 两次、HLS 四次。新版 MP4 有一轮达到 3 次和 2779 ms；这组数据来自单个短片、单台模拟器和固定限速。[单档起播分支](../../app/src/main/kotlin/com/r34v/r34v/PlayerActivity.kt)
+
+## HLS 会话回拖缓存复测
+
+以 `1be07fb` 的单档直接起播为基线，继续使用原始 36 秒测试片和 Android 16 模拟器。限速约 1.64 Mbps，每请求延迟 120 ms 发出响应头。保持同一播放配置，比较缓存关闭、32 MiB 会话缓存、现有 512 MiB 全局流式缓存三组。每组预热一次后测 5 次，正序和逆序交替。每轮使用新作品 ID，应用带宽估值置为未知。
+
+会话缓存写入已结束播放列表的媒体数据。Media3 按请求类型分别处理媒体、播放列表和密钥。完整 URI（含查询参数）与字节范围都参与缓存身份判定。已下载的片段及已有的流式缓存优先使用。开启全局流式缓存时使用原有缓存路径。会话关闭后等待正在使用的缓存数据源关闭，再移除本会话的缓存。已提交的 HLS 数据由独立的 32 MiB LRU 限制，每个正在写入的缓存文件最多 2 MiB。播放器重启后可清理前一进程残留的会话数据。[Media3 请求类型](https://github.com/androidx/media/blob/1.9.2/libraries/exoplayer_hls/src/main/java/androidx/media3/exoplayer/hls/HlsDataSourceFactory.java) · [Media3 LRU](https://github.com/androidx/media/blob/1.9.2/libraries/datasource/src/main/java/androidx/media3/datasource/cache/LeastRecentlyUsedCacheEvictor.java)
+
+沿用同一个回拖路径（2.7 秒跳到 22 秒，播放到 22.5 秒后跳回 1.2 秒），回拖后继续播到 5 秒再退出。缓存命中按读取 `segment00.ts` 的轮次统计，同时记录该分片的 HTTP 重读。写入开销以退出前提交的缓存文件字节数和次数计，包含正常取消加载时提交的部分分片。该计数反映缓存数据写入量，文件系统及 SQLite 元数据、设备物理写入和 `fsync` 延迟另行测量。
+
+15 次有效样本。耗时和写入量为中位数（最小–最大）。
+
+| HLS 配置 | 首次出画 ms | 回拖恢复 ms | 目标分片命中轮次 | 重读目标分片轮次 | 提交字节数 | 提交次数 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 缓存关闭 | 1140（1072–1269） | 662（629–664） | 0/5 | 5/5 | 0 | 0 |
+| 32 MiB 会话缓存 | 1090（1063–1345） | 410（398–476） | 5/5 | 0/5 | 1,803,836（1,762,876–1,814,200） | 11（10–11） |
+| 512 MiB 全局流式缓存 | 1144（1017–1263） | 439（398–516） | 5/5 | 0/5 | 1,763,547（1,573,855–1,763,547） | 11（9–11） |
+
+会话缓存使回拖中位数缩短 252 ms（38%），5 轮均在退出后清除会话分片。三组首帧范围重叠。会话缓存与全局流式缓存的短片写入量同量级，分别为 1.72 MiB 和 1.68 MiB。会话缓存组首帧前尚未提交完整缓存段，全局组每轮均已提交 671 B 的播放列表；两组首帧前都可能已写入尚未提交的媒体数据。这组数字适用于该点播样本及模拟限速，长期播放的写入量取决于实际媒体码率和读取范围。
+
+Android 16 另通过容量淘汰、字节范围和 URI 隔离、并发会话关闭、直播列表绕过、离线 HLS 播放及损坏分片重新下载回归。[缓存边界用例](../../app/src/androidTest/kotlin/com/r34v/r34v/HlsSeekSessionTest.kt) · [离线 HLS 回归](../../app/src/androidTest/kotlin/com/r34v/r34v/HlsPlaybackIntegrationTest.kt)
 
 ## 复测
 
@@ -92,4 +112,13 @@ adb -s $serial shell am instrument -w -r -e class com.r34v.r34v.PlaybackPerforma
   -e playbackPerf true -e playbackPerfScenario startup -e playbackPerfRepeats 3 `
   com.r34v.r34v.debug.test/androidx.test.runner.AndroidJUnitRunner
 adb -s $serial logcat -d -s R34VSingleStart:I
+```
+
+HLS 缓存开关对照沿用同一片源和安装步骤，日志包含每轮首帧、回拖、目标分片命中和写入量。
+
+```powershell
+adb -s $serial shell am instrument -w -r -e class com.r34v.r34v.PlaybackPerformanceProbe `
+  -e playbackPerf true -e playbackPerfScenario hls-cache -e playbackPerfRepeats 5 `
+  com.r34v.r34v.debug.test/androidx.test.runner.AndroidJUnitRunner
+adb -s $serial logcat -d -s R34VHlsSeek:I
 ```

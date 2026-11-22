@@ -49,6 +49,12 @@ class PlaybackStore(private val context: Context, private val network: Network, 
      */
     private val seekCache by lazy { SimpleCache(File(context.cacheDir, "seeks"), LeastRecentlyUsedCacheEvictor(64L * 1024 * 1024), database) }
     @Volatile private var seekKey: String? = null
+    private val hlsSeekCache = lazy {
+        SimpleCache(File(context.cacheDir, "hls-seeks"), LeastRecentlyUsedCacheEvictor(HLS_SEEK_CACHE_BYTES), database).also { cache ->
+            // Keys surviving a process death cannot belong to a new playback session.
+            cache.keys.forEach(cache::removeResource)
+        }
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val refreshed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val refreshJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
@@ -189,8 +195,17 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         }
     }
 
-    fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = "", hlsKey: String? = null,
-                      cacheStreaming: Boolean = false, sessionKey: String? = null): DataSource.Factory {
+    internal fun openHlsSeekSession() = HlsSeekSession(hlsSeekCache) { prefix ->
+        scope.launch(Dispatchers.IO) {
+            if (!hlsSeekCache.isInitialized()) return@launch
+            val cache = hlsSeekCache.value
+            cache.keys.filter { it.startsWith(prefix) }.forEach(cache::removeResource)
+        }
+    }
+
+    internal fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = "", hlsKey: String? = null,
+                               cacheStreaming: Boolean = false, sessionKey: String? = null,
+                               hlsSeek: HlsSeekSession? = null): DataSource.Factory {
         val owner = siteId?.let(SiteRegistry::byId)
         val cacheKeys = hlsKey?.let(HlsDownloads::keys) ?: androidx.media3.datasource.cache.CacheKeyFactory.DEFAULT
         // Select a restored HLS library once, not once per segment (which would rescan every file).
@@ -198,10 +213,11 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         // Streaming reads the download cache, and only writes its own copy when the user asked for it:
         // on a link that is already the bottleneck, a synchronous 512 MB cache writer on the read
         // path only adds latency to the very stall the user is complaining about.
+        val http = mediaAware(DefaultDataSource.Factory(context, httpFactory(owner)), owner)
         val streaming = CacheDataSource.Factory().setCache(streamCache)
             .setCacheKeyFactory(cacheKeys)
             .setCacheWriteDataSinkFactory(if (cacheStreaming) CacheDataSink.Factory().setCache(streamCache) else null)
-            .setUpstreamDataSourceFactory(mediaAware(DefaultDataSource.Factory(context, httpFactory(owner)), owner))
+            .setUpstreamDataSourceFactory(hlsSeek?.upstream(http) ?: http)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         return DataSource.Factory {
             object : DataSource {
@@ -375,6 +391,8 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     }
 
     companion object {
+        internal const val HLS_SEEK_CACHE_BYTES = 32L * 1024 * 1024
+
         /**
          * Cache identity. The site prefix is not cosmetic: Media3 indexes both the cache and the
          * download database by this string, so two sites sharing a video id would silently reuse

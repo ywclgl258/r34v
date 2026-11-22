@@ -37,7 +37,7 @@ import java.util.concurrent.TimeUnit.MILLISECONDS
 
 /** Opt-in controlled comparison. Sample preparation and execution are in docs/dev/playback-performance.md. */
 class PlaybackPerformanceProbe {
-    private enum class Exercise { SEEK, STARTUP, REBUFFER }
+    private enum class Exercise { SEEK, STARTUP, REBUFFER, HLS_CACHE }
 
     private data class Profile(
         val hls: Boolean,
@@ -57,6 +57,7 @@ class PlaybackPerformanceProbe {
                 exercise == Exercise.REBUFFER -> "-rebuffer"
                 else -> ""
             }
+        val hlsSession get() = hls && seekCache && !streamCache
     }
 
     private data class Request(val path: String, val range: String?, val start: Long, val length: Int) {
@@ -65,7 +66,7 @@ class PlaybackPerformanceProbe {
     }
 
     private data class Frame(val at: Long, val position: Long)
-    private data class CacheRead(val span: CacheSpan, val at: Long)
+    private data class CacheEvent(val span: CacheSpan, val at: Long)
 
     // Accessed only on the player's application looper.
     private class RebufferObserver : Player.Listener {
@@ -101,6 +102,7 @@ class PlaybackPerformanceProbe {
         val repeats = args.getString("playbackPerfRepeats")?.toInt() ?: 3
         require(repeats > 0)
         val startupComparison = args.getString("playbackPerfScenario") == "startup"
+        val hlsCacheComparison = args.getString("playbackPerfScenario") == "hls-cache"
         val expectSingleProbe = args.getString("playbackPerfExpectSingleProbe") == "true"
         ComposeFixture().use { fixture ->
             val directory = File(fixture.app.filesDir, "playback_probe")
@@ -165,7 +167,13 @@ class PlaybackPerformanceProbe {
                 // Drain that update before resetting the estimate for the first trial.
                 main { app.linkSpeed }
                 fixture.ins.waitForIdleSync()
-                val profiles = if (startupComparison) {
+                val profiles = if (hlsCacheComparison) {
+                    listOf(
+                        Profile(true, false, exercise = Exercise.HLS_CACHE, seekCache = false),
+                        Profile(true, false, exercise = Exercise.HLS_CACHE),
+                        Profile(true, false, exercise = Exercise.HLS_CACHE, streamCache = true),
+                    )
+                } else if (startupComparison) {
                     listOf(
                         Profile(false, false, exercise = Exercise.STARTUP), Profile(true, false, exercise = Exercise.STARTUP),
                         Profile(false, false, exercise = Exercise.REBUFFER), Profile(true, false, exercise = Exercise.REBUFFER),
@@ -184,9 +192,13 @@ class PlaybackPerformanceProbe {
                 }
                 try {
                     // Warm the UI and decoder for both formats before collecting timings.
-                    val warmup = if (startupComparison) Exercise.STARTUP else Exercise.SEEK
-                    runTrial(0, Profile(false, true, exercise = warmup))
-                    runTrial(0, Profile(true, true, exercise = warmup))
+                    if (hlsCacheComparison) {
+                        profiles.forEach { runTrial(0, it) }
+                    } else {
+                        val warmup = if (startupComparison) Exercise.STARTUP else Exercise.SEEK
+                        runTrial(0, Profile(false, true, exercise = warmup))
+                        runTrial(0, Profile(true, true, exercise = warmup))
+                    }
                     repeat(repeats) { round ->
                         val order = if (round % 2 == 0) profiles else profiles.reversed()
                         order.forEach { runTrial(round + 1, it) }
@@ -210,15 +222,23 @@ class PlaybackPerformanceProbe {
         val key = app.playback.key(video, "360p")
         val frames = ConcurrentLinkedQueue<Frame>()
         val rebuffer = RebufferObserver()
-        val cacheReads = ConcurrentLinkedQueue<CacheRead>()
-        val cacheName = if (profile.hls) "streamCache" else "seekCache"
-        val cache = (field(app.playback, "${cacheName}\$delegate").get(app.playback) as Lazy<*>).value as Cache
-        val cacheKeys = if (profile.hls) segments.map { "$key|hls|$it" } else listOf(key)
+        val cacheReads = ConcurrentLinkedQueue<CacheEvent>()
+        val cacheWrites = ConcurrentLinkedQueue<CacheEvent>()
+        // The startup benchmark can also run against the historical app APK.
+        val sessionCacheField = if (profile.hlsSession) runCatching { field(app.playback, "hlsSeekCache") }.getOrNull() else null
+        val usesSession = sessionCacheField != null
+        if (profile.exercise == Exercise.HLS_CACHE) check(usesSession == profile.hlsSession)
+        val cacheField = sessionCacheField ?: field(app.playback, if (profile.hls) "streamCache\$delegate" else "seekCache\$delegate")
+        val cache = (cacheField.get(app.playback) as Lazy<*>).value as Cache
+        var sessionPrefix: String? = null
+        var cacheKeys = if (usesSession) emptyList() else if (profile.hls) {
+            segments.map { "$key|hls|$it" } + "$key|hls|${segments.first().substringBeforeLast('/')}/index.m3u8"
+        } else listOf(key)
         val cacheListener = object : Cache.Listener {
-            override fun onSpanAdded(cache: Cache, span: CacheSpan) = Unit
+            override fun onSpanAdded(cache: Cache, span: CacheSpan) { cacheWrites.add(CacheEvent(span, now())) }
             override fun onSpanRemoved(cache: Cache, span: CacheSpan) = Unit
             override fun onSpanTouched(cache: Cache, oldSpan: CacheSpan, newSpan: CacheSpan) {
-                cacheReads.add(CacheRead(newSpan, now()))
+                cacheReads.add(CacheEvent(newSpan, now()))
             }
         }
         cacheKeys.forEach { check(cache.addListener(it, cacheListener).isEmpty()) }
@@ -247,6 +267,7 @@ class PlaybackPerformanceProbe {
             }
         }
         val playerField = field(activity, "player")
+        var writeReport: String? = null
         try {
             val player = await("engine for $id") {
                 main {
@@ -257,6 +278,13 @@ class PlaybackPerformanceProbe {
                     }
                 }
             }
+            if (usesSession) {
+                val session = main { checkNotNull(field(activity, "hlsSeekSession").get(activity)) }
+                val prefix = field(session, "prefix").get(session) as String
+                sessionPrefix = prefix
+                cacheKeys = segments.map { prefix + it }
+                cacheKeys.forEach { check(cache.addListener(it, cacheListener).isEmpty()) }
+            }
             val startup = await("first frame for $id") { frames.peek() }
             val detailEnd = checkNotNull(completedAt("detail"))
             val probes = requests().filter { it.probe }
@@ -266,7 +294,7 @@ class PlaybackPerformanceProbe {
             val firstMedia = requests().first { !it.detail && !it.probe }.start
             val firstSegment = if (profile.hls) requests().first { it.path.endsWith("/segment00.ts") }.start else firstMedia
 
-            if (profile.exercise != Exercise.SEEK) {
+            if (profile.exercise == Exercise.STARTUP || profile.exercise == Exercise.REBUFFER) {
                 val uri = main { checkNotNull(player.currentMediaItem?.localConfiguration?.uri) }
                 check(uri.lastPathSegment == profile.media && uri.query == null) { "Unexpected stream selected for $id: $uri" }
                 val stallStats = if (profile.exercise == Exercise.REBUFFER) {
@@ -295,7 +323,17 @@ class PlaybackPerformanceProbe {
             val hits = cacheReads.filter { it.at in back..restored.at }.map { it.span }
                 .distinctBy { it.key to it.position }
             val fetches = requests().filter { it.start in back..restored.at }
-            if (report) Log.i("R34VPlaybackPerf", "$id first=${startup.at - launched} detail=${detailEnd - launched} " +
+            if (profile.exercise == Exercise.HLS_CACHE) {
+                check(samePlayer)
+                val targetHits = hits.count { it.key.endsWith("/segment00.ts") }
+                val targetFetches = fetches.count { it.path.endsWith("/segment00.ts") }
+                check((targetHits > 0) == (usesSession || profile.streamCache))
+                check((targetFetches > 0) == (targetHits == 0))
+                await("playback after returning for $id") { main { true.takeIf { player.currentPosition >= 5000 } } }
+                val startBytes = cacheWrites.filter { it.at <= startup.at }.sumOf { it.span.length }
+                if (report) writeReport = "$id first=${startup.at - launched} back=${restored.at - back} " +
+                    "targetHits=$targetHits targetHttp=$targetFetches startupCommitted=$startBytes"
+            } else if (report) Log.i("R34VPlaybackPerf", "$id first=${startup.at - launched} detail=${detailEnd - launched} " +
                 "probe=${if (probe != null) probeEnd!! - probe.start else 0} probeBytes=${probe?.length ?: 0} " +
                 "preMedia=${firstMedia - detailEnd} mediaToFrame=${startup.at - firstMedia} " +
                 "playlistToSegment=${firstSegment - firstMedia} back=${restored.at - back} " +
@@ -305,11 +343,16 @@ class PlaybackPerformanceProbe {
         } finally {
             main { activity.finish() }
             await("close for $id") { main { true.takeIf { activity.isDestroyed && playerField.get(activity) == null } } }
+            sessionPrefix?.let { prefix ->
+                await("session cache cleanup for $id") { true.takeIf { cache.keys.none { it.startsWith(prefix) } } }
+            }
+            writeReport?.let {
+                Log.i("R34VHlsSeek", "$it bytesWritten=${cacheWrites.sumOf { event -> event.span.length }} commits=${cacheWrites.size}")
+            }
             cacheKeys.forEach {
                 cache.removeListener(it, cacheListener)
-                cache.removeResource(it)
+                if (!usesSession) cache.removeResource(it)
             }
-            if (profile.hls) cache.removeResource("$key|hls|${segments.first().substringBeforeLast('/')}/index.m3u8")
         }
     }
 

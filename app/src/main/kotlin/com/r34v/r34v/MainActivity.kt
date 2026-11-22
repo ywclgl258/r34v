@@ -702,7 +702,7 @@ class MainActivity : ComponentActivity() {
             Setting("默认倍速", "${store.string("native_speed", "1.0")}×") { val values = listOf("0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "3.0"); dialogs.choose("默认倍速", values, values.indexOf(store.string("native_speed", "1.0"))) { store.set("native_speed", values[it]); revision++ } }
             Toggle("进入播放后自动全屏", "auto_fullscreen"); Toggle("播放时自动下载", "auto_download"); Copy("主动保存的视频与整本漫画统一在下载中心管理，支持后台下载与离线打开。")
             Toggle("边播边写播放缓存", "stream_cache"); Copy("默认关闭：开播时不再把整片同步写入 512 MB 临时缓存，弱网下缓冲更快；需要“重看不用再下载”时可打开。已下载的视频不受影响。")
-            Toggle("回退播放使用 seek 缓存", "seek_cache", true); Copy("在线播放时为当前视频保留最近 64 MB：向后拖动进度不再重新从 CDN 拉流；换视频自动清理。已下载与本地文件不走这条缓存。")
+            Toggle("回退播放使用 seek 缓存", "seek_cache", true); Copy("MP4 回拖缓存上限 64 MiB，换视频时清理。关闭全局流式缓存时，点播 HLS 的会话缓存上限为 32 MiB，离开播放时清理。")
             SettingsSection("网络"); Copy("自动跟随系统代理；未设置代理时使用系统 DNS 直连。代理连接失败时会显示错误。", Modifier.padding(bottom = 8.dp))
             Copy(runCatching { app.network.routeDescription() }.getOrDefault("系统代理设置暂不可用"))
             Setting("网络诊断", "含媒体测速") { lifecycleScope.launch {
