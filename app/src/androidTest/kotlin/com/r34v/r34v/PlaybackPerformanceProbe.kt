@@ -37,10 +37,26 @@ import java.util.concurrent.TimeUnit.MILLISECONDS
 
 /** Opt-in controlled comparison. Sample preparation and execution are in docs/dev/playback-performance.md. */
 class PlaybackPerformanceProbe {
-    private data class Profile(val hls: Boolean, val knownSpeed: Boolean, val seekCache: Boolean = true, val streamCache: Boolean = false) {
+    private enum class Exercise { SEEK, STARTUP, REBUFFER }
+
+    private data class Profile(
+        val hls: Boolean,
+        val knownSpeed: Boolean,
+        val seekCache: Boolean = true,
+        val streamCache: Boolean = false,
+        val exercise: Exercise = Exercise.SEEK,
+        val multipleQualities: Boolean = false,
+    ) {
         val media = if (hls) "index.m3u8" else "source.mp4"
         val name = "${if (hls) "hls" else "mp4"}-${if (knownSpeed) "known" else "unknown"}" +
-            when { streamCache -> "-stream-cache"; !seekCache -> "-no-seek-cache"; else -> "" }
+            when {
+                streamCache -> "-stream-cache"
+                !seekCache -> "-no-seek-cache"
+                multipleQualities -> "-multiple"
+                exercise == Exercise.STARTUP -> "-startup"
+                exercise == Exercise.REBUFFER -> "-rebuffer"
+                else -> ""
+            }
     }
 
     private data class Request(val path: String, val range: String?, val start: Long, val length: Int) {
@@ -51,11 +67,41 @@ class PlaybackPerformanceProbe {
     private data class Frame(val at: Long, val position: Long)
     private data class CacheRead(val span: CacheSpan, val at: Long)
 
+    // Accessed only on the player's application looper.
+    private class RebufferObserver : Player.Listener {
+        private var playingSince: Long? = null
+        private var bufferingSince: Long? = null
+        private val stalls = mutableListOf<Long>()
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying && playingSince == null) playingSince = SystemClock.elapsedRealtime()
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playingSince == null) return
+            when (playbackState) {
+                Player.STATE_BUFFERING -> if (bufferingSince == null) bufferingSince = SystemClock.elapsedRealtime()
+                Player.STATE_READY -> bufferingSince?.let {
+                    stalls += SystemClock.elapsedRealtime() - it
+                    bufferingSince = null
+                }
+            }
+        }
+
+        fun result(): String {
+            check(bufferingSince == null) { "Playback reached the observation endpoint while buffering" }
+            val elapsed = SystemClock.elapsedRealtime() - checkNotNull(playingSince)
+            return "playElapsed=$elapsed stalls=${stalls.size} stallMs=${stalls.sum()} longestMs=${stalls.maxOrNull() ?: 0}"
+        }
+    }
+
     @Test fun compareProgressiveAndHls() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("playbackPerf") == "true")
         val repeats = args.getString("playbackPerfRepeats")?.toInt() ?: 3
         require(repeats > 0)
+        val startupComparison = args.getString("playbackPerfScenario") == "startup"
+        val expectSingleProbe = args.getString("playbackPerfExpectSingleProbe") == "true"
         ComposeFixture().use { fixture ->
             val directory = File(fixture.app.filesDir, "playback_probe")
             val media = directory.listFiles().orEmpty().filter(File::isFile).associate { it.name to it.readBytes() }
@@ -72,7 +118,8 @@ class PlaybackPerformanceProbe {
                         val bytes = if (name == "detail") {
                             val mediaName = if (id.contains("-hls-")) "index.m3u8" else "source.mp4"
                             val url = server.url("/playback-probe/$id/$mediaName")
-                            "<h1>Playback probe</h1><script>var flashvars={video_id:'$id',video_url:'$url',video_url_text:'360p'}</script>".toByteArray()
+                            val alternate = if (id.endsWith("-multiple")) ",video_alt_url:'$url?quality=720',video_alt_url_text:'720p'" else ""
+                            "<h1>Playback probe</h1><script>var flashvars={video_id:'$id',video_url:'$url',video_url_text:'360p'$alternate}</script>".toByteArray()
                         } else media[name] ?: return MockResponse().setResponseCode(404)
                         val range = request.getHeader("Range")
                         val start = range?.substringAfter("bytes=")?.substringBefore('-')?.toIntOrNull() ?: 0
@@ -80,7 +127,8 @@ class PlaybackPerformanceProbe {
                         if (start !in 0..end) return MockResponse().setResponseCode(416).setHeader("Content-Range", "bytes */${bytes.size}")
                         val length = end - start + 1
                         requests.add(Request(path, range, now(), length))
-                        return MockResponse().setHeadersDelay(120, MILLISECONDS).throttleBody(16384, 80, MILLISECONDS)
+                        val throttlePeriod = if (id.endsWith("-rebuffer")) 200L else 80L
+                        return MockResponse().setHeadersDelay(120, MILLISECONDS).throttleBody(16384, throttlePeriod, MILLISECONDS)
                             .setHeader("Content-Type", when (name) {
                                 "detail" -> "text/html; charset=utf-8"
                                 "index.m3u8" -> "application/vnd.apple.mpegurl"
@@ -117,22 +165,35 @@ class PlaybackPerformanceProbe {
                 // Drain that update before resetting the estimate for the first trial.
                 main { app.linkSpeed }
                 fixture.ins.waitForIdleSync()
-                val profiles = listOf(Profile(false, false), Profile(true, false), Profile(false, true), Profile(true, true),
-                    Profile(false, true, seekCache = false), Profile(true, true, streamCache = true))
+                val profiles = if (startupComparison) {
+                    listOf(
+                        Profile(false, false, exercise = Exercise.STARTUP), Profile(true, false, exercise = Exercise.STARTUP),
+                        Profile(false, false, exercise = Exercise.REBUFFER), Profile(true, false, exercise = Exercise.REBUFFER),
+                    )
+                } else {
+                    listOf(Profile(false, false), Profile(true, false), Profile(false, true), Profile(true, true),
+                        Profile(false, true, seekCache = false), Profile(true, true, streamCache = true))
+                }
                 fun runTrial(round: Int, profile: Profile) {
                     val id = "${fixture.nonce}-$round-${profile.name}"
                     val path = "/playback-probe/$id/"
                     measure(fixture, profile, id, names.map { server.url(path + it).toString() }, {
                         requests.filter { it.path.startsWith(path) }
-                    }, { name -> completions.firstOrNull { it.first == path + name }?.second }, report = round > 0)
+                    }, { name -> completions.firstOrNull { it.first == path + name }?.second },
+                        expectProbe = !profile.knownSpeed && (profile.multipleQualities || expectSingleProbe), report = round > 0)
                 }
                 try {
                     // Warm the UI and decoder for both formats before collecting timings.
-                    runTrial(0, Profile(false, true))
-                    runTrial(0, Profile(true, true))
+                    val warmup = if (startupComparison) Exercise.STARTUP else Exercise.SEEK
+                    runTrial(0, Profile(false, true, exercise = warmup))
+                    runTrial(0, Profile(true, true, exercise = warmup))
                     repeat(repeats) { round ->
                         val order = if (round % 2 == 0) profiles else profiles.reversed()
                         order.forEach { runTrial(round + 1, it) }
+                    }
+                    if (startupComparison) {
+                        runTrial(1, Profile(false, false, exercise = Exercise.STARTUP, multipleQualities = true))
+                        runTrial(1, Profile(false, true, exercise = Exercise.STARTUP, multipleQualities = true))
                     }
                 } finally {
                     client.connectionPool.evictAll()
@@ -142,12 +203,13 @@ class PlaybackPerformanceProbe {
     }
 
     private fun measure(fixture: ComposeFixture, profile: Profile, id: String, segments: List<String>,
-                        requests: () -> List<Request>, completedAt: (String) -> Long?, report: Boolean) {
+                        requests: () -> List<Request>, completedAt: (String) -> Long?, expectProbe: Boolean, report: Boolean) {
         val app = fixture.app
         val site = SiteRegistry.R34V
         val video = Video(id, "Playback probe", "${site.base}/playback-probe/$id/detail", site = site.id)
         val key = app.playback.key(video, "360p")
         val frames = ConcurrentLinkedQueue<Frame>()
+        val rebuffer = RebufferObserver()
         val cacheReads = ConcurrentLinkedQueue<CacheRead>()
         val cacheName = if (profile.hls) "streamCache" else "seekCache"
         val cache = (field(app.playback, "${cacheName}\$delegate").get(app.playback) as Lazy<*>).value as Cache
@@ -191,17 +253,34 @@ class PlaybackPerformanceProbe {
                     (playerField.get(activity) as ExoPlayer?)?.also {
                         check(it.playbackState != Player.STATE_READY) { "Missed first-frame listener for $id" }
                         it.addAnalyticsListener(firstFrame)
+                        if (profile.exercise == Exercise.REBUFFER) it.addListener(rebuffer)
                     }
                 }
             }
             val startup = await("first frame for $id") { frames.peek() }
             val detailEnd = checkNotNull(completedAt("detail"))
             val probes = requests().filter { it.probe }
-            check(probes.size == if (profile.knownSpeed) 0 else 1) { "Unexpected startup probe count for $id: ${requests()}" }
+            check(probes.size == if (expectProbe) 1 else 0) { "Unexpected startup probe count for $id: ${requests()}" }
             val probe = probes.singleOrNull()
             val probeEnd = probe?.let { checkNotNull(completedAt(profile.media)) }
             val firstMedia = requests().first { !it.detail && !it.probe }.start
             val firstSegment = if (profile.hls) requests().first { it.path.endsWith("/segment00.ts") }.start else firstMedia
+
+            if (profile.exercise != Exercise.SEEK) {
+                val uri = main { checkNotNull(player.currentMediaItem?.localConfiguration?.uri) }
+                check(uri.lastPathSegment == profile.media && uri.query == null) { "Unexpected stream selected for $id: $uri" }
+                val stallStats = if (profile.exercise == Exercise.REBUFFER) {
+                    await("16 seconds of weak-link playback for $id", timeoutMs = 45_000) {
+                        main { true.takeIf { player.currentPosition >= 16_000 && player.isPlaying } }
+                    }
+                    main { rebuffer.result() }
+                } else ""
+                check(main { playerField.get(activity) === player && player.playerError == null }) { "Playback restarted or failed for $id" }
+                if (report) Log.i("R34VSingleStart", "$id first=${startup.at - launched} detail=${detailEnd - launched} " +
+                    "probes=${probes.size} probeMs=${if (probe != null) probeEnd!! - probe.start else 0} " +
+                    "mediaToFrame=${startup.at - firstMedia} $stallStats")
+                return
+            }
 
             await("initial playback for $id") { main { true.takeIf { player.currentPosition >= 2700 } } }
             val forward = main {
@@ -238,8 +317,8 @@ class PlaybackPerformanceProbe {
     private fun field(owner: Any, name: String) = owner.javaClass.getDeclaredField(name).apply { isAccessible = true }
     private fun <T> main(block: () -> T): T = runBlocking(Dispatchers.Main) { block() }
 
-    private fun <T : Any> await(description: String, observe: () -> T?): T {
-        val deadline = now() + 20_000
+    private fun <T : Any> await(description: String, timeoutMs: Long = 20_000, observe: () -> T?): T {
+        val deadline = now() + timeoutMs
         while (now() < deadline) {
             observe()?.let { return it }
             SystemClock.sleep(12)

@@ -26,12 +26,31 @@
 - **首帧主要耗在 MP4 起播前测速。** 网速未知时，1 MiB 范围请求的中位数是 5268 ms，它在正式媒体请求之前完成。HLS 同一条测速路径只读 671 B 的播放列表，中位数 128 ms。网速已知时，两种格式首帧均约 1.1 秒。默认缓存四组的详情完成中位数为 181–199 ms，正式媒体请求至首帧为 643–844 ms。已知网速的默认 HLS 组从播放列表请求到首个分片请求为 161 ms。[起播选档](../../app/src/main/kotlin/com/r34v/r34v/PlayerActivity.kt) · [测速代码](../../app/src/main/kotlin/com/r34v/r34v/playback/MediaProbe.kt)
 - **回拖差异来自目标数据能否复用。** 默认 MP4 从缓存读取文件开头约 0.69–0.74 MB，后续请求从缓存边界开始。关闭会话缓存后需要从目标的前置关键帧重读，恢复中位数增加 238 ms。默认 HLS 每次都重读目标分片，开启现有流式缓存后 5 次均命中目标分片，恢复中位数减少 253 ms。30 次跳转均沿用同一个播放引擎。[播放缓存配置](../../app/src/main/kotlin/com/r34v/r34v/playback/PlaybackStore.kt)
 
-这一组数据适用于单档、固定速率的短点播样本。真实 CDN 及更长素材、HLS 多变体、网络抖动和持续播放再缓冲另行复测。
+这一组数据适用于单档、固定速率的短点播样本。弱网再缓冲见下文，真实 CDN、更长素材、HLS 多变体及网络抖动仍待复测。
 
 ## 优化顺序
 
-1. 单档直接尝试起播，把 1 MiB 同步测速移出这条路径。用同一矩阵确认实际播放档位一致、测速请求消失、首帧缩短，再补高码率单档弱网回归。多档继续按带宽选档，同时区分真实传输采样和网络类型的默认估值，HLS 的实测速率取自媒体分片。预跑在尚无媒体传输时观察到 2.40 Mbps 的初始估值，Media3 的网络类型回调可携带默认估值，当前 `LinkSpeed` 接受所有正值回调。[带宽估算源码](https://github.com/androidx/media/blob/1.9.2/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/upstream/DefaultBandwidthMeter.java#L389-L431) · [应用带宽估算](../../app/src/main/kotlin/com/r34v/r34v/playback/LinkSpeed.kt)
+1. 单档直接起播已实现，复测见下文。高码率单档弱网仍待覆盖。多档选档后续可区分真实传输采样和网络类型的默认估值，HLS 的实测速率可取自媒体分片。预跑在尚无媒体传输时观察到 2.40 Mbps 的初始估值，Media3 的网络类型回调可携带默认估值，当前 `LinkSpeed` 接受所有正值回调。[带宽估算源码](https://github.com/androidx/media/blob/1.9.2/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/upstream/DefaultBandwidthMeter.java#L389-L431) · [应用带宽估算](../../app/src/main/kotlin/com/r34v/r34v/playback/LinkSpeed.kt)
 2. 为点播 HLS 验证有容量上限的单次会话回拖缓存，按作品和媒体资源 URI 隔离分片，保持全局流式缓存的现有默认设置。用默认 HLS 作为基线，复测目标分片重读、首帧和回拖耗时，并检查持续播放中的缓存写入开销。缓冲窗口沿用当前配置，便于比较。
+
+## 单档直接起播复测
+
+以 `7abc44f` 为基线，使用同一台 Android 16 模拟器和原来生成的 MP4、HLS 文件。起播前将应用带宽估值置为未知，沿用默认缓存。两种封装各预热一次，每种格式、链路和代码版本各测 3 次，交替顺序。
+
+- 原链路沿用每 80 ms 16 KiB（约 1.64 Mbps），记录首次出画和同步测速请求数。
+- 弱网从起播起限制为每 200 ms 16 KiB（约 0.655 Mbps），两种限速下每次响应头都延迟 120 ms。记录首次出画，以及从首次进入播放到视频位置 16 秒之间的再缓冲次数、总时长和最长单次时长。再缓冲从进入 `STATE_BUFFERING` 计到回到 `STATE_READY`。初次出画前的缓冲计入首帧耗时。
+- 同一用例检查实际打开的媒体地址、整个观测期的引擎实例和播放错误。另用 `360p`、`720p` 两档验证偏好 `360p` 的选档，未知网速仍发出一次测速，已知网速直接选档。
+
+下表为中位数（最小–最大），每组 3 次，共 24 次单档样本。耗时单位为毫秒。
+
+| 格式与版本 | 原链路首次出画 | 弱网首次出画 | 弱网再缓冲次数 | 弱网再缓冲总时长 | 弱网最长一次 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| MP4 · 改动前 | 6220（6107–6371） | 13796（13733–13816） | 2（2–2） | 2019（1985–2050） | 1023（993–1029） |
+| MP4 · 直接起播 | 1104（1010–1161） | 1058（975–1092） | 2（2–3） | 2022（1846–2779） | 998（993–1018） |
+| HLS · 改动前 | 1324（1246–1394） | 1421（1259–1432） | 4（4–5） | 3990（3611–4072） | 1102（1007–1118） |
+| HLS · 直接起播 | 1090（1071–1182） | 1334（1261–1336） | 4（4–5） | 3650（3408–3909） | 1067（1029–1121） |
+
+改动前每次单档起播会发出一次同步测速，改动后 12 次单档起播均为 0 次。弱网 MP4 跳过了中位数 12.83 秒的测速，首帧少等 12.74 秒。HLS 原测速只传播放列表，首帧收益较小。弱网再缓冲次数的中位数保持在 MP4 两次、HLS 四次。新版 MP4 有一轮达到 3 次和 2779 ms；这组数据来自单个短片、单台模拟器和固定限速。[单档起播分支](../../app/src/main/kotlin/com/r34v/r34v/PlayerActivity.kt)
 
 ## 复测
 
@@ -64,4 +83,13 @@ Get-ChildItem -LiteralPath $mediaPath -File | ForEach-Object {
 adb -s $serial shell am instrument -w -r -e class com.r34v.r34v.PlaybackPerformanceProbe `
   -e playbackPerf true -e playbackPerfRepeats 5 com.r34v.r34v.debug.test/androidx.test.runner.AndroidJUnitRunner
 adb -s $serial logcat -d -s R34VPlaybackPerf:I
+```
+
+沿用同一套媒体和安装步骤，运行首帧及弱网对照用例。将应用包换成 `7abc44f` 的开发包时，在 `am instrument` 参数中加入 `-e playbackPerfExpectSingleProbe true`，用同一个测试包测改动前的数据。
+
+```powershell
+adb -s $serial shell am instrument -w -r -e class com.r34v.r34v.PlaybackPerformanceProbe `
+  -e playbackPerf true -e playbackPerfScenario startup -e playbackPerfRepeats 3 `
+  com.r34v.r34v.debug.test/androidx.test.runner.AndroidJUnitRunner
+adb -s $serial logcat -d -s R34VSingleStart:I
 ```

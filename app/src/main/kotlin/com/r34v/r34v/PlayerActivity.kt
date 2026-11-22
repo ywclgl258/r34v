@@ -180,12 +180,15 @@ class PlayerActivity : ComponentActivity() {
     /**
      * 起播档位。
      *
+     * 单档片源可以直接起播。有多个档位时才需要用带宽估计选档。
+     *
      * 以前是“标签精确匹配，匹配不到就取 ≤720 的最后一档”，于是站点默认给 720p、链路又喂不动时，
      * 播放器只会永远转圈。现在先看链路实测：已知速度就按预算选，未知就先测 1 MB 真实媒体再选，
      * 测速本身失败（断网、被拦）时退回用户设置，行为和以前一致。
      */
     private suspend fun chosenStream(streams: List<Stream>, preferred: String): Stream {
         if (streams.isEmpty()) error("详情页没有播放地址，可能需要登录或站点已改版")
+        streams.singleOrNull()?.let { return it }
         val local = app.linkSpeed.estimateKbps()
         if (local > 0) return noteChoice(StreamSelection.pick(streams, preferred, local), preferred, local, measured = false)
         phase = "正在测试链路速度"
