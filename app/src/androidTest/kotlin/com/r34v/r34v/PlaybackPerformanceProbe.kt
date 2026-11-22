@@ -63,6 +63,7 @@ class PlaybackPerformanceProbe {
         val multipleQualities: Boolean = false,
         val weakCdn: Boolean = false,
         val cdnPolicy: CdnSeekPolicy? = null,
+        val rewindTarget: Long? = null,
     ) {
         val media = when {
             exercise == Exercise.SHORT_RANGES -> "ranges.m3u8"
@@ -70,7 +71,8 @@ class PlaybackPerformanceProbe {
             else -> "source.mp4"
         }
         val name = if (exercise == Exercise.CDN) {
-            "cdn-${if (weakCdn) "weak" else "natural"}-${cdnPolicy?.label ?: if (seekCache) "on" else "off"}"
+            "cdn-${if (weakCdn) "weak" else "natural"}-${cdnPolicy?.label ?: if (seekCache) "on" else "off"}" +
+                (rewindTarget?.let { "-back-$it" } ?: "")
         } else if (exercise == Exercise.SHORT_RANGES) "hls-range-${checkNotNull(cdnPolicy).label}"
         else "${if (hls) "hls" else "mp4"}-${if (knownSpeed) "known" else "unknown"}" +
             when {
@@ -190,10 +192,15 @@ class PlaybackPerformanceProbe {
         val hlsCacheComparison = args.getString("playbackPerfScenario") == "hls-cache"
         val scenario = args.getString("playbackPerfScenario")
         val cdnLater = scenario == "cdn-later"
-        val shortRanges = scenario == "short-ranges"
-        val cdnComparison = scenario == "cdn-high" || scenario == "cdn-policy" || cdnLater
-        val policyComparison = scenario == "cdn-policy" || cdnLater || shortRanges
-        val policies = if (cdnLater || shortRanges) listOf(CdnSeekPolicy.CURRENT, CdnSeekPolicy.LIMIT_PREFETCH) else CdnSeekPolicy.entries
+        val nearSegment = scenario == "cdn-next" || scenario == "short-next"
+        val shortRanges = scenario == "short-ranges" || scenario == "short-next"
+        val cdnComparison = scenario == "cdn-high" || scenario == "cdn-policy" || cdnLater || scenario == "cdn-next"
+        val policyComparison = scenario == "cdn-policy" || cdnLater || shortRanges || nearSegment
+        val policies = when {
+            nearSegment -> listOf(CdnSeekPolicy.CURRENT, CdnSeekPolicy.PRIORITIZE_NEXT)
+            cdnLater || shortRanges -> listOf(CdnSeekPolicy.CURRENT, CdnSeekPolicy.LIMIT_PREFETCH)
+            else -> listOf(CdnSeekPolicy.CURRENT, CdnSeekPolicy.LIMIT_PREFETCH, CdnSeekPolicy.RESERVE_PLAYED)
+        }
         val expectSingleProbe = args.getString("playbackPerfExpectSingleProbe") == "true"
         ComposeFixture().use { fixture ->
             val directory = File(fixture.app.filesDir, "playback_probe")
@@ -265,7 +272,7 @@ class PlaybackPerformanceProbe {
                             requests.add(Request("/playback-probe/${trial.id}$path", request.header("Range"), now(), 0))
                             val response = chain.proceed(request)
                             val observeStart = request.url == cdn.segments.first().uri
-                            if (observeStart || (cdnLater && request.url == cdn.at(11_200).uri)) {
+                            if (observeStart || ((cdnLater || nearSegment) && request.url == cdn.at(11_200).uri)) {
                                 Log.i("R34VCdn", "${trial.id} targetHttp=${response.code} edge=${response.header("X-Served-By")} " +
                                     "cache=${response.header("X-Cache")} length=${response.body?.contentLength()}")
                             }
@@ -296,9 +303,15 @@ class PlaybackPerformanceProbe {
                 fixture.ins.waitForIdleSync()
                 val profiles = if (policyComparison) {
                     val links = if (shortRanges) listOf(false) else listOf(false, true)
-                    links.flatMap { weak -> policies.map { policy ->
-                        Profile(true, false, exercise = if (shortRanges) Exercise.SHORT_RANGES else Exercise.CDN, weakCdn = weak, cdnPolicy = policy)
-                    } }
+                    links.flatMap { weak ->
+                        val targets = if (nearSegment && !shortRanges) {
+                            if (weak) listOf(11_200L) else listOf(1_200L, 11_200L)
+                        } else listOf(null)
+                        targets.flatMap { target -> policies.map { policy ->
+                            Profile(true, false, exercise = if (shortRanges) Exercise.SHORT_RANGES else Exercise.CDN,
+                                weakCdn = weak, cdnPolicy = policy, rewindTarget = target)
+                        } }
+                    }
                 } else if (cdnComparison) {
                     listOf(
                         Profile(true, false, seekCache = false, exercise = Exercise.CDN),
@@ -346,7 +359,7 @@ class PlaybackPerformanceProbe {
                         }, { name -> completions.firstOrNull { it.first == if (name.startsWith('/')) name else path + name }?.second },
                             expectProbe = !profile.knownSpeed && (profile.multipleQualities || expectSingleProbe), report = round > 0,
                             experiment = experiment, firstCdnByteAt = { firstCdnBytes.firstOrNull { it.first == id }?.second },
-                            playlist = playlist, backPosition = if (cdnLater || shortRanges) 11_200 else 1_200)
+                            playlist = playlist, backPosition = profile.rewindTarget ?: if (cdnLater || shortRanges) 11_200 else 1_200)
                     } finally { activeCdnTrial.set(null) }
                 }
                 try {
@@ -557,7 +570,7 @@ class PlaybackPerformanceProbe {
                 }
                 val targetAfter = cachedTargetBytes()
                 if (rangeRun) {
-                    if (profile.cdnPolicy == CdnSeekPolicy.LIMIT_PREFETCH) {
+                    if (profile.cdnPolicy == CdnSeekPolicy.LIMIT_PREFETCH || (targetSkipped > 0 && targetBytes == 0L)) {
                         check(targetSkipped > 0 && targetBytes == 0L && targetHits == 0 && targetFetches > 0) { "Unexpected prefetched target state for $id" }
                         val request = targetRequests.single()
                         check(request.range == "bytes=${target.offset}-${target.offset + target.length - 1}" && request.length.toLong() == target.length) {

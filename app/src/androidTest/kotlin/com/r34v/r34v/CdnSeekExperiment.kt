@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 internal enum class CdnSeekPolicy(val label: String) {
-    CURRENT("current"), LIMIT_PREFETCH("limit-prefetch"), RESERVE_PLAYED("reserve-played"),
+    CURRENT("current"), LIMIT_PREFETCH("limit-prefetch"), RESERVE_PLAYED("reserve-played"), PRIORITIZE_NEXT("prioritize-next"),
 }
 
 internal data class ProbeSegment(val uri: HttpUrl, val startMs: Long, val offset: Long, val length: Long) {
@@ -45,6 +45,7 @@ internal data class ProbeSegment(val uri: HttpUrl, val startMs: Long, val offset
 internal class ProbePlaylist(val uri: HttpUrl, val segments: List<ProbeSegment>, private val initialization: Set<ProbeSegment>) {
     private val byUri = (segments + initialization).groupBy { it.uri.toString() }
     fun at(positionMs: Long) = segments.last { it.startMs <= positionMs }
+    fun nextStart(positionMs: Long) = segments.firstOrNull { it.startMs > positionMs }?.startMs ?: positionMs
 
     private fun entryFor(spec: DataSpec) = byUri[spec.uri.toString()]
         ?.singleOrNull { it.covers(spec.position, spec.length) }
@@ -76,10 +77,12 @@ internal class CdnSeekExperiment(
         played.clear()
         skipped.set(0)
         skippedSegments.clear()
-        return HlsSeekSession(lazyOf(cache), allowWrite = if (policy == CdnSeekPolicy.LIMIT_PREFETCH) {
+        return HlsSeekSession(lazyOf(cache), allowWrite = if (policy == CdnSeekPolicy.LIMIT_PREFETCH || policy == CdnSeekPolicy.PRIORITIZE_NEXT) {
             { spec ->
                 val segment = playlist.segmentFor(spec)
-                val allow = if (segment == null) playlist.isInitialization(spec) else segment.startMs <= playhead.get() + 5_000
+                val position = playhead.get()
+                val writeThrough = if (policy == CdnSeekPolicy.PRIORITIZE_NEXT) playlist.nextStart(position) else position + 5_000
+                val allow = if (segment == null) playlist.isInitialization(spec) else segment.startMs <= writeThrough
                 if (!allow) {
                     skipped.incrementAndGet()
                     if (segment != null) skippedSegments.merge(segment, 1, Int::plus)
