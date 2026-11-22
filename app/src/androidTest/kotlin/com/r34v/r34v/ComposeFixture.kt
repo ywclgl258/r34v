@@ -26,7 +26,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ConcurrentHashMap
 
 /** Neutral media and real repository/cache/player paths; no production test switches. */
-class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi: () -> Unit = {}) : Closeable {
+class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi: () -> Unit = {},
+                    private val preservePreferences: Set<String> = emptySet()) : Closeable {
     val ins = InstrumentationRegistry.getInstrumentation()
     val app = ins.targetContext.applicationContext as R34Application
     private val prefs = app.library.prefs.all.toMap()
@@ -172,7 +173,8 @@ class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi
         ins.runOnMainSync { listOf(Stage.RESUMED, Stage.STARTED, Stage.PAUSED, Stage.STOPPED, Stage.CREATED).flatMap { ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(it) }.distinct().forEach(Activity::finish) }
         ins.waitForIdleSync(); adapters.clear(); adapters.putAll(originals); clientField.set(app.network, originalClient)
         app.library.switchSite(previousSite)
-        app.library.prefs.edit().clear().apply { prefs.forEach { (key, value) -> when (value) { is String -> putString(key, value); is Boolean -> putBoolean(key, value); is Long -> putLong(key, value); is Int -> putInt(key, value); is Float -> putFloat(key, value); is Set<*> -> putStringSet(key, value.filterIsInstance<String>().toSet()) } } }.commit()
+        val restored = prefs.filterKeys { it !in preservePreferences } + app.library.prefs.all.filterKeys { it in preservePreferences }
+        app.library.prefs.edit().clear().apply { restored.forEach { (key, value) -> when (value) { is String -> putString(key, value); is Boolean -> putBoolean(key, value); is Long -> putLong(key, value); is Int -> putInt(key, value); is Float -> putFloat(key, value); is Set<*> -> putStringSet(key, value.filterIsInstance<String>().toSet()) } } }.commit()
         app.network.feedCacheDirectory.listFiles().orEmpty().filter { it.isFile }.forEach { it.delete() }; originalFeeds.forEach { (name, bytes) -> File(app.network.feedCacheDirectory, name).writeBytes(bytes) }
         File(app.filesDir, "gallery-cache").walkTopDown().filter { it.isFile && it.absolutePath !in galleryFiles }.forEach { it.delete() }
         fixtureClient.connectionPool.evictAll(); fixtureClient.dispatcher.executorService.shutdown(); server.shutdown()

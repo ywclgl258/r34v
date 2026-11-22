@@ -342,6 +342,7 @@ class MainActivity : ComponentActivity() {
         val site = SiteRegistry.byIdOrDefault(siteId)
         val adapter = remember(site) { AdapterRegistry.adapter(site, app.network) }
         val drawer = rememberDrawerState(DrawerValue.Closed); val scope = rememberCoroutineScope()
+        var pinnedSites by remember { mutableStateOf(store.pinnedSiteIds()) }
         var languageVisible by remember(site, screen) { mutableStateOf(true) }
         var language by remember(site) { mutableStateOf(store.galleryLanguage(site.id)) }
         var scrollDistance by remember(site, screen) { mutableFloatStateOf(0f) }
@@ -366,7 +367,7 @@ class MainActivity : ComponentActivity() {
         CompositionLocalProvider(LocalSourceTopInset provides sourceTopInset) {
         ModalNavigationDrawer(drawerState = drawer, drawerContent = {
             val closeDrawer: () -> Unit = { scope.launch { drawer.close() } }
-            SiteSwitcher(site, closeDrawer) { target ->
+            SiteSwitcher(site, pinnedSites, { pinnedSites = store.togglePinnedSite(it) }, drawer.isOpen, closeDrawer) { target ->
                 switchSite(target)
                 closeDrawer()
             }

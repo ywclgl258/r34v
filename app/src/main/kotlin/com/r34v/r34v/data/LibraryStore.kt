@@ -21,7 +21,10 @@ import android.util.Base64
  * about any particular catalogue.
  */
 class LibraryStore(context: Context, name: String = "r34v_native", legacyName: String = "FlutterSharedPreferences") {
-    companion object { const val SITE_SWITCH_TUTORIAL_SEEN = "site_switch_tutorial_seen" }
+    companion object {
+        const val SITE_SWITCH_TUTORIAL_SEEN = "site_switch_tutorial_seen"
+        internal const val PINNED_SITE_IDS = "pinned_site_ids_v1"
+    }
     val prefs: SharedPreferences = context.getSharedPreferences(name, Context.MODE_PRIVATE)
     val gson = Gson()
     val personal by lazy { PersonalStore(this) }
@@ -134,6 +137,19 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         siteId = site.id
         SiteRegistry.current = site
         prefs.edit { putString("active_site", site.id) }
+    }
+
+    fun pinnedSiteIds(): List<String> {
+        val available = SiteRegistry.all.map { it.id }.toSet()
+        return list(PINNED_SITE_IDS, String::class.java).filter { it in available }.distinct()
+    }
+
+    @Synchronized fun togglePinnedSite(id: String): List<String> {
+        val current = pinnedSiteIds()
+        if (SiteRegistry.all.none { it.id == id }) return current
+        val next = if (id in current) current - id else current + id
+        write(PINNED_SITE_IDS, next)
+        return next
     }
 
     fun galleryLanguage(siteId: String = this.siteId): GalleryLanguage = GalleryLanguage.entries.firstOrNull {
