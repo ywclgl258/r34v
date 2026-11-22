@@ -162,7 +162,8 @@ class OptimizationIoTest : ComposeUiCase() {
         } finally { observer.stopWatching() }
     }
     @Test fun scrollingCoalescesHistoryWritesAndBackFlushesTheFinalPosition() = ComposeFixture().use { f ->
-        f.app.library.switchSite("ehentai"); f.launchGallery(read = true)
+        f.app.library.switchSite("ehentai")
+        val activity = f.launchGallery(read = true)
         ui.waitUntil(15000) { f.imageCalls.containsAll(listOf(1, 2, 3, 4)) }
         val writes = AtomicInteger()
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -171,14 +172,16 @@ class OptimizationIoTest : ComposeUiCase() {
         f.app.library.prefs.registerOnSharedPreferenceChangeListener(listener)
         try {
             repeat(3) { ui.onNodeWithTag("comic-strip").performTouchInput { swipeUp(durationMillis = 300) } }
-            f.shot("optimization-reader-before-back")
-            back(f)
-            ui.waitUntil(5000) { f.app.library.reading(f.video("ehentai").id, "ehentai") != null }
-            f.shot("optimization-reader-after-back")
-            println("Optimization I/O: reading after exit=${f.app.library.reading(f.video("ehentai").id, "ehentai")}")
-            assertTrue(f.app.library.reading(f.video("ehentai").id, "ehentai")!!.page >= 2)
+            val expectedPage = (2..8).single { ui.onAllNodesWithText("$it / 8").fetchSemanticsNodes().isNotEmpty() }
+            val offset = GalleryActivity::class.java.getDeclaredField("stripOffset").apply { isAccessible = true }
+            val expectedOffset = ui.runOnIdle { offset.getInt(activity) }
+            assertTrue(f.ins.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK))
+            ui.waitUntil(5000) { ui.onAllNodesWithTag("comic-strip").fetchSemanticsNodes().isEmpty() }
+            val saved = checkNotNull(f.app.library.reading(f.video("ehentai").id, "ehentai"))
+            assertEquals(expectedPage, saved.page)
+            assertEquals(expectedOffset, saved.offset)
             assertTrue("Scrolling must not write history once per frame", writes.get() <= 8)
-            println("Optimization I/O: three reader gestures plus exit writes=${writes.get()}")
+            println("Optimization I/O: reader exit page=${saved.page}, offset=${saved.offset}, writes=${writes.get()}")
         } finally { f.app.library.prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
 
