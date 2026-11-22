@@ -6,6 +6,7 @@ import androidx.core.net.toUri
 import android.app.Notification
 import android.content.Context
 import android.net.Uri
+import androidx.annotation.VisibleForTesting
 import androidx.media3.common.MediaItem
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
@@ -195,13 +196,18 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         }
     }
 
-    internal fun openHlsSeekSession() = HlsSeekSession(hlsSeekCache) { prefix ->
-        scope.launch(Dispatchers.IO) {
-            if (!hlsSeekCache.isInitialized()) return@launch
-            val cache = hlsSeekCache.value
-            cache.keys.filter { it.startsWith(prefix) }.forEach(cache::removeResource)
+    @VisibleForTesting
+    internal var hlsSeekSessionFactory: () -> HlsSeekSession = {
+        HlsSeekSession(hlsSeekCache) { prefix ->
+            scope.launch(Dispatchers.IO) {
+                if (!hlsSeekCache.isInitialized()) return@launch
+                val cache = hlsSeekCache.value
+                cache.keys.filter { it.startsWith(prefix) }.forEach(cache::removeResource)
+            }
         }
     }
+
+    internal fun openHlsSeekSession() = hlsSeekSessionFactory()
 
     internal fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = "", hlsKey: String? = null,
                                cacheStreaming: Boolean = false, sessionKey: String? = null,

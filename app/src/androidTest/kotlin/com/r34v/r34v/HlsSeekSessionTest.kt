@@ -8,10 +8,12 @@ import androidx.media3.datasource.ByteArrayDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceInputStream
 import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.cache.CacheEvictor
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.test.platform.app.InstrumentationRegistry
 import com.r34v.r34v.playback.HlsSeekSession
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -89,8 +91,65 @@ class HlsSeekSessionTest {
         }
     }
 
-    private fun withCache(maxBytes: Long, test: (SimpleCache) -> Unit) {
-        val cache = SimpleCache(File(cacheDir.root, "spans"), LeastRecentlyUsedCacheEvictor(maxBytes), StandaloneDatabaseProvider(context))
+    @Test fun writeAdmissionKeepsCachedReadsAndSkipsWritingOnAMiss() = withCache(1024) { cache ->
+        val watched = Uri.parse("https://media.invalid/watched.ts")
+        val ahead = Uri.parse("https://media.invalid/ahead.ts")
+        val stored = byteArrayOf(1, 2, 3)
+        val remote = byteArrayOf(4, 5, 6)
+        var mayWrite = true
+        var bytes = stored
+        HlsSeekSession(lazyOf(cache), allowWrite = { mayWrite }) {}.use { session ->
+            parsePlaylist(session, ended = true)
+            val source = session.upstream { ByteArrayDataSource(bytes) }
+            assertArrayEquals(stored, read(source, watched))
+            mayWrite = false
+            bytes = remote
+            assertArrayEquals(stored, read(source, watched))
+            assertArrayEquals(remote, read(source, ahead))
+            assertEquals(stored.size.toLong(), cache.cacheSpace)
+        }
+    }
+
+    @Test fun byteRangeAdmissionRecognizesRetriesWithoutConfusingAdjacentSegments() {
+        val url = "https://media.invalid/shared.mp4".toHttpUrl()
+        val init = ProbeSegment(url, -1, 0, 100)
+        val early = ProbeSegment(url, 0, 100, 100)
+        val later = ProbeSegment(url, 2_000, 200, 100)
+        val playlist = ProbePlaylist("https://media.invalid/playlist.m3u8".toHttpUrl(), listOf(early, later), setOf(init))
+        fun spec(offset: Long, length: Long) = DataSpec.Builder().setUri(url.toString()).setPosition(offset).setLength(length).build()
+
+        assertTrue(playlist.isInitialization(spec(0, 100)))
+        assertEquals(early, playlist.segmentFor(spec(100, 100)))
+        assertEquals(later, playlist.segmentFor(spec(220, 80)))
+        assertEquals(null, playlist.segmentFor(spec(150, 100)))
+        assertEquals(null, playlist.segmentFor(spec(200, -1)))
+        assertEquals(0L, early.overlap(200, 100))
+        assertEquals(30L, later.overlap(170, 60))
+        val ambiguous = ProbePlaylist(playlist.uri, listOf(early), setOf(init.copy(length = -1)))
+        assertEquals(null, ambiguous.segmentFor(spec(100, 100)))
+        assertTrue(!ambiguous.isInitialization(spec(100, 100)))
+    }
+
+    @Test fun playedQuotaEvictsPrefetchFirstAndStillEnforcesTotalCapacity() = withCache(10,
+        evictor = PlayedQuotaEvictor(10, 6) { it.endsWith("/watched.ts") }) { cache ->
+        val watched = Uri.parse("https://media.invalid/watched.ts")
+        val ahead = Uri.parse("https://media.invalid/ahead.ts")
+        val later = Uri.parse("https://media.invalid/later.ts")
+        val bytes = byteArrayOf(1, 2, 3, 4)
+        session(cache).use { session ->
+            parsePlaylist(session, ended = true)
+            val source = session.upstream { ByteArrayDataSource(bytes) }
+            read(source, watched)
+            read(source, ahead)
+            read(source, later)
+            assertEquals(8L, cache.cacheSpace)
+            assertTrue(cache.keys.any { it.endsWith("/watched.ts") && cache.isCached(it, 0, 4) })
+            assertTrue(cache.keys.none { it.endsWith("/ahead.ts") && cache.isCached(it, 0, 4) })
+        }
+    }
+
+    private fun withCache(maxBytes: Long, evictor: CacheEvictor = LeastRecentlyUsedCacheEvictor(maxBytes), test: (SimpleCache) -> Unit) {
+        val cache = SimpleCache(File(cacheDir.root, "spans"), evictor, StandaloneDatabaseProvider(context))
         try { test(cache) } finally { cache.release() }
     }
 

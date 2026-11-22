@@ -2,6 +2,7 @@
 
 package com.r34v.r34v.playback
 
+import androidx.media3.datasource.DataSink
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
@@ -20,6 +21,7 @@ import java.util.UUID
 /** One media source owns this namespace, even when the same work is opened twice. */
 internal class HlsSeekSession(
     private val cache: Lazy<SimpleCache>,
+    private val allowWrite: ((DataSpec) -> Boolean)? = null,
     private val discard: (String) -> Unit,
 ) : Closeable {
     private val prefix = "${UUID.randomUUID()}|"
@@ -64,14 +66,13 @@ internal class HlsSeekSession(
 
     /** Only used for media chunks, behind the download and global stream cache read paths. */
     fun upstream(network: DataSource.Factory): DataSource.Factory {
-        val cached by lazy {
-            val store = cache.value
-            CacheDataSource.Factory().setCache(store)
-                .setCacheKeyFactory { prefix + it.uri }
-                .setCacheWriteDataSinkFactory(CacheDataSink.Factory().setCache(store).setFragmentSize(2L * 1024 * 1024))
-                .setUpstreamDataSourceFactory(network)
-                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-        }
+        fun factory(sink: DataSink.Factory?) = CacheDataSource.Factory().setCache(cache.value)
+            .setCacheKeyFactory { prefix + it.uri }
+            .setCacheWriteDataSinkFactory(sink)
+            .setUpstreamDataSourceFactory(network)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        val cached by lazy { factory(CacheDataSink.Factory().setCache(cache.value).setFragmentSize(2L * 1024 * 1024)) }
+        val readOnly by lazy { factory(null) }
         return DataSource.Factory {
             object : DataSource {
                 private var source: DataSource? = null
@@ -86,7 +87,11 @@ internal class HlsSeekSession(
                 override fun open(dataSpec: DataSpec): Long {
                     leased = acquire()
                     try {
-                        val dataSource = (if (leased) cached else network).createDataSource()
+                        val dataSource = when {
+                            !leased -> network
+                            allowWrite?.invoke(dataSpec) == false -> readOnly
+                            else -> cached
+                        }.createDataSource()
                         source = dataSource
                         listeners.forEach(dataSource::addTransferListener)
                         val spec = if (leased) dataSpec.buildUpon()
