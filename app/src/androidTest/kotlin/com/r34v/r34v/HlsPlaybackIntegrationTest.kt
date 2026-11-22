@@ -2,11 +2,13 @@
 package com.r34v.r34v
 
 import android.content.Intent
+import androidx.compose.ui.test.*
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.offline.Download
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.r34v.r34v.data.*
+import com.r34v.r34v.playback.DownloadCaches
 import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.MediaType.Companion.toMediaType
@@ -17,8 +19,8 @@ import org.junit.runner.RunWith
 import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
-class HlsPlaybackIntegrationTest {
-    @Test fun productionDownloadServiceAndPlayerRestoreWrappedHlsWithoutNetwork() = ComposeFixture().use { f ->
+class HlsPlaybackIntegrationTest : ComposeUiCase() {
+    @Test fun wrappedHlsPlaysOfflineAndMissingSegmentCanBeRedownloaded(): Unit = ComposeFixture().use { f ->
         val id = "hls-audit-${System.nanoTime()}"
         val video = Video(id, "Neutral HLS", "https://rou.video/v/$id", site = "rouvideo")
         val stream = Stream("自动", "https://rou.video/api/hls/$id")
@@ -77,6 +79,31 @@ class HlsPlaybackIntegrationTest {
                 f.ins.runOnMainSync { activity?.finish() }; activity = null
                 f.ins.waitForIdleSync()
             }
+
+            val cacheField = f.app.playback.javaClass.getDeclaredField("downloadCaches").apply { isAccessible = true }
+            val cache = (cacheField.get(f.app.playback) as DownloadCaches).cache()
+            val segment = cache.keys.single { it.startsWith("$key|hls|") && it.endsWith("segment0.ts") }
+            assertTrue(checkNotNull(cache.getCachedSpans(segment).first().file).delete())
+            assertFalse(f.app.playback.cached(key))
+            offline.set(false)
+            f.detailStreams = listOf(stream)
+            f.launchDownloads(); waitText("下载中心")
+            ui.onNode(hasSetTextAction()).performTextReplacement(video.title)
+            closeKeyboard(f)
+            val empty = hasText("没有符合条件的下载")
+            val tile = hasTestTag("download-video:$key")
+            val center = ui.onNodeWithTag("download-center")
+            clickText("已完成"); center.performScrollToNode(empty)
+            center.performScrollToIndex(0)
+            clickText("需处理")
+            center.performScrollToNode(tile)
+            ui.onNode(hasAnyAncestor(tile) and hasText("重新下载")).performClick()
+            waitUntil("The missing HLS segment was not restored") { f.app.playback.cached(key) }
+            center.performScrollToIndex(0)
+            ui.waitUntil(15000) { runCatching { center.performScrollToNode(empty) }.isSuccess }
+            center.performScrollToIndex(0)
+            clickText("已完成"); center.performScrollToNode(tile)
+            ui.onNode(hasAnyAncestor(tile) and hasText("离线播放")).assertExists()
         } finally {
             f.ins.runOnMainSync {
                 activity?.finish(); f.app.playback.remove(key)

@@ -37,7 +37,11 @@ private data class DownloadSnapshot(
     val onDisk: List<LibraryRecord> = emptyList(),
     val root: String = "",
     val failedBookIds: Set<String> = emptySet(),
+    val damagedBookIds: Set<String> = emptySet(),
 )
+
+private const val DamagedDownload = "离线文件不完整"
+private val LibraryRecord.offlineReady get() = state == LibraryRecord.STATE_COMPLETED || (isComic && intactSelection.isNotEmpty())
 
 @Composable fun DownloadCenter(app: R34Application, resumed: Boolean, dialogs: ComposeDialogs,
     video: (Video, String?, String?) -> Unit, offline: (LibraryRecord) -> Unit, comic: (Video) -> Unit,
@@ -85,13 +89,16 @@ private data class DownloadSnapshot(
                         // An invalidation during the scan must still be observed on the next event.
                         scanned = before
                     }
-                    val checked = books.map { task ->
-                        if (task.state == GalleryDownloadState.COMPLETED && !task.partial && disk.none { it.isComic && it.site == task.entry.site && it.id == task.entry.id && it.state == LibraryRecord.STATE_COMPLETED })
-                            task.copy(state = GalleryDownloadState.FAILED, error = "下载图页不完整，请重新下载") else task
-                    }
+                    val savedBooks = disk.filter { it.isComic }.associateBy { it.site to it.id }
+                    val damagedBooks = books.filter { book ->
+                        val record = savedBooks[book.entry.site to book.entry.id]
+                        book.state == GalleryDownloadState.COMPLETED && record?.state != LibraryRecord.STATE_COMPLETED &&
+                            (!book.partial || record?.intactSelection != book.selectedPages)
+                    }.mapTo(mutableSetOf()) { it.id }
                     val legacy = SiteRegistry.all.flatMap { owner -> app.library.localVideos(owner.id).map { it.copy(site = owner.id) } }
-                    DownloadSnapshot(tasks, checked, legacy, disk, root,
-                        books.filter { it.state == GalleryDownloadState.FAILED && !it.failedRemoval }.mapTo(mutableSetOf()) { it.id })
+                    DownloadSnapshot(tasks, books, legacy, disk, root,
+                        books.filter { it.state == GalleryDownloadState.FAILED && !it.failedRemoval }.mapTo(mutableSetOf()) { it.id },
+                        damagedBookIds = damagedBooks)
                 }
                 ready = true; message = null
             } catch (e: Exception) { if (e is CancellationException) throw e; ready = true; message = e.message ?: "下载任务读取失败" }
@@ -110,6 +117,10 @@ private data class DownloadSnapshot(
     val videoIds = snapshot.videos.filter { it.first.state == Download.STATE_COMPLETED }.map { it.first.request.id }.toSet()
     val allGalleryIds = snapshot.books.map { "${it.entry.site}:${it.entry.id}" }.toSet()
     val allVideoIds = snapshot.videos.map { it.first.request.id }.toSet()
+    val intactVideoKeys = remember(snapshot.onDisk) {
+        snapshot.onDisk.filter { !it.isComic && it.state == LibraryRecord.STATE_COMPLETED }.mapTo(mutableSetOf()) { it.cacheKey }
+    }
+    fun damagedVideo(task: Download) = task.state == Download.STATE_COMPLETED && task.request.id !in intactVideoKeys
     val restoredComics = snapshot.onDisk.filter { it.isComic &&
         ("${it.site}:${it.id}" !in allGalleryIds || (it.state == LibraryRecord.STATE_COMPLETED && "${it.site}:${it.id}" !in galleryIds)) }
     val restoredVideos = snapshot.onDisk.filter { !it.isComic &&
@@ -118,15 +129,16 @@ private data class DownloadSnapshot(
     fun bookStatus(task: GalleryDownload) = when (statusFilter) {
         0 -> true
         1 -> task.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING, GalleryDownloadState.RETRY_WAIT)
-        2 -> task.state == GalleryDownloadState.COMPLETED
-        else -> task.state in listOf(GalleryDownloadState.PAUSED, GalleryDownloadState.FAILED)
+        2 -> task.state == GalleryDownloadState.COMPLETED && task.id !in snapshot.damagedBookIds
+        else -> task.state in listOf(GalleryDownloadState.PAUSED, GalleryDownloadState.FAILED) || task.id in snapshot.damagedBookIds
     }
     fun videoStatus(task: Download) = when (statusFilter) {
         0 -> true
         1 -> task.state in listOf(Download.STATE_DOWNLOADING, Download.STATE_QUEUED, Download.STATE_RESTARTING)
-        2 -> task.state == Download.STATE_COMPLETED
-        else -> task.state in listOf(Download.STATE_STOPPED, Download.STATE_FAILED)
+        2 -> task.state == Download.STATE_COMPLETED && !damagedVideo(task)
+        else -> task.state in listOf(Download.STATE_STOPPED, Download.STATE_FAILED) || damagedVideo(task)
     }
+    fun diskStatus(record: LibraryRecord) = statusFilter == 0 || statusFilter == if (record.offlineReady) 2 else 3
     val videos = snapshot.videos.filter { (task, meta) -> task.state != Download.STATE_REMOVING && kind != 2 && (siteFilter == null || meta.site == siteFilter) && textMatches(meta.video.title, meta.site) && videoStatus(task) }
         .let { list -> when (sort) { 2 -> list.sortedByDescending { it.first.bytesDownloaded }; 3 -> list.sortedByDescending { it.first.percentDownloaded }; 4 -> list.sortedBy { it.second.video.title }; else -> list.sortedByDescending { it.first.startTimeMs } } }
     val books = snapshot.books.filter { kind != 1 && (siteFilter == null || it.entry.site == siteFilter) && textMatches(it.entry.title, it.entry.site, it.group.orEmpty()) &&
@@ -139,10 +151,8 @@ private data class DownloadSnapshot(
             else -> list.sortedBy { it.entry.title }
         } }
     val legacy = snapshot.legacy.filter { kind != 2 && (siteFilter == null || it.site == siteFilter) && textMatches(it.title, it.site) && statusFilter in listOf(0, 2) }
-    val diskComics = restoredComics.filter { kind != 1 && (siteFilter == null || it.site == siteFilter) && textMatches(it.title, it.site) &&
-        (statusFilter == 0 || statusFilter == 2 && it.state == LibraryRecord.STATE_COMPLETED || statusFilter == 3 && it.state != LibraryRecord.STATE_COMPLETED) }
-    val diskVideos = restoredVideos.filter { kind != 2 && (siteFilter == null || it.site == siteFilter) && textMatches(it.title, it.site) &&
-        (statusFilter == 0 || statusFilter == 2 && it.state == LibraryRecord.STATE_COMPLETED || statusFilter == 3 && it.state != LibraryRecord.STATE_COMPLETED) }
+    val diskComics = restoredComics.filter { kind != 1 && (siteFilter == null || it.site == siteFilter) && textMatches(it.title, it.site) && diskStatus(it) }
+    val diskVideos = restoredVideos.filter { kind != 2 && (siteFilter == null || it.site == siteFilter) && textMatches(it.title, it.site) && diskStatus(it) }
     val count = videos.size + books.size + legacy.size + diskComics.size + diskVideos.size
     val advancedFilterCount = listOf(siteFilter, groupFilter).count { it != null }
     val filtersActive = advancedFilterCount > 0 || kind != 0 || statusFilter != 0 || query.isNotBlank()
@@ -274,7 +284,8 @@ private data class DownloadSnapshot(
         if (count > 0) item("result-count") { Copy("$count 项下载", Modifier.padding(top = 4.dp)) }
         items(books, key = { "gallery:${it.id}" }) { book ->
             val downloading = book.state in listOf(GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED)
-            val completed = book.state == GalleryDownloadState.COMPLETED
+            val damaged = book.id in snapshot.damagedBookIds
+            val completed = book.state == GalleryDownloadState.COMPLETED && !damaged
             var expanded by remember(book.id) { mutableStateOf(false) }
             val state = when (book.state) {
                 GalleryDownloadState.QUEUED -> "等待下载"
@@ -282,12 +293,21 @@ private data class DownloadSnapshot(
                 GalleryDownloadState.PAUSED -> "已暂停"
                 GalleryDownloadState.RETRY_WAIT -> "等待限流"
                 GalleryDownloadState.FAILED -> if (book.failedRemoval) "删除失败" else "下载失败"
-                GalleryDownloadState.COMPLETED -> if (book.partial) "部分已保存" else "已下载 · 可离线打开"
+                GalleryDownloadState.COMPLETED -> when {
+                    damaged -> DamagedDownload
+                    book.partial -> "部分已保存"
+                    else -> "已下载 · 可离线打开"
+                }
                 GalleryDownloadState.REMOVING -> "正在删除"
             }
             val pages = if (book.total > 0) "${book.pages} / ${if (book.partial) book.selectedPages?.size else book.total} 页（全书 ${book.total} 页）" else "等待获取页数"
-            DownloadTile("gallery:${book.id}", book.entry, SiteRegistry.byIdOrDefault(book.entry.site).category.itemNoun, "$state · $pages · ${downloadSize(book.bytes)}",
-                if (book.total > 0) book.pages.toFloat() / (book.selectedPages?.size ?: book.total) else null, book.error,
+            val status = if (damaged) state else "$state · $pages · ${downloadSize(book.bytes)}"
+            fun openSavedBook() {
+                val saved = snapshot.onDisk.firstOrNull { it.isComic && it.site == book.entry.site && it.id == book.entry.id }
+                if (saved != null) offline(saved) else comic(book.entry)
+            }
+            DownloadTile("gallery:${book.id}", book.entry, SiteRegistry.byIdOrDefault(book.entry.site).category.itemNoun, status,
+                if (!damaged && book.total > 0) book.pages.toFloat() / (book.selectedPages?.size ?: book.total) else null, book.error,
                 details = {
                     if (expanded) {
                         Copy("当前阶段：${downloadStage(book.stage)} · ${downloadFailure(book.failure)}")
@@ -324,12 +344,16 @@ private data class DownloadSnapshot(
                         if (downloading) Copy("优先级调整已保存，当前任务完成后按新顺序执行。")
                     }
                 }) {
-                if (completed && book.partial) {
-                    Action("查看已存页", primary = true) { comic(book.entry) }
+                if (damaged) {
+                    Action("重新下载", enabled = !retrying && book.id !in busy) {
+                        act(book.id) { app.galleryDownloads.add(book.entry, book.selectedPages, recheckSavedPages = true) }
+                    }
+                } else if (completed && book.partial) {
+                    Action("查看已存页", primary = true, click = ::openSavedBook)
                     TextAction({ act(book.id) { app.galleryDownloads.add(book.entry) } }) { Text("继续保存") }
                 } else if (!book.failedRemoval) Action(if (completed) "离线打开" else if (downloading) "暂停" else if (book.state == GalleryDownloadState.FAILED) "重试" else "继续",
                     primary = completed, enabled = !retrying && book.id !in busy && book.state != GalleryDownloadState.REMOVING) {
-                    if (completed) comic(book.entry) else act(book.id) {
+                    if (completed) openSavedBook() else act(book.id) {
                         if (downloading) app.galleryDownloads.pause(book.id)
                         else if (book.id in snapshot.failedBookIds) app.galleryDownloads.retryFailed(book.id)
                         else app.galleryDownloads.add(book.entry, book.selectedPages)
@@ -340,11 +364,16 @@ private data class DownloadSnapshot(
             }
         }
         items(diskComics, key = { "disk-comic:${it.site}:${it.id}" }) { record ->
-            val available = record.state == LibraryRecord.STATE_COMPLETED
+            val available = record.offlineReady
+            val state = when {
+                record.state == LibraryRecord.STATE_COMPLETED -> "可离线打开"
+                available -> "部分已保存"
+                else -> DamagedDownload
+            }
             DownloadTile("gallery:${record.site}:${record.id}", record.video, "${SiteRegistry.byIdOrDefault(record.site).category.itemNoun} · ${if (record.sourceRoot == app.filesDir.absolutePath) "应用内" else "公共目录"}",
-                (if (available) "可离线打开" else record.detail.ifBlank { "图页不完整，可重新下载" }) + " · ${downloadSize(record.bytes)}") {
+                listOf(state, record.detail, downloadSize(record.bytes)).filter { it.isNotBlank() }.joinToString(" · ")) {
                 if (available) {
-                    Action("离线打开", primary = true) { offline(record) }
+                    Action(if (record.intactSelection.isNotEmpty()) "查看已存页" else "离线打开", primary = true) { offline(record) }
                     TextAction({ dialogs.confirm("删除这份下载？", "删除", "将删除已下载图页。") { act("disk:${record.site}:${record.id}") {
                         val book = app.galleryDownloads.task(record.video)
                         if (book != null) app.galleryDownloads.remove(book.id) else withContext(Dispatchers.IO) {
@@ -355,40 +384,47 @@ private data class DownloadSnapshot(
             }
         }
         items(videos, key = { "video:${it.first.request.id}" }) { (task, meta) ->
-            val intact = snapshot.onDisk.any { it.cacheKey == task.request.id && it.state == LibraryRecord.STATE_COMPLETED }
-            val completed = task.state == Download.STATE_COMPLETED && intact
-            val failed = task.state == Download.STATE_FAILED || (task.state == Download.STATE_COMPLETED && !intact)
+            val damaged = damagedVideo(task)
+            val completed = task.state == Download.STATE_COMPLETED && !damaged
+            val failed = task.state == Download.STATE_FAILED
             val paused = task.state == Download.STATE_STOPPED
             val state = when (task.state) {
-                Download.STATE_COMPLETED -> if (intact) "已下载 · 可离线播放" else "缓存不完整，请重新下载"
+                Download.STATE_COMPLETED -> if (damaged) DamagedDownload else "已下载 · 可离线播放"
                 Download.STATE_DOWNLOADING -> "下载中 ${task.percentDownloaded.coerceAtLeast(0f).toInt()}%"
                 Download.STATE_STOPPED -> "已暂停"
                 Download.STATE_FAILED -> "下载失败"
                 else -> "等待下载 / 网络"
             }
-            DownloadTile("video:${task.request.id}", meta.video, "视频 · ${meta.quality}", "$state · ${downloadSize(task.bytesDownloaded)}",
-                task.percentDownloaded.takeIf { it >= 0 }?.div(100f)) {
-                Action(if (completed) "离线播放" else if (failed) "重试" else if (paused) "继续" else "暂停",
+            DownloadTile("video:${task.request.id}", meta.video, "视频 · ${meta.quality}",
+                if (damaged) state else "$state · ${downloadSize(task.bytesDownloaded)}",
+                task.percentDownloaded.takeIf { !damaged && it >= 0 }?.div(100f)) {
+                Action(if (completed) "离线播放" else if (damaged) "重新下载" else if (failed) "重试" else if (paused) "继续" else "暂停",
                     primary = completed, enabled = !retrying && task.request.id !in busy) {
                     if (completed) video(meta.video, task.request.id, null)
                     else act(task.request.id) {
                         if (task.state == Download.STATE_FAILED) app.playback.retryFailed(task.request.id)
-                        else if (failed) {
-                            val detail = app.repository.detail(meta.video.url)
-                            app.playback.add(meta.video, detail.streams.firstOrNull { it.label == meta.quality } ?: detail.streams.first())
-                        } else app.playback.pause(task.request.id, !paused)
+                        else if (damaged) app.playback.redownloadDamaged(meta.video, meta.quality)
+                        else app.playback.pause(task.request.id, !paused)
                     }
                 }
-                TextAction({ dialogs.confirm("删除这份视频下载？", "删除", "观看记录和收藏会保留。") { act(task.request.id) { app.playback.remove(task.request.id) } } }) { Text("删除") }
+                TextAction({ dialogs.confirm("删除这份视频下载？", "删除", "观看记录和收藏会保留。") { act(task.request.id) { app.playback.remove(task.request.id) } } },
+                    enabled = task.request.id !in busy) { Text("删除") }
             }
         }
         items(diskVideos, key = { "disk-video:${it.site}:${it.id}:${it.quality}" }) { record ->
-            val available = record.state == LibraryRecord.STATE_COMPLETED
+            val available = record.offlineReady
             DownloadTile("disk-video:${record.site}:${record.id}:${record.quality}", record.video,
                 "视频 · ${record.quality} · ${if (record.sourceRoot == app.filesDir.absolutePath) "应用内" else "公共目录"}",
-                (if (available) "可离线播放" else "缓存已缺失，需重新下载") + " · ${downloadSize(record.bytes)}") {
+                (if (available) "可离线播放" else DamagedDownload) + " · ${downloadSize(record.bytes)}") {
                 if (available) Action("离线播放", primary = true) { offline(record) }
-                else Action("删除索引") { act("disk:${record.site}:${record.id}") { withContext(Dispatchers.IO) { app.index.removeVideo(record.site, record.id, record.quality) } } }
+                else {
+                    val id = "disk:${record.cacheKey}"
+                    if (record.url.isNotBlank()) Action("重新下载", enabled = id !in busy) {
+                        act(id) { app.playback.redownloadDamaged(record.video, record.quality) }
+                    }
+                    TextAction({ act(id) { withContext(Dispatchers.IO) { app.index.removeVideo(record.site, record.id, record.quality) } } },
+                        enabled = id !in busy) { Text("删除索引") }
+                }
                 if (available) TextAction({ dialogs.confirm("删除这份视频下载？", "删除", "将删除所有下载位置中的这份视频，观看记录和收藏会保留。") {
                     act("disk:${record.site}:${record.id}") { app.playback.removeRestored(record) }
                 } }) { Text("删除") }
@@ -401,7 +437,7 @@ private data class DownloadSnapshot(
                 TextAction({ dialogs.confirm("删除这份视频下载？", "删除") { act("legacy:${local.site}:${local.id}") { withContext(Dispatchers.IO) { app.library.removeLocal(local.id, local.site) } } } }) { Text("删除") }
             }
         }
-        if (ready && (count == 0 || diskComics.isNotEmpty() || diskVideos.isNotEmpty() || scanNote != null)) item("storage") {
+        if (ready) item("storage") {
             HorizontalDivider(color = RaisedColor)
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {

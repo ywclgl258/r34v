@@ -49,7 +49,8 @@ class GalleryDownloadStore(private val context: Context, private val repository:
         write(change(current)); return true
     }
 
-    suspend fun add(entry: Video, pages: Collection<Int>? = null, group: String? = null): GalleryDownload = withContext(Dispatchers.IO) {
+    suspend fun add(entry: Video, pages: Collection<Int>? = null, group: String? = null,
+                    recheckSavedPages: Boolean = false): GalleryDownload = withContext(Dispatchers.IO) {
         repository.checkDownloadsAllowed()
         require(entry.mediaKind == MediaKind.GALLERY && entry.id.isNotBlank())
         val selection = pages?.map { require(it > 0) { "页码必须大于零" }; it }?.distinct()?.sorted()
@@ -61,7 +62,8 @@ class GalleryDownloadStore(private val context: Context, private val repository:
             check(previous?.state != GalleryDownloadState.REMOVING) { "图集正在删除，请稍后再下载" }
             if (previous?.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING)) previous!!
             // 只有“不带页码的整本下载”才把已完成任务当成无需重做；带页码说明是补页（修复），必须真的跑。
-            else if (selection == null && previous?.state == GalleryDownloadState.COMPLETED && !previous.partial && repository.isDownloaded(entry)) previous
+            else if (!recheckSavedPages && selection == null && previous?.state == GalleryDownloadState.COMPLETED &&
+                !previous.partial && repository.isDownloaded(entry)) previous
             else (previous ?: GalleryDownload(id, entry.copy(mediaKind = MediaKind.GALLERY))).copy(
                 state = GalleryDownloadState.QUEUED, error = "", failure = null, retryAt = 0,
                 // 不带页码即“整本”：必须清掉上次的部分选页，否则永远只补原选页、完成不了整本。

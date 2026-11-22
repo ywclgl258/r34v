@@ -64,6 +64,14 @@ object HlsDownloads {
         cache.removeResource(id)
     }
 
+    internal fun discardDamagedSpans(cache: Cache, id: String) {
+        for (key in cache.keys.filter { it == id || it.startsWith(prefix(id)) }) {
+            for (span in cache.getCachedSpans(key)) {
+                if (span.file?.let { it.isFile && it.length() == span.length } != true) cache.removeSpan(span)
+            }
+        }
+    }
+
     fun factory(cache: Cache, upstream: (DownloadRequest) -> DataSource.Factory,
                 executor: Executor): DownloaderFactory = DownloaderFactory { request ->
         val hls = request.mimeType == MimeTypes.APPLICATION_M3U8 || mime(request.uri.toString()) != null

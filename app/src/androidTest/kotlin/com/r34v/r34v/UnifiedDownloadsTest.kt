@@ -10,12 +10,14 @@ import androidx.media3.exoplayer.offline.Download
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.r34v.r34v.data.*
 import com.r34v.r34v.downloads.GalleryDownloadStore
+import com.r34v.r34v.playback.DownloadCaches
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
@@ -216,6 +218,69 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         assertEquals(beforeRepair + 1, f.imageRequests.count { it == repairedPage })
         assertEquals(untouched, f.imageRequests.filter { it.first == "ehentai" && it.second != 2 }.size)
         assertFalse(task(f)!!.partial)
+    }
+
+    @Test fun damagedVideoAndGalleriesMoveToNeedsAttentionAndReturnAfterRedownload() = ComposeFixture().use { f ->
+        notifications(f)
+        val titlePrefix = "离线修复测试 ${f.nonce}"
+        val clip = f.video("r34v").copy(title = "$titlePrefix MP4")
+        val clipId = f.app.playback.key(clip, "720p")
+        val selected = listOf(1, 3, 5)
+        val wholeBook = f.video("ehentai").copy(title = "$titlePrefix 整本")
+        val partialBook = f.video("nhentai").copy(title = "$titlePrefix 选页")
+        f.launchDownloads(); waitText("下载中心")
+        val stream = runBlocking { f.app.repository.detail(clip.url).streams.first { it.label == "720p" } }
+        f.ins.runOnMainSync { f.app.playback.add(clip, stream) }
+        try {
+            ui.waitUntil(20000) { f.app.playback.downloads().any { it.request.id == clipId && it.state == Download.STATE_COMPLETED } }
+            runBlocking {
+                f.app.galleryDownloads.add(wholeBook)
+                f.app.galleryDownloads.add(partialBook, selected)
+            }
+            done(f); done(f, partialBook.site)
+
+            val field = f.app.playback.javaClass.getDeclaredField("downloadCaches").apply { isAccessible = true }
+            val cache = (field.get(f.app.playback) as DownloadCaches).cache()
+            RandomAccessFile(checkNotNull(cache.getCachedSpans(clipId).first().file), "rw").use { it.setLength(1) }
+            assertFalse(f.app.playback.cached(clipId))
+            fun page(entry: Video, index: Int): File {
+                val url = checkNotNull(f.app.galleries.cachedPageUrl(entry, index)).substringBefore('?')
+                val hash = java.security.MessageDigest.getInstance("SHA-256").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
+                return File(f.app.galleries.downloadDirectory(entry), "$hash.image")
+            }
+            val damagedPage = page(wholeBook, 2)
+            val originalLength = damagedPage.length()
+            assertTrue(originalLength > 3)
+            damagedPage.writeBytes(byteArrayOf(1, 2, 3))
+            assertTrue(page(partialBook, 3).delete())
+
+            f.launchDownloads(); waitText("下载中心")
+            val center = ui.onNodeWithTag("download-center")
+            ui.onNode(hasSetTextAction()).performTextReplacement(titlePrefix)
+            closeKeyboard(f)
+            val empty = hasText("没有符合条件的下载")
+            clickText("已完成"); center.performScrollToNode(empty)
+            center.performScrollToIndex(0)
+            clickText("需处理")
+            val tags = listOf("download-video:$clipId", "download-gallery:${task(f)!!.id}",
+                "download-gallery:${task(f, partialBook.site)!!.id}")
+            for (tag in tags) {
+                center.performScrollToNode(hasTestTag(tag))
+                ui.onNode(hasAnyAncestor(hasTestTag(tag)) and hasText("离线文件不完整", substring = true)).assertExists()
+                ui.onNode(hasAnyAncestor(hasTestTag(tag)) and hasText("重新下载")).performClick()
+            }
+            ui.waitUntil(20000) { f.app.playback.cached(clipId) }
+            ui.waitUntil(20000) { damagedPage.length() == originalLength && page(partialBook, 3).isFile }
+            done(f); done(f, partialBook.site)
+            assertEquals(selected, task(f, partialBook.site)?.selectedPages)
+            center.performScrollToIndex(0)
+            ui.waitUntil(15000) { runCatching { center.performScrollToNode(empty) }.isSuccess }
+            center.performScrollToIndex(0)
+            clickText("已完成")
+            for (tag in tags) center.performScrollToNode(hasTestTag(tag))
+        } finally {
+            f.ins.runOnMainSync { f.app.playback.remove(clipId) }
+        }
     }
 
     @Test fun downloadsReuseLegacyReaderPagesAndRefreshDamagedBookMetadata() = ComposeFixture().use { f ->

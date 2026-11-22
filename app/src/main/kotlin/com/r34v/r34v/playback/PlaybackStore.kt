@@ -266,6 +266,24 @@ class PlaybackStore(private val context: Context, private val network: Network, 
         true
     }
 
+    suspend fun redownloadDamaged(video: Video, quality: String) = withContext(Dispatchers.Main.immediate) {
+        storage.checkDownloadsAllowed()
+        val id = key(video, quality)
+        val generation = generations[id] ?: 0L
+        val downloadIndex = manager.downloadIndex
+        fun canRepair(): Boolean {
+            val state = downloadIndex.getDownload(id)?.state
+            return (state == null || state == Download.STATE_COMPLETED) && id !in submitted &&
+                !removals.containsKey(id) && generation == (generations[id] ?: 0L) && !cached(id)
+        }
+        if (!withContext(Dispatchers.IO) { canRepair() }) return@withContext
+        val fresh = checkNotNull(refreshedStream(DownloadMeta(video, quality, video.site))) { "原清晰度 $quality 暂不可用" }
+        val repair = withContext(Dispatchers.IO) {
+            canRepair().also { if (it) HlsDownloads.discardDamagedSpans(downloadCache, id) }
+        }
+        if (repair) add(video, fresh, generation)
+    }
+
     private fun add(video: Video, stream: Stream, expectedGeneration: Long?) {
         storage.checkDownloadsAllowed()
         val site = SiteRegistry.byIdOrDefault(video.site)
@@ -315,10 +333,7 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     }
 
     /**
-     * Whether the download cache still holds bytes for [cacheKey].
-     *
-     * Used when rebuilding the library from disk: a sidecar whose media is gone must not look
-     * playable. Any position/length means at least one complete span is cached.
+     * Whether the download cache still holds a complete offline copy for [cacheKey].
      */
     fun cached(cacheKey: String, sourceRoot: String = ""): Boolean = downloadCaches.cached(cacheKey, sourceRoot)
     suspend fun copyDownloadsToShared() = withContext(Dispatchers.IO) { downloadCaches.copyToShared() }

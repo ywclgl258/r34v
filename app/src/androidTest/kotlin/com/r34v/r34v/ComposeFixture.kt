@@ -55,6 +55,7 @@ class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi
     @Volatile var imageHttpFailures = 0
     @Volatile var imageRetryAfter: String? = null
     @Volatile var detailHook: (suspend () -> Unit)? = null
+    @Volatile var detailStreams: List<Stream>? = null
     @Volatile var feedOverride: (suspend (String, FeedRequest) -> FeedPage?)? = null
     val nonce = System.nanoTime()
     private val png = Bitmap.createBitmap(600, 900, Bitmap.Config.ARGB_8888).let { image ->
@@ -129,7 +130,8 @@ class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi
             detailHook?.invoke()
             val identity = Regex("content-(\\d+)-(\\d+)$").find(url.trimEnd('/'))
             val entry = video(site.id, identity?.groupValues?.get(1)?.toIntOrNull() ?: 1, identity?.groupValues?.get(2)?.toIntOrNull() ?: 0)
-            return Detail(entry, listOf(Stream("720p", server.url("/clip.mp4?quality=720").toString()), Stream("480p", server.url("/clip.mp4?quality=480").toString())), mapOf("标签" to listOf(Link("sample", "示例标签", "${site.base}/tags/sample/"))), "用于验证原生播放的中性测试片段。", listOf(video(site.id, 1, 1)), listOf(Comment("测试作者", "中性测试评论", "2026")), emptyList())
+            val streams = detailStreams ?: listOf(Stream("720p", server.url("/clip.mp4?quality=720").toString()), Stream("480p", server.url("/clip.mp4?quality=480").toString()))
+            return Detail(entry, streams, mapOf("标签" to listOf(Link("sample", "示例标签", "${site.base}/tags/sample/"))), "用于验证原生播放的中性测试片段。", listOf(video(site.id, 1, 1)), listOf(Comment("测试作者", "中性测试评论", "2026")), emptyList())
         }
         override suspend fun index(section: String) = listOf(Link("sample", "示例索引", "${site.base}/tags/sample/"))
         override fun sectionUrl(key: String): String? = if (key == "catalog") "${site.base}/catalog/" else null

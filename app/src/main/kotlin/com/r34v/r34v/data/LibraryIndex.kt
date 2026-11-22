@@ -1,5 +1,6 @@
 package com.r34v.r34v.data
 
+import android.graphics.BitmapFactory
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.CancellationException
@@ -36,6 +37,8 @@ data class LibraryRecord(
     @SerializedName("versionCode") val versionCode: Int = 0,
     /** Set from the scanned directory, never trusted from a sidecar supplied on disk. */
     @SerializedName("sourceRoot") val sourceRoot: String = "",
+    /** Requested page numbers verified during this scan. Never saved in the sidecar. */
+    @Transient val intactSelection: List<Int> = emptyList(),
 ) {
     val video get() = Video(id = id, title = title, url = url, thumb = thumb, duration = duration, site = site, mediaKind = if (isComic) MediaKind.GALLERY else MediaKind.VIDEO)
     val isComic get() = kind == KIND_COMIC
@@ -228,23 +231,33 @@ class LibraryIndex(private val context: android.content.Context, private val sto
                         val url = links[page]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                         val image = File(book, "${hash(url.substringBefore('?'))}.image")
                         val metadata = read(File(book, "${hash(url.substringBefore('?'))}.page.json"), GalleryImage::class.java)
-                        image.takeIf { it.isFile && it.length() > 0 && metadata?.index == page && metadata.pageUrl == url }
-                    }
-                    val bytes = pages.sumOf { it.length() }
+                        if (metadata?.index == page && metadata.pageUrl == url && hasImageHeader(image)) page to image else null
+                    }.toMap()
+                    val bytes = pages.values.sumOf { it.length() }
                     val marker = runCatching { File(book, "complete").readText().trim().toInt() }.getOrNull()
                     val whole = marker == bookJson.pageCount && pages.size == bookJson.pageCount
+                    val selected = if (whole) emptyList() else read(File(book, "selection.json"), GalleryRepository.DownloadSelection::class.java)?.selected.orEmpty()
+                    val intactSelection = selected.takeIf { pages.keys.containsAll(it) }.orEmpty()
                     val at = sidecar?.at?.takeIf { it > 0 } ?: book.listFiles().orEmpty().minOfOrNull { it.lastModified() } ?: System.currentTimeMillis()
                     val record = LibraryRecord(kind = LibraryRecord.KIND_COMIC, site = site.id, id = entry.id, title = entry.title.orEmpty(),
                         url = entry.url.orEmpty(), thumb = entry.thumb.orEmpty().ifBlank { sidecar?.thumb.orEmpty() }, duration = entry.duration.orEmpty(),
                         bytes = bytes, at = at, state = if (whole) LibraryRecord.STATE_COMPLETED else LibraryRecord.STATE_PARTIAL,
                         detail = if (whole) "" else "已保存 ${pages.size} / ${bookJson.pageCount} 页",
-                        versionCode = sidecar?.versionCode ?: versionCode, sourceRoot = layout.root.absolutePath)
+                        versionCode = sidecar?.versionCode ?: versionCode, sourceRoot = layout.root.absolutePath,
+                        intactSelection = intactSelection)
                     if (sidecar == null) runCatching { putComic(entry, bytes, at, layout) }
-                    found[recordKey] = record
+                    if (whole || intactSelection.isNotEmpty() || found[recordKey]?.intactSelection.isNullOrEmpty()) found[recordKey] = record
                 } }
             }
         }
         found.values.sortedByDescending { it.at }
+    }
+
+    private fun hasImageHeader(image: File): Boolean {
+        if (!image.isFile || image.length() == 0L) return false
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(image.path, bounds)
+        return bounds.outWidth > 0 && bounds.outHeight > 0
     }
 
     private fun hash(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }

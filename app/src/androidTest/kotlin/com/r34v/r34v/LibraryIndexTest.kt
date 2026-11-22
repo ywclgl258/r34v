@@ -40,6 +40,15 @@ class LibraryIndexTest {
     }
 
     private fun index() = LibraryIndex(ins.targetContext, storage, app.library.gson)
+    private val imageBytes by lazy {
+        val image = android.graphics.Bitmap.createBitmap(2, 2, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            java.io.ByteArrayOutputStream().use { output ->
+                check(image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output))
+                output.toByteArray()
+            }
+        } finally { image.recycle() }
+    }
 
     private fun book(site: String, entryId: String, pages: Int, complete: Boolean, written: Int = pages, mode: StorageRoot.Mode = StorageRoot.Mode.SHARED): File {
         val folder = File(File(storage.ensure(mode).comics, site), hash(entryId)).apply { mkdirs() }
@@ -48,7 +57,7 @@ class LibraryIndexTest {
         write(folder, "book.json", app.library.gson.toJson(GalleryDetail(entry, pages, links, pages)))
         write(folder, "links.json", app.library.gson.toJson(mapOf("links" to links.associate { it.index to it.url })))
         links.take(written).forEach {
-            File(folder, "${hash(it.url)}.image").writeBytes(ByteArray(64) { b -> b.toByte() })
+            File(folder, "${hash(it.url)}.image").writeBytes(imageBytes)
             write(folder, "${hash(it.url)}.page.json", app.library.gson.toJson(GalleryImage(it.index, it.url, "${it.url}.jpg", null, null)))
         }
         if (complete) write(folder, "complete", pages.toString())
@@ -88,7 +97,7 @@ class LibraryIndexTest {
         assertEquals(1, found.size)
         assertEquals(LibraryRecord.STATE_COMPLETED, found.single().state)
         assertEquals("重装前的漫画 $id", found.single().title)
-        assertEquals(192L, found.single().bytes)
+        assertEquals(3L * imageBytes.size, found.single().bytes)
         // The sidecar is written where the book was found, so a second scan need not re-walk it.
         assertTrue("侧车应被补写", index().comicSidecars("ehentai", id).any { it.isFile })
     }
@@ -193,7 +202,10 @@ class LibraryIndexTest {
         val id = "adopt-$nonce"
         book("nhentai", id, pages = 2, complete = true)
         // A reinstall: no preference at all, but the folder is there with real content.
-        val fresh = StorageRoot(ins.targetContext, store, root)
+        val freshApp = object : android.content.ContextWrapper(ins.targetContext) {
+            override fun getFilesDir() = File(root, "fresh-private").apply { mkdirs() }
+        }
+        val fresh = StorageRoot(freshApp, store, root)
         assertEquals(StorageRoot.Mode.PRIVATE, fresh.applied)
         assertEquals("有真实内容时自动采纳公共目录", StorageRoot.Mode.SHARED, fresh.effective())
         assertEquals(StorageRoot.Mode.SHARED, fresh.applied)
