@@ -61,15 +61,23 @@ object BackupCodec {
 internal val backupBooleans = setOf("translate_tags", "auto_fullscreen", "auto_download", "auto_update", "download_unmetered", "reduce_transparency", "stream_cache", "seek_cache")
 internal val backupStrings = setOf("quality", "native_speed", "cross_search_sites")
 
+private fun backupSupportsSite(site: String) = SiteRegistry.byId(site) != null || site in SiteRegistry.retiredVideoHosts
+private fun backupSupportsSearch(site: String) = site != SiteRegistry.LOCAL.id && backupSupportsSite(site)
+
 fun validateBackup(value: LibraryBackup) {
     require(value.schema == 1) { "备份版本不受支持，请使用兼容版本的应用" }
-    require(value.sites.size <= SiteRegistry.librarySources.size && value.sites.map { it.site }.distinct().size == value.sites.size)
-    fun source(site: String) = require(SiteRegistry.byId(site) != null) { "备份包含未知来源站点" }
+    require(value.sites.size <= SiteRegistry.librarySources.size + SiteRegistry.retiredVideoHosts.size &&
+        value.sites.map { it.site }.distinct().size == value.sites.size)
+    fun source(site: String) = require(backupSupportsSite(site)) { "备份包含未知来源站点" }
     fun location(path: String, site: String) {
         require(path.length <= 16384)
         if (site == SiteRegistry.LOCAL.id) { require(path.isBlank() || Regex("r34local://[a-f0-9]{64}").matches(path)); return }
         if (path.isBlank() || path.startsWith('/')) return
-        val url = path.toHttpUrlOrNull(); require(url != null && url.isHttps && SiteRegistry.byIdOrDefault(site).isSite(url.host)) { "备份作品地址不属于其来源站点" }
+        val url = path.toHttpUrlOrNull()
+        require(url != null && url.isHttps && (SiteRegistry.byId(site)?.isSite(url.host) ?:
+            (SiteRegistry.retiredVideoHosts[site]?.let { url.host == it || url.host == "www.$it" } == true))) {
+            "备份作品地址不属于其来源站点"
+        }
     }
     fun video(video: Video) { source(video.site); require(video.id.isNotBlank() && video.id.length <= 2048); location(video.url, video.site) }
     value.sites.forEach { site ->
@@ -102,7 +110,8 @@ fun validateBackup(value: LibraryBackup) {
         require(search.id.isNotBlank() && search.name.length in 1..80 && search.query.length <= 2048 && !search.condition.isEmpty)
         search.filter.validate()
         require(search.includeTags.size + search.excludeTags.size <= 200 && (search.includeTags + search.excludeTags).all { it.length in 1..200 })
-        require(search.sources.isNotEmpty() && search.sources.distinct().size == search.sources.size && search.sources.all { id -> SiteRegistry.all.any { it.id == id } })
+        require(search.sources.isNotEmpty() && search.sources.distinct().size == search.sources.size &&
+            search.sources.all(::backupSupportsSearch))
         require(search.category.isBlank() || SiteCategory.entries.any { it.name == search.category })
         search.languages.forEach { (id, lang) -> require(id in search.sources && GalleryLanguage.entries.any { it.name == lang }) }
     }
@@ -121,7 +130,7 @@ fun validateBackup(value: LibraryBackup) {
     personal.timeBookmarks.forEach { video(it.video); require(it.positionMs >= 0 && it.note.length <= 500 && it.group.length <= 80 && it.id.isNotBlank()) }
     personal.playbackPreferences.forEach { (site, prefs) -> source(site); require(prefs.validated() == prefs) }
     personal.readerPreferences.forEach { (key, prefs) ->
-        require(key.contains(':') && SiteRegistry.byId(key.substringBefore(':')) != null)
+        require(key.contains(':') && backupSupportsSite(key.substringBefore(':')))
         require(prefs.cropPercent in 0..20 && (prefs.mode.isBlank() || ReaderMode.entries.any { it.name == prefs.mode }))
     }
     personal.readingBehaviors.forEach { (site, behavior) -> source(site); require(behavior.autoPageSeconds in 0..300 && behavior.slideshowSeconds in 0..300 && behavior.brightnessPercent in -1..100) }
@@ -194,11 +203,12 @@ fun mergeBackups(local: LibraryBackup, incoming: LibraryBackup): LibraryBackup {
 }
 
 fun LibraryStore.backupSnapshot(): LibraryBackup = synchronized(this) {
-    LibraryBackup(sites = SiteRegistry.librarySources.map { owner ->
-        val id = owner.id
-        SiteBackup(id, favorites(id), history(id), readings(id), subscriptions(id), blockedTags(id),
+    val activeIds = SiteRegistry.librarySources.map { it.id }
+    LibraryBackup(sites = (activeIds + SiteRegistry.retiredVideoHosts.keys).mapNotNull { id ->
+        val record = SiteBackup(id, favorites(id), history(id), readings(id), subscriptions(id), blockedTags(id),
             runCatching { gson.fromJson(prefs.getString("$id:native_search_history", "[]"), Array<String>::class.java).toList() }.getOrDefault(emptyList()),
             galleryLanguage(id), subscriptionOrder(id))
+        record.takeIf { id in activeIds || it != SiteBackup(id) }
     }, personal = personal.snapshot().let { data ->
         data.copy(imageFavorites = data.imageFavorites.map { favorite ->
             // Rebuild local thumbnails from this device's imported book after restore.

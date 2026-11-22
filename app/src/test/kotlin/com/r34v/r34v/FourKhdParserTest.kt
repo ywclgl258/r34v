@@ -125,7 +125,7 @@ class FourKhdParserTest {
 
     @Test fun siteCategoriesGroupEveryRegisteredSite() {
         assertEquals(
-            listOf("r34v", "hanime1", "iwara", "missav", "jable", "rouvideo", "kbj", "kbjfree", "pornhub", "netflav"),
+            listOf("r34v", "hanime1", "iwara", "missav", "jable", "rouvideo", "kbjfree", "pornhub"),
             SiteRegistry.ofCategory(SiteCategory.VIDEO).map { it.id },
         )
         assertEquals(listOf("ehentai", "exhentai", "nhentai", "hitomi", "wnacg", "jmcomic"), SiteRegistry.ofCategory(SiteCategory.COMIC).map { it.id })

@@ -281,7 +281,7 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     fun add(video: Video, stream: Stream) = add(video, stream, null)
 
     private suspend fun refreshedStream(meta: DownloadMeta): Stream? {
-        val site = SiteRegistry.byIdOrDefault(meta.site)
+        val site = SiteRegistry.byId(meta.site) ?: return null
         return AdapterRegistry.adapter(site, network).detail(meta.video.url).streams.firstOrNull { it.label == meta.quality }
     }
 

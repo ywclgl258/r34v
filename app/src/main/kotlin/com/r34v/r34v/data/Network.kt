@@ -473,10 +473,8 @@ object AdapterRegistry {
             SiteRegistry.MISSAV.id -> com.r34v.r34v.data.adapter.MissavAdapter(site, net)
             SiteRegistry.JABLE.id -> com.r34v.r34v.data.adapter.JableAdapter(site, net)
             SiteRegistry.ROUVIDEO.id -> com.r34v.r34v.data.adapter.RouVideoAdapter(site, net)
-            SiteRegistry.KBJ.id -> com.r34v.r34v.data.adapter.KbjAdapter(site, net)
             SiteRegistry.KBJFREE.id -> com.r34v.r34v.data.adapter.KbjFreeAdapter(site, net)
             SiteRegistry.PORNHUB.id -> com.r34v.r34v.data.adapter.PornhubAdapter(site, net)
-            SiteRegistry.NETFLAV.id -> com.r34v.r34v.data.adapter.NetflavAdapter(site, net)
             SiteRegistry.WNACG.id -> com.r34v.r34v.data.adapter.WnacgAdapter(site, net)
             SiteRegistry.JMCOMIC.id -> com.r34v.r34v.data.adapter.JmcomicAdapter(site, net)
             SiteRegistry.FOURKHD.id -> com.r34v.r34v.data.adapter.FourKhdAdapter(site, net)
@@ -538,7 +536,9 @@ class Repository(private val network: Network, private val library: LibraryStore
         }.getOrNull()?.copy(cached = true)
 
     suspend fun detail(url: String): Detail {
-        val site = SiteRegistry.forHost(url.toHttpUrlOrNull()?.host.orEmpty()) ?: SiteRegistry.current
+        val host = url.toHttpUrlOrNull()?.host.orEmpty()
+        check(SiteRegistry.retiredVideoHosts.values.none { host == it || host == "www.$it" }) { "该作品的来源站点已移除" }
+        val site = SiteRegistry.forHost(host) ?: SiteRegistry.current
         val adapter = AdapterRegistry.adapter(site, network)
         return withContext(Dispatchers.IO) { adapter.detail(url) }
     }

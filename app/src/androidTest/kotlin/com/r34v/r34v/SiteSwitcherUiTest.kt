@@ -22,6 +22,9 @@ class SiteSwitcherUiTest : ComposeUiCase() {
         fun entry(site: SiteContext) = ui.onNode(hasText(site.name) and hasAnyAncestor(list))
         ui.onNode(hasContentDescription("切换站点，当前", substring = true)).performClick()
         ui.onAllNodes(hasTestTag("pinned-site-r34v")).assertCountEquals(0)
+        ui.onNodeWithTag("site-entry-netflav").assertDoesNotExist()
+        ui.onNodeWithTag("site-entry-kbj").assertDoesNotExist()
+        entry(SiteRegistry.KBJFREE).assertIsDisplayed()
         val viewport = ui.onNode(list).getUnclippedBoundsInRoot()
         val minTarget = (48 * f.ins.targetContext.resources.displayMetrics.density).roundToInt()
         SiteRegistry.all.forEach { site ->

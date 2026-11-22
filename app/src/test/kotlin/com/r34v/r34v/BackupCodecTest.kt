@@ -39,6 +39,30 @@ class BackupCodecTest {
     @Test fun weakPasswordIsRejectedAtExport() {
         assertThrows(IllegalArgumentException::class.java) { BackupCodec.encode(document(), "short".toCharArray()) }
     }
+    @Test fun olderBackupsCanKeepRetiredSitesWithoutMakingThemAvailableForBrowsing() {
+        val sites = listOf("kbj" to "kbj.im", "netflav" to "netflav.com")
+        val entries = sites.map { (id, host) -> Video("1", id, "https://www.$host/video/1", site = id) }
+        val backup = LibraryBackup(
+            sites = SiteRegistry.librarySources.map { SiteBackup(it.id) } + entries.map { video ->
+                SiteBackup(video.site, favorites = listOf(Favorite("video", video.id, video.title, video.url, site = video.site)))
+            },
+            personal = PersonalLibrary(
+                shelves = listOf(Shelf(PersonalLibrary.WATCH_LATER, "稍后看", entries.map { ShelfEntry(it) })),
+                savedSearches = listOf(SavedSearch(name = "旧站搜索", query = "sample", sources = listOf("kbj", "r34v", "netflav"))),
+            ),
+            settings = mapOf("cross_search_sites" to "kbj,r34v,netflav"),
+        )
+        assertEquals(backup, BackupCodec.decode(BackupCodec.encode(backup, password), password))
+        sites.forEach { (id, host) ->
+            assertNull(SiteRegistry.byId(id))
+            assertNull(SiteRegistry.forHost(host))
+        }
+        val foreign = entries.first().copy(url = "https://kbj.im.example.invalid/video/1")
+        val invalid = backup.copy(personal = backup.personal.copy(
+            shelves = listOf(Shelf(PersonalLibrary.WATCH_LATER, "稍后看", listOf(ShelfEntry(foreign)))),
+        ))
+        assertThrows(IllegalArgumentException::class.java) { validateBackup(invalid) }
+    }
     @Test fun localImageFavoritesRoundTripByBookAndPage() {
         val id = "a".repeat(64)
         val video = Video(id, "本地漫画", "r34local://$id", site = "local", mediaKind = MediaKind.GALLERY)

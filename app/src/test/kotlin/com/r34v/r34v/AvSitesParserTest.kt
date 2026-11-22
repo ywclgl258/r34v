@@ -7,7 +7,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * 六个新站的列表/详情解析，全部跑在抓取时保存的页面片段上。
+ * 视频站的列表/详情解析，全部跑在抓取时保存的页面片段上。
  *
  * 夹具只保留与本轮解析有关的片段，所以断言关心「认得出来、字段对、地址拼得对」，
  * 不假装验证整页渲染、Cloudflare 是否放行或播放器能否起播。
@@ -20,7 +20,6 @@ class AvSitesParserTest {
     private val missav = SiteRegistry.MISSAV
     private val jable = SiteRegistry.JABLE
     private val rou = SiteRegistry.ROUVIDEO
-    private val kbj = SiteRegistry.KBJ
     private val kbjFree = SiteRegistry.KBJFREE
     private val pornhub = SiteRegistry.PORNHUB
 
@@ -181,49 +180,6 @@ class AvSitesParserTest {
         assertNull(RouVideoProtocol.linkRequest(rou, "https://rou.video/v/cmw40jx7z0004s6bfnwwx08k1"))
     }
 
-    // ---- kbj.im ----
-
-    @Test fun kbjListsPosts() {
-        val videos = KbjProtocol.cards(doc("kbj-list.html"), kbj)
-        assertTrue(videos.size >= 3)
-        assertTrue(videos.all { it.url.startsWith("https://kbj.im/posts/") })
-        assertTrue(videos.all { it.title.isNotBlank() })
-        // 站点封面走 i1.wp.com 图片代理，实测一分钟都拉不完一张；改取原站直连地址。
-        assertTrue("封面应直连原站", videos.all { it.thumb.startsWith("https://kbj.im/images/") })
-        assertTrue("封面不能残留代理前缀", videos.none { it.thumb.contains("wp.com") })
-    }
-
-    @Test fun kbjRewritesTheImageProxyToTheOrigin() {
-        assertEquals(
-            "https://kbj.im/images/0f9b9438.jpg",
-            KbjProtocol.direct("https://i1.wp.com/kbj.im/images/0f9b9438.jpg"),
-        )
-        // 别家的 wp.com 图不能被改写，原样返回。
-        assertEquals("https://i0.wp.com/other.example/x.jpg", KbjProtocol.direct("https://i0.wp.com/other.example/x.jpg"))
-        assertEquals("", KbjProtocol.direct(""))
-    }
-
-    @Test fun kbjKeepsThirdPartyPlayerOutOfMediaStreams() {
-        val detail = KbjProtocol.detail(doc("kbj-detail.html"), "https://kbj.im/posts/c9c33da89ebae238e3efb9b578084d09", kbj)
-        assertTrue(detail.streams.isEmpty())
-        assertEquals(listOf(detail.video.url), detail.externalPlayers.map { it.url })
-        assertTrue("要说清为什么不能直接播", detail.description.contains("第三方托管"))
-        assertTrue(detail.groups.containsKey("标签"))
-    }
-
-    @Test fun kbjRoutesSearchAndTag() {
-        assertEquals("https://kbj.im/?kw=era133", KbjProtocol.resolve(kbj, FeedRequest(FeedKind.SEARCH, "era133")))
-        assertEquals("https://kbj.im/tags/era133", KbjProtocol.resolve(kbj, FeedRequest(FeedKind.TAG, "era133")))
-        assertEquals("https://kbj.im/?page=2", KbjProtocol.resolve(kbj, FeedRequest(FeedKind.LATEST, page = 2)))
-    }
-
-    /** 帖子地址不是列表条件；返回非 null 会让分享链接打开一个标题是哈希值的列表页。 */
-    @Test fun kbjKeepsPostLinksForTheDetailScreen() {
-        assertNull(KbjProtocol.linkRequest(kbj, "https://kbj.im/posts/c9c33da89ebae238e3efb9b578084d09"))
-        assertEquals(FeedRequest(FeedKind.SEARCH, "era133"), KbjProtocol.linkRequest(kbj, "https://kbj.im/?kw=era133"))
-        assertEquals(FeedRequest(FeedKind.TAG, "era133"), KbjProtocol.linkRequest(kbj, "https://kbj.im/tags/era133"))
-    }
-
     // ---- kbjfree ----
 
     @Test fun kbjFreeReadsVideosFromFlightPayload() {
@@ -327,8 +283,8 @@ class AvSitesParserTest {
     // ---- registry ----
 
     @Test fun everyNewSiteCarriesItsOwnCapabilitiesAndIdentity() {
-        val added = listOf(missav, jable, rou, kbj, kbjFree, pornhub)
-        assertEquals(6, added.map { it.id }.distinct().size)
+        val added = listOf(missav, jable, rou, kbjFree, pornhub)
+        assertEquals(5, added.map { it.id }.distinct().size)
         assertTrue(added.all { it.category == SiteCategory.VIDEO })
         assertTrue("新站必须能被独立寻址", added.all { SiteRegistry.byId(it.id) == it })
         assertTrue("视频站都要能出列表", added.all { Capability.FEED in capabilitiesOf(it) })
@@ -350,7 +306,6 @@ class AvSitesParserTest {
         assertEquals(missav, SiteRegistry.forMediaHost("surrit.mrstcdn.store"))
         assertEquals(kbjFree, SiteRegistry.forMediaHost("storage.marshlecdn.com"))
         assertEquals(pornhub, SiteRegistry.forMediaHost("hv-h.phncdn.com"))
-        assertEquals(kbj, SiteRegistry.forMediaHost("i1.wp.com"))
         assertEquals(rou, SiteRegistry.forMediaHost("v.rn252.xyz"))
     }
 
@@ -359,7 +314,6 @@ class AvSitesParserTest {
             missav.id -> setOf(Capability.FEED, Capability.SEARCH)
             jable.id -> setOf(Capability.FEED, Capability.SEARCH)
             rou.id -> setOf(Capability.FEED, Capability.SEARCH)
-            kbj.id -> setOf(Capability.FEED, Capability.SEARCH)
             kbjFree.id -> setOf(Capability.FEED, Capability.SEARCH)
             else -> setOf(Capability.FEED, Capability.SEARCH)
         }

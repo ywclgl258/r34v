@@ -208,14 +208,6 @@ object SiteRegistry {
         accent = 0xFFFF7A45.toInt(),
     )
 
-    /** kbj.im — 韩国 BJ 录播聚合，一个帖子一集，播放器是站外 iframe，只做外链与信息展示。 */
-    val KBJ = SiteContext(
-        id = "kbj", name = "KBJ", base = "https://kbj.im", host = "kbj.im",
-        mediaDomains = setOf("i1.wp.com"),
-        accent = 0xFFF59E0B.toInt(),
-        accessNote = "浏览器播放",
-    )
-
     /** kbjfree.com — Next.js 版 BJ 录播站，列表数据在 RSC payload，播放地址是 CDN 上的 mp4。 */
     val KBJFREE = SiteContext(
         id = "kbjfree", name = "KBJFree", base = "https://kbjfree.com", host = "kbjfree.com",
@@ -229,11 +221,6 @@ object SiteRegistry {
         mirrors = listOf("pornhub.com"),
         mediaDomains = setOf("phncdn.com"),
         accent = 0xFFFF9000.toInt(),
-    )
-
-    val NETFLAV = SiteContext(
-        id = "netflav", name = "Netflav", base = "https://netflav.com", host = "netflav.com",
-        accessNote = "原站播放",
     )
 
     val WNACG = SiteContext(
@@ -256,10 +243,13 @@ object SiteRegistry {
     )
 
     val all: List<SiteContext> get() = listOf(
-        R34V, HANIME1, IWARA, MISSAV, JABLE, ROUVIDEO, KBJ, KBJFREE, PORNHUB, NETFLAV,
+        R34V, HANIME1, IWARA, MISSAV, JABLE, ROUVIDEO, KBJFREE, PORNHUB,
         EHENTAI, EXHENTAI, NHENTAI, HITOMI, WNACG, JMCOMIC,
         FOURKHD, EVERIA, FOURKUP, GALLERYEPIC, COSPLAYTELE,
     )
+
+    // Keep these identities for old library records and backups, outside the live site registry.
+    internal val retiredVideoHosts = mapOf("kbj" to "kbj.im", "netflav" to "netflav.com")
 
     /** Sites of one category, in registry order; empty categories are never rendered. */
     fun ofCategory(category: SiteCategory): List<SiteContext> = all.filter { it.category == category }

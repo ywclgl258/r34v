@@ -46,7 +46,10 @@ class SavedSearchUpdateModel(application: Application) : AndroidViewModel(applic
         if (busy || searches.isEmpty()) return
         busy = true
         job = viewModelScope.launch {
-            val tasks = searches.flatMap { search -> search.sources.filter { search.category.isBlank() || SiteRegistry.byId(it)?.category?.name == search.category }.map { search to it } }
+            val tasks = searches.flatMap { search -> search.sources.mapNotNull { id ->
+                val site = SiteRegistry.byId(id) ?: return@mapNotNull null
+                (search to id).takeIf { search.category.isBlank() || site.category.name == search.category }
+            } }
             var finished = 0
             try {
                 progress = "正在检查 0 / ${tasks.size}"

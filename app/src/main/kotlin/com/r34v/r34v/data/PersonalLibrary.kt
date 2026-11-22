@@ -109,6 +109,13 @@ class PersonalStore(private val library: LibraryStore) {
             searchUpdates = if (it.searchUpdates[value.id]?.conditionKey == normalized.conditionKey) it.searchUpdates else it.searchUpdates - value.id) }
     }
     fun removeSearch(id: String) = change { it.copy(savedSearches = it.savedSearches.filterNot { p -> p.id == id }, searchUpdates = it.searchUpdates - id) }
+    fun renameSearch(id: String, name: String) {
+        val normalized = name.trim()
+        require(normalized.length in 1..80)
+        change { data -> data.copy(savedSearches = data.savedSearches.map { search ->
+            if (search.id == id) search.copy(name = normalized) else search
+        }) }
+    }
     fun refreshSearch(search: SavedSearch, site: String, page: FeedPage?, error: String = "") = change { data ->
         val current = data.savedSearches.firstOrNull { it.id == search.id }
         if (current == null || current.conditionKey != search.conditionKey || site !in current.sources) data

@@ -1,10 +1,10 @@
 # R34V
 
-支持视频、漫画与写真共 21 个站点的 Kotlin 原生 Android 客户端，包括 Rule34Video、Hanime1、Iwara、MissAV、Jable、rou.video、KBJ、KBJFree、Pornhub、Netflav、E-Hentai、ExHentai、nhentai、Hitomi、WNACG、JMComic、4KHD、Everia、4KUp、GalleryEpic 和 Cosplaytele。界面使用 Jetpack Compose + Material 3，包括浏览、片库、设置、视频控件和条漫阅读器。Media3 播放画面与仅用于 EH/EX 官方认证的 WebView 通过 AndroidView 接入；不依赖 Flutter。迁移说明见 [Compose 重构](docs/dev/compose-migration.md)。
+支持视频、漫画与写真共 19 个站点的 Kotlin 原生 Android 客户端，包括 Rule34Video、Hanime1、Iwara、MissAV、Jable、rou.video、KBJFree、Pornhub、E-Hentai、ExHentai、nhentai、Hitomi、WNACG、JMComic、4KHD、Everia、4KUp、GalleryEpic 和 Cosplaytele。界面使用 Jetpack Compose + Material 3，包括浏览、片库、设置、视频控件和条漫阅读器。Media3 播放画面与仅用于 EH/EX 官方认证的 WebView 通过 AndroidView 接入；不依赖 Flutter。迁移说明见 [Compose 重构](docs/dev/compose-migration.md)。
 
 ## 功能
 
-- Netflav 支持浏览、搜索与作品详情，播放入口打开原站。WNACG 和 JMComic 使用原生漫画阅读器及图集下载。JMComic 按当前系统网络和代理实际连通性选择公开镜像，作品与下载记录使用固定的站点标识。
+- WNACG 和 JMComic 使用原生漫画阅读器及图集下载。JMComic 按当前系统网络和代理实际连通性选择公开镜像，作品与下载记录使用固定的站点标识。
 - **2.7.1 首页修正**：启动和底部“首页”直接展示当前站点的精选、榜单与最新内容；观看进度、稍后看、订阅更新和个人频道移至“我的”。切站后保持“首页”选中，返回与页面重建保持导航一致。
 - **2.7.0 新增**：接入 MissAV、Jable、rou.video、KBJ、KBJFree 和 Pornhub，完善镜像切换、搜索／分页／排序、HLS 下载与离线播放；KBJ 提供浏览器线路入口，KBJFree 仅公开预览。见 [站点适配与验证边界](docs/dev/av-sites-adapters.md)。
 - **2.7.0 片库与界面**：个人首页增加媒体类型筛选，片库分区与搜索层级简化；片单内按标题／来源检索，结合加入时间、类型和完成状态筛选，并按标题或加入时间排序。合集支持备注、置顶和从已有作品选择封面，信息随加密备份恢复。见 [片库增强](docs/dev/shelf-features-2026-11-08.md) 与 [2.7.0 发布验收](docs/dev/verification-2.7.0.md)。
@@ -28,7 +28,7 @@
 - 站点账号登录与网络诊断。页面、封面、图页、播放、下载和更新统一跟随系统代理；未设置代理时使用系统 DNS 直连，代理失败不回退直连。已移除应用内 DoH、固定/手填 IP、IP 池和单独代理设置。
 - GitHub Release 更新检查及系统安装器。慢速 APK 传输保留读取超时，不再因整文件超过 25 秒而失败；安装前验证长度、包名、版本与签名。
 - 顶栏抽屉切换站点；每站历史、收藏、搜索与下载隔离。Iwara 支持公开列表、趋势/热门/点赞/播放榜、视频/标签/作者查询、清晰度播放和离线缓存；账号登录、私密内容、图库与站外嵌入尚未接入。见 [Iwara 接入说明](docs/dev/iwara-adapter.md)。
-- 番号与录播站（MissAV、Jable、rou.video、KBJ、KBJFree、Pornhub）支持列表、搜索、详情与播放。其中 MissAV/Jable/rou.video/Pornhub 在应用内直接起播；KBJ 的播放器是第三方 iframe，只列线路地址供浏览器打开；KBJFree 只公开预览片段，完整片源需站内积分解锁。rou.video 的清单与分片是 PNG 外壳，在数据源层拆壳。见 [番号与录播站适配](docs/dev/av-sites-adapters.md)。
+- MissAV、Jable、rou.video、KBJFree 和 Pornhub 支持列表、搜索、详情与应用内播放。KBJFree 提供公开预览片段，完整片源需站内积分解锁。rou.video 的清单与分片是 PNG 外壳，在数据源层拆壳。见 [番号与录播站适配](docs/dev/av-sites-adapters.md)。
 - 全新安装首次进入首页时，高亮站点切换入口，提供“打开站点列表”和“知道了”；提示仅显示一次，关闭、返回、重启或切站后均不重复。已有用户升级不弹出。见 [首次切站教程](docs/dev/site-switch-tutorial.md)。
 - E-Hentai / ExHentai 支持画廊列表、分类、热门、搜索、标签与上传者查询；原生漫画阅读采用上下连续滚动的条漫形式，保留跳页、双指/双击缩放、页内阅读位置、画廊收藏和已读图页离线保存。漫画详情可下载整本并在统一下载中心离线打开。ExHentai 在线访问仍需要账号权限，未登录时显示登录门禁，可打开官方论坛登录或导入 Cookie；验证权限后才保存加密会话。真实 ExHentai 账号联网尚未验收。见 [漫画站接入说明](docs/dev/eh-adapter.md) 与 [统一下载](docs/dev/unified-downloads.md)。
 - 四个漫画站的首页、搜索列表和画廊片库采用原生瀑布流，封面保留比例，横屏自动增加列数；视频站保留现有列表。网络与登录机制见 [系统网络、官方登录与瀑布流](docs/dev/system-network-auth-masonry.md)。

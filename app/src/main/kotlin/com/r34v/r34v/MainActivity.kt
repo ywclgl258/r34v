@@ -254,7 +254,11 @@ class MainActivity : ComponentActivity() {
         searchQuery = value.query; searchCondition = value.condition
         searchSites = value.sources.filter { id -> SiteRegistry.all.any { it.id == id } }
         searchCategory = value.category; searchLanguages = value.languages; multipleSources = true
-        if (searchSites.isEmpty()) { showNotice("搜索来源已不可用，请重新选择"); navigate("search") } else navigate("multiSearch")
+        if (searchSites.isEmpty()) {
+            searchSites = searchableSiteIds(app.network)
+            showNotice("搜索来源已不可用，请重新选择")
+            navigate("search")
+        } else navigate("multiSearch")
     }
     private fun saveSearch(onSaved: () -> Unit = {}) {
         val condition = searchCondition.copy(query = searchQuery).normalized()
@@ -269,7 +273,7 @@ class MainActivity : ComponentActivity() {
     }
     private fun openChannel(channel: DiscoveryChannel) {
         channel.savedSearch?.let { savedSearch(it); return }
-        val target = SiteRegistry.byId(channel.site) ?: return
+        val target = SiteRegistry.byId(channel.site) ?: run { showNotice("该频道的来源站点已移除"); return }
         switchSite(target); openFeed(FeedRequest(channel.kind, channel.target))
     }
     private fun pinCurrentChannel() {
@@ -289,7 +293,8 @@ class MainActivity : ComponentActivity() {
                     items(channels, key = { it.id }) { channel ->
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(channel.name, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
-                            Copy(if (channel.hidden) "已隐藏" else channel.savedSearch?.let { "保存搜索" } ?: "${SiteRegistry.byIdOrDefault(channel.site).name} · ${channel.kind.title}")
+                            Copy(if (channel.hidden) "已隐藏" else channel.savedSearch?.let { "保存搜索" }
+                                ?: SiteRegistry.byId(channel.site)?.let { "${it.name} · ${channel.kind.title}" } ?: "来源站点已移除")
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 TextAction({ store.personal.moveChannel(channel.id, -1) }) { Text("上移") }
                                 TextAction({ store.personal.moveChannel(channel.id, 1) }) { Text("下移") }
@@ -597,7 +602,7 @@ class MainActivity : ComponentActivity() {
                     }
                     IconAction(R.drawable.ic_more, "管理搜索 ${value.name}") { dialogs.choose(value.name, listOf("重命名", "固定到我的频道", "删除搜索方案")) { action ->
                         when (action) {
-                            0 -> dialogs.edit("重命名搜索方案", value.name, validate = { if (it.isBlank() || it.length > 80) "请输入 1–80 个字" else null }) { store.personal.saveSearch(value.copy(name = it)) }
+                            0 -> dialogs.edit("重命名搜索方案", value.name, validate = { if (it.isBlank() || it.length > 80) "请输入 1–80 个字" else null }) { store.personal.renameSearch(value.id, it) }
                             1 -> { store.personal.pinSearch(value); showNotice("已固定到“我的”中的频道") }
                             else -> dialogs.confirm("删除「${value.name}」？") { store.personal.removeSearch(value.id) }
                         }
