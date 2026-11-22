@@ -51,6 +51,7 @@ class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi
     @Volatile var imageDelayMillis = 0L
     @Volatile var detailDelayMillis = 0L
     @Volatile var videoStatus = 0
+    @Volatile var videoThrottleMillis = 0L
     @Volatile var imageHttpStatus = 0
     @Volatile var imageHttpFailures = 0
     @Volatile var imageRetryAfter: String? = null
@@ -68,7 +69,10 @@ class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi
             if (videoStatus > 0) return MockResponse().setResponseCode(videoStatus)
             val start = request.getHeader("Range")?.substringAfter("bytes=")?.substringBefore('-')?.toIntOrNull()?.coerceIn(0, clip.size) ?: 0
             return MockResponse().setResponseCode(if (request.getHeader("Range") != null) 206 else 200).setHeader("Content-Type", "video/mp4").setHeader("Accept-Ranges", "bytes")
-                .apply { if (request.getHeader("Range") != null) setHeader("Content-Range", "bytes $start-${clip.size - 1}/${clip.size}") }.setBody(Buffer().write(clip.copyOfRange(start, clip.size)))
+                .apply {
+                    if (request.getHeader("Range") != null) setHeader("Content-Range", "bytes $start-${clip.size - 1}/${clip.size}")
+                    if (videoThrottleMillis > 0) throttleBody(16384, videoThrottleMillis, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }.setBody(Buffer().write(clip.copyOfRange(start, clip.size)))
         } }; start()
     }
     private val fixtureClient = originalClient.newBuilder().proxy(java.net.Proxy.NO_PROXY).dispatcher(okhttp3.Dispatcher()).connectionPool(ConnectionPool()).addInterceptor { chain ->

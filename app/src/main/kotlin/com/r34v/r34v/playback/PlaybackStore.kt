@@ -29,6 +29,9 @@ import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -52,6 +55,8 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     private val generations = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val removals = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Unit>>()
     private val submitted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val downloadUpdates = MutableStateFlow(0L)
+    val downloadChanges = downloadUpdates.asStateFlow()
     private fun cleanRemoved(id: String, removed: CompletableDeferred<Unit>) {
         scope.launch(Dispatchers.IO) {
             try {
@@ -114,10 +119,15 @@ class PlaybackStore(private val context: Context, private val network: Network, 
             maxParallelDownloads = 2
             minRetryCount = 3
             addListener(object : DownloadManager.Listener {
+                override fun onInitialized(downloadManager: DownloadManager) {
+                    downloadUpdates.update { it + 1 }
+                }
+
                 override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
                     submitted.remove(download.request.id)
                     val removed = removals.getOrPut(download.request.id) { CompletableDeferred() }
                     cleanRemoved(download.request.id, removed)
+                    downloadUpdates.update { it + 1 }
                 }
                 override fun onDownloadChanged(downloadManager: DownloadManager, download: Download, finalException: Exception?) {
                     submitted.remove(download.request.id)
@@ -145,6 +155,7 @@ class PlaybackStore(private val context: Context, private val network: Network, 
                             index.putVideo(meta.video, meta.quality, download.bytesDownloaded)
                         }
                     }
+                    downloadUpdates.update { it + 1 }
                 }
             })
             if (!storage.pendingRestart && !storage.changing) resumeDownloads()

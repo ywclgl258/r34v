@@ -42,12 +42,14 @@ private data class DownloadSnapshot(
 
 private const val DamagedDownload = "离线文件不完整"
 private val LibraryRecord.offlineReady get() = state == LibraryRecord.STATE_COMPLETED || (isComic && intactSelection.isNotEmpty())
+private data class VideoTransferProgress(val bytes: Long, val percent: Float)
 
 @Composable fun DownloadCenter(app: R34Application, resumed: Boolean, dialogs: ComposeDialogs,
     video: (Video, String?, String?) -> Unit, offline: (LibraryRecord) -> Unit, comic: (Video) -> Unit,
     discover: () -> Unit, account: (String) -> Unit = {}, rescan: suspend () -> Int = { 0 }) {
     val scope = rememberCoroutineScope()
     var snapshot by remember { mutableStateOf(DownloadSnapshot()) }
+    var videoProgress by remember { mutableStateOf<Map<String, VideoTransferProgress>>(emptyMap()) }
     var ready by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableIntStateOf(0) }
@@ -68,8 +70,8 @@ private val LibraryRecord.offlineReady get() = state == LibraryRecord.STATE_COMP
         if (!resumed) return@LaunchedEffect
         var scanned: List<Any>? = null
         var disk = emptyList<LibraryRecord>()
-        val ticks = flow { while (currentCoroutineContext().isActive) { emit(Unit); delay(750) } }
-        merge(ticks, app.galleryDownloads.changes.map { Unit }, app.index.revision.map { Unit }).conflate().collect {
+        val changes = combine(app.playback.downloadChanges, app.galleryDownloads.changes, app.index.revision) { _, _, _ -> Unit }
+        changes.conflate().collect {
             try {
                 snapshot = withContext(Dispatchers.IO) {
                     val tasks = app.playback.downloads().mapNotNull { task -> app.playback.metadata(task)?.let { task to it } }
@@ -104,6 +106,20 @@ private val LibraryRecord.offlineReady get() = state == LibraryRecord.STATE_COMP
             } catch (e: Exception) { if (e is CancellationException) throw e; ready = true; message = e.message ?: "下载任务读取失败" }
         }
     }
+    val transferringVideos = snapshot.videos.any { (task, _) -> task.state == Download.STATE_DOWNLOADING }
+    LaunchedEffect(resumed, transferringVideos) {
+        if (!resumed || !transferringVideos) {
+            videoProgress = emptyMap()
+            return@LaunchedEffect
+        }
+        // Media3 updates live progress in memory without sending a state-change callback.
+        while (isActive) {
+            videoProgress = app.playback.manager.currentDownloads.asSequence()
+                .filter { it.state == Download.STATE_DOWNLOADING }
+                .associate { it.request.id to VideoTransferProgress(it.bytesDownloaded, it.percentDownloaded) }
+            delay(750)
+        }
+    }
     fun act(id: String, block: suspend () -> Unit) {
         scope.launch {
             busy = busy + id
@@ -121,6 +137,8 @@ private val LibraryRecord.offlineReady get() = state == LibraryRecord.STATE_COMP
         snapshot.onDisk.filter { !it.isComic && it.state == LibraryRecord.STATE_COMPLETED }.mapTo(mutableSetOf()) { it.cacheKey }
     }
     fun damagedVideo(task: Download) = task.state == Download.STATE_COMPLETED && task.request.id !in intactVideoKeys
+    fun transferProgress(task: Download): VideoTransferProgress? =
+        if (task.state == Download.STATE_DOWNLOADING) videoProgress[task.request.id] else null
     val restoredComics = snapshot.onDisk.filter { it.isComic &&
         ("${it.site}:${it.id}" !in allGalleryIds || (it.state == LibraryRecord.STATE_COMPLETED && "${it.site}:${it.id}" !in galleryIds)) }
     val restoredVideos = snapshot.onDisk.filter { !it.isComic &&
@@ -140,7 +158,12 @@ private val LibraryRecord.offlineReady get() = state == LibraryRecord.STATE_COMP
     }
     fun diskStatus(record: LibraryRecord) = statusFilter == 0 || statusFilter == if (record.offlineReady) 2 else 3
     val videos = snapshot.videos.filter { (task, meta) -> task.state != Download.STATE_REMOVING && kind != 2 && (siteFilter == null || meta.site == siteFilter) && textMatches(meta.video.title, meta.site) && videoStatus(task) }
-        .let { list -> when (sort) { 2 -> list.sortedByDescending { it.first.bytesDownloaded }; 3 -> list.sortedByDescending { it.first.percentDownloaded }; 4 -> list.sortedBy { it.second.video.title }; else -> list.sortedByDescending { it.first.startTimeMs } } }
+        .let { list -> when (sort) {
+            2 -> list.sortedByDescending { (task, _) -> transferProgress(task)?.bytes ?: task.bytesDownloaded }
+            3 -> list.sortedByDescending { (task, _) -> transferProgress(task)?.percent ?: task.percentDownloaded }
+            4 -> list.sortedBy { it.second.video.title }
+            else -> list.sortedByDescending { it.first.startTimeMs }
+        } }
     val books = snapshot.books.filter { kind != 1 && (siteFilter == null || it.entry.site == siteFilter) && textMatches(it.entry.title, it.entry.site, it.group.orEmpty()) &&
         (groupFilter == null || it.group == groupFilter) && bookStatus(it) }
         .let { list -> when (sort) {
@@ -388,16 +411,19 @@ private val LibraryRecord.offlineReady get() = state == LibraryRecord.STATE_COMP
             val completed = task.state == Download.STATE_COMPLETED && !damaged
             val failed = task.state == Download.STATE_FAILED
             val paused = task.state == Download.STATE_STOPPED
+            val progress = transferProgress(task)
+            val bytes = progress?.bytes ?: task.bytesDownloaded
+            val percent = progress?.percent ?: task.percentDownloaded
             val state = when (task.state) {
                 Download.STATE_COMPLETED -> if (damaged) DamagedDownload else "已下载 · 可离线播放"
-                Download.STATE_DOWNLOADING -> "下载中 ${task.percentDownloaded.coerceAtLeast(0f).toInt()}%"
+                Download.STATE_DOWNLOADING -> "下载中 ${percent.coerceAtLeast(0f).toInt()}%"
                 Download.STATE_STOPPED -> "已暂停"
                 Download.STATE_FAILED -> "下载失败"
                 else -> "等待下载 / 网络"
             }
             DownloadTile("video:${task.request.id}", meta.video, "视频 · ${meta.quality}",
-                if (damaged) state else "$state · ${downloadSize(task.bytesDownloaded)}",
-                task.percentDownloaded.takeIf { !damaged && it >= 0 }?.div(100f)) {
+                if (damaged) state else "$state · ${downloadSize(bytes)}",
+                percent.takeIf { !damaged && it >= 0 }?.div(100f)) {
                 Action(if (completed) "离线播放" else if (damaged) "重新下载" else if (failed) "重试" else if (paused) "继续" else "暂停",
                     primary = completed, enabled = !retrying && task.request.id !in busy) {
                     if (completed) video(meta.video, task.request.id, null)
