@@ -283,6 +283,42 @@ Android 16 的 5 项回归通过，覆盖写入准入、只读命中、额度淘
 
 Android 7 上对改动版各补测 3 次。两种格式每次均为 0 个新增请求、0 次再缓冲，原引擎和修订号均保持不变。Android 16 补跑手动降档、403 后刷新地址和 HLS 离线播放及缺失分片修复，全部通过。332 项 JVM 测试通过，Debug Lint 为 0 错误、27 条警告。
 
+## 弱网长片同档重新播放
+
+以 `2bf605f` 为基线，使用 Android 16 模拟器和同一部 180 秒的 720p HLS VOD。素材由仓库中性测试视频生成，90 个分片各 2 秒，含音频与 TS 封装的平均码率约 2.54 Mbps。每轮播放后从播放器菜单选择「重新播放」，使用相同的片源地址，从 0 重新请求清单。关闭磁盘缓存和自动下载，只有一个清晰度档位。
+
+- **缓冲配置**。宽配置为 `4000/15000/500/1000` ms，紧配置为 `2500/12000/500/1000` ms。两者仅最小和最大缓冲目标不同。分别测估值从 6000 降到 2400 kbps 和从 2400 升到 6000 kbps。每个方向的两组使用相同估值变化和相同媒体响应，预热后交替策略顺序。
+- **重建与保留**。重建组直接执行现有逻辑。保留组仅在测试中让 `ensureEngine()` 通过签名比较并继续用原 ExoPlayer 实例，随后恢复真实签名。两组都照常重开媒体源，测试核对实例和 `engineRevision`，因此保留组沿用的是原有 `LoadControl`。
+- **两次断流**。清单和各分片常规响应头延迟 120 ms。分片编号 0–10 每 70 ms 发送 48 KiB，约 5.62 Mbps 的短暂快传。后续每 80 ms 发送 32 KiB，约 3.28 Mbps。编号 10、18 的响应头分别额外延迟 7 秒和 8.5 秒。两组各自请求到两处分片并播放到第 44 秒。带宽估值用于选择缓冲配置，服务端响应节奏独立控制。
+- **接近缓冲上限时断流**。将分片 0–10 改为每 64 ms 发送 64 KiB，约 8.19 Mbps。保留编号 10 的 7 秒额外延迟，编号 18 使用常规响应，后续分片维持约 3.28 Mbps。补测紧到宽这一方向，播放到第 34 秒。
+- **测量**。从点击到 Media3 `onRenderedFirstFrame` 为恢复出画。再缓冲统计从重播首次进入实际播放后开始，到指定的播放位置为止，累计 `STATE_BUFFERING` 到 `STATE_READY` 的时间。记录延迟请求发出后的首个缓冲量采样，采样间隔约 80 ms。
+
+### 两次断流结果
+
+每组预热 1 次、正式测 3 次。时长为中位数（最小–最大），再缓冲次数是每轮的值。
+
+| 估值变化 · 策略 | 恢复出画 ms | 再缓冲次数 | 再缓冲总时长 ms | 点击到第 44 秒 ms | `engineRevision` |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 宽到紧 · 重建为紧配置 | 1087（948–1125） | 1 | 2783（2734–2795） | 48260（48157–48349） | 1 → 2 |
+| 宽到紧 · 保留宽配置 | 636（632–646） | 1 | 3132（3108–3163） | 47952（47947–48032） | 1 → 1 |
+| 紧到宽 · 重建为宽配置 | 1022（954–1042） | 1 | 2865（2763–2874） | 48334（48158–48336） | 1 → 2 |
+| 紧到宽 · 保留紧配置 | 648（635–676） | 1 | 3122（3078–3253） | 48007（47900–48048） | 1 → 1 |
+
+逐轮配对，保留配置在两个方向分别提前 441 和 366 ms 出画，再缓冲总时长分别增加 374 和 315 ms（均为配对中位数）。各轮第一次延迟时已有约 9.9–10.3 秒缓冲，第二次约有 6.2–6.7 秒，每轮只在第二次延迟中发生再缓冲。两种缓冲配置的上限均未达到，保留组较早开始播放时的缓冲余量也较小。这组结果反映整个回放路径的表现，无法单独归因于缓冲上限。
+
+### 接近缓冲上限时断流的结果
+
+紧到宽各测 2 次，各组另预热 1 次。时长为中位数（最小–最大）。
+
+| 策略 | 恢复出画 ms | 再缓冲次数 | 再缓冲总时长 ms | 点击到第 34 秒 ms | `engineRevision` |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 重建为宽配置 | 979.5（831–1128） | 0–1 | 74.5（0–149） | 35460.5（35407–35514） | 1 → 2 |
+| 保留紧配置 | 605.5（583–628） | 1 | 5050.5（5039–5062） | 39786（39746–39826） | 1 → 1 |
+
+保留组两轮的峰值预缓冲分别是 12.71 和 12.93 秒，发出延迟请求时只剩 2.42–2.47 秒。重建组在同一请求发出时仍有 13.07–13.12 秒。保留配置提前 203–545 ms 出画，但到第 34 秒反而晚 4.23–4.42 秒。
+
+**决定**。维持当前重建条件。紧到宽时沿用原配置会明显增加断流后的等待，且两次断流场景中，宽到紧也出现再缓冲总时长增加。本轮候选仅存在于仪器测试。结论来自单一模拟器、一个 HLS VOD 和受控的两种链路节奏，样本覆盖长片开头的 34 或 44 秒。
+
 ## 复测
 
 在仓库根目录用 PowerShell 执行，需 PATH 中有 `ffmpeg`、`adb`，并连接专用测试设备。设置 serial 后执行。启动时读取 `playback_probe` 目录内的本地文件，默认测试套件会跳过此项。[设备测量用例](../../app/src/androidTest/kotlin/com/r34v/r34v/PlaybackPerformanceProbe.kt)
@@ -373,3 +409,31 @@ adb -s $serial logcat -d -s R34VEnginePerf:I
 ```
 
 单测清晰度重选时加上 `-e playerEnginePerfPath QUALITY_SAME,HLS_QUALITY_SAME`。用同一个测试包对照 `bc8d333` 的开发包时，再加 `-e playerEnginePerfExpectQualityReopen true`。日志里的 `newRequests`、`rebuffer`、`oldRev`、`newRev`、`progressMs` 分别记录请求次数、缓冲次数、前后引擎修订号和播放进度增量。
+
+弱网长片复测沿用上文的开发包和测试包安装命令。使用新的临时目录生成 HLS 长片，将清单和 90 个分片一起推送。设备端的归档仅用于传输。
+
+```powershell
+$longMedia = New-Item -ItemType Directory -Path (Join-Path $env:TEMP "r34v-long-replay-$([guid]::NewGuid().ToString('N'))")
+$archive = "$($longMedia.FullName).tar"
+$remoteArchive = "/data/local/tmp/$($longMedia.Name).tar"
+$remoteFixture = 'files/playback_long_replay'
+$appId = 'com.r34v.r34v.debug'
+ffmpeg -v error -stream_loop -1 -i app/src/androidTest/assets/test-pattern.mp4 -t 180 `
+  -map 0:v:0 -map 0:a:0 -vf scale=1280:720 -r 24 -c:v libx264 -preset ultrafast -threads 4 `
+  -pix_fmt yuv420p -g 48 -keyint_min 48 -sc_threshold 0 -b:v 2350k -minrate 2350k -maxrate 2350k `
+  -bufsize 4700k -x264-params 'nal-hrd=cbr:force-cfr=1' -c:a aac -b:a 96k `
+  -f hls -hls_time 2 -hls_list_size 0 -hls_playlist_type vod `
+  -hls_segment_filename "$($longMedia.FullName)/segment%03d.ts" "$($longMedia.FullName)/movie.m3u8"
+tar -C $longMedia.FullName -cf $archive .
+adb -s $serial push $archive $remoteArchive
+adb -s $serial shell "run-as $appId mkdir -p $remoteFixture"
+adb -s $serial shell "cat $remoteArchive | run-as $appId tar -xf - -C $remoteFixture"
+adb -s $serial shell "run-as $appId sha256sum $remoteFixture/movie.m3u8"
+adb -s $serial shell am instrument -w -r `
+  -e class 'com.r34v.r34v.PlayerEnginePerformanceProbe#compareLongReplayBufferPlans' `
+  -e playerLongReplay true -e playerLongReplayRepeats 3 `
+  com.r34v.r34v.debug.test/androidx.test.runner.AndroidJUnitRunner
+adb -s $serial logcat -d -s R34VLongReplay:I
+```
+
+接近缓冲上限的补测加入 `-e playerLongReplayLink WATERMARK -e playerLongReplayDirection TIGHT_TO_WIDE`，将 `playerLongReplayRepeats` 设为 2。
