@@ -115,7 +115,7 @@ class ModernUiTest : ComposeUiCase() {
         ui.onNodeWithText("智能片单").performScrollTo().performClick(); waitText("未完成清单")
         f.shot("restructure-library-smart")
         ui.runOnIdle { activity.recreate() }; waitText("未完成清单")
-        ui.onNodeWithText("本地内容").performScrollTo().performClick(); waitText("把喜欢的内容带在身边")
+        ui.onNodeWithText("本地内容").performScrollTo().performClick(); waitText("还没有本地作品")
         ui.onNodeWithTag("library-hub").performScrollToNode(hasText("导入 CBZ / ZIP / 图片目录"))
         ui.onNodeWithText("导入 CBZ / ZIP / 图片目录").assertIsDisplayed()
         clickText("搜索"); waitText("周末片单"); f.shot("restructure-search")

@@ -8,7 +8,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -16,7 +15,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,15 +92,11 @@ import kotlinx.coroutines.*
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item("header") {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Title("订阅", large = true)
-                        Copy(if (tags.isEmpty()) "在标签页点“订阅”，这里就会只显示你关注的内容"
-                             else "${site.name} · 关注 ${tags.size} 个标签 · ${page?.videos?.size ?: 0} 部作品")
-                    }
-                    if (tags.isNotEmpty()) TextAction({ reload++ }, enabled = !busy) { Text(if (busy) "刷新中" else "刷新") }
-                }
                 if (tags.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Copy("${site.name} · 关注 ${tags.size} 个标签 · ${page?.videos?.size ?: 0} 部作品", Modifier.weight(1f))
+                        TextAction({ reload++ }, enabled = !busy) { Text(if (busy) "刷新中" else "刷新") }
+                    }
                     Choices(listOf("订阅内容", "更新收件箱"), inboxMode) { inboxMode = it }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Selector(order.title) { dialogs.choose("排序方式", SubscriptionOrder.entries.map { "${it.title} · ${it.hint}" }, order.ordinal) {
@@ -170,15 +164,7 @@ import kotlinx.coroutines.*
 
 /** The one-line control placed on tag pages, so following never needs a second screen. */
 @Composable fun SubscribeAction(label: String, subscribed: Boolean, click: () -> Unit) {
-    val compact = LocalUiDensity.current.compact
-    FilledTonalButton(click, Modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight),
-        shape = RoundedCornerShape(8.dp), contentPadding = PaddingValues(horizontal = if (compact) 12.dp else 16.dp, vertical = if (compact) 9.dp else 12.dp),
-        colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = if (subscribed) BrandColor else Color.White.copy(alpha = .12f), contentColor = Color.White)) {
-        Glyph(if (subscribed) R.drawable.ic_check else R.drawable.ic_add, null, Modifier.size(if (compact) 16.dp else 18.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(label)
-    }
+    Action(label, icon = if (subscribed) R.drawable.ic_check else R.drawable.ic_add, selected = subscribed, click = click)
 }
 
 @Composable private fun SubscriptionRow(row: List<Video>, saved: Set<String>, play: (Video) -> Unit, favorite: (Video) -> Unit) {

@@ -24,14 +24,18 @@ class LiquidMediaUiTest : ComposeUiCase() {
         assertTrue("Compact overflow icons must retain a 48dp touch target: $overflow", overflow.width >= touchTarget && overflow.height >= touchTarget)
         f.shot("liquid-comic-$suffix")
         ui.onNodeWithContentDescription("内容列表").performScrollToNode(hasText("开始阅读"))
+        ui.onNodeWithText("开始阅读").assertIsDisplayed().performClick()
+        waitText("收藏漫画"); waitCovers()
         ui.onNodeWithText("开始阅读").assertIsDisplayed()
+        f.shot("rental-comic-detail-$suffix")
+        back(f); waitHome()
         switchSite(SiteRegistry.FOURKHD.name)
         ui.waitUntil(15000) { ui.onAllNodesWithTag("photo-stage").fetchSemanticsNodes().isNotEmpty() }; waitCovers()
         f.shot("liquid-photo-$suffix")
         if (activity.resources.configuration.screenWidthDp >= 840 && activity.resources.configuration.fontScale <= 1.3f)
             ui.onNodeWithText("开始浏览").assertIsDisplayed()
         ui.onNodeWithContentDescription("内容列表").performScrollToNode(hasText("开始浏览"))
-        clickText("开始浏览"); waitText("收藏写真集")
+        clickText("开始浏览"); waitText("收藏写真集"); waitCovers()
         f.shot("liquid-photo-detail-$suffix")
         ui.onNodeWithText("开始浏览").performScrollTo().performClick()
         ui.waitUntil(15000) { f.app.library.reading(f.video("4khd").id, "4khd")?.page == 1 }
@@ -46,7 +50,11 @@ class LiquidMediaUiTest : ComposeUiCase() {
         f.launch(); openSourceHome(); switchSite(SiteRegistry.R34V.name)
         ui.onNodeWithTag("home-carousel").assertExists()
         openPersonalHome()
+        // Closing the photo reader also saves progress. Select the video shelf before
+        // checking its resume action, and wait for the catalog's asynchronous scan.
+        ui.onNode(hasText("视频") and hasAnyAncestor(hasTestTag("personal-home"))).performClick()
         val continueAction = hasText("继续观看") and hasClickAction()
+        ui.waitUntil(15000) { ui.onAllNodes(continueAction).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("personal-home").performScrollToNode(continueAction)
         ui.onNode(continueAction).assertIsDisplayed()
         f.shot("liquid-video-resume-$suffix")

@@ -2,6 +2,9 @@
 package com.r34v.r34v.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -19,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -105,7 +109,9 @@ fun ComposeDialogs.selectVideos(videos: List<Video>, action: (List<Video>) -> Un
         if (previousView != (shelf.id to view)) { listState.scrollToItem(0); previousView = shelf.id to view }
     }
     Column(Modifier.fillMaxSize().then(if (shortWindow) Modifier.verticalScroll(rememberScrollState()) else Modifier), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row {
+        val jacket = RoundedCornerShape(4.dp)
+        Row(Modifier.fillMaxWidth().background(RentalSurface, jacket).border(1.dp, RentalEdge, jacket),
+            verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) IconAction(com.r34v.r34v.R.drawable.ic_back, "返回我的片库", click = onBack)
             TextAction({ val choices = shelves.displayOrder(); dialogs.choose("切换片单", choices.map { it.name }, choices.indexOf(shelf)) { selected = choices[it].id } }, Modifier.weight(1f)) { Title(shelf.name, Modifier.weight(1f), true); Glyph(com.r34v.r34v.R.drawable.ic_chevron_down, null) }
             IconAction(com.r34v.r34v.R.drawable.ic_search, "搜索片单") { searching = !searching; if (!searching) query = "" }
@@ -131,11 +137,12 @@ fun ComposeDialogs.selectVideos(videos: List<Video>, action: (List<Video>) -> Un
                 .onFailure { starting = false; dialogs.message("无法开始片单", it.message.orEmpty()) }
         }
         if (entries.isEmpty()) {
-            if (view.filtered) EmptyState("没有匹配的作品", "搜索与筛选只作用于当前片单。", "清空条件") {
-                query = ""; status = 0; category = 0; source = ""; addedDays = 0
-            } else EmptyState("片单中暂无内容", "在作品菜单或详情页加入稍后看或合集。", "去搜索", discover)
-        }
-        AdaptiveCatalogList(app, entries.map { entry ->
+            if (view.filtered) LibraryNotice("没有匹配的作品", "搜索与筛选只作用于当前片单。") {
+                Action("清空条件") { query = ""; status = 0; category = 0; source = ""; addedDays = 0 }
+            } else LibraryNotice("片单中暂无内容", "在作品菜单或详情页加入稍后看或合集。") {
+                Action("去搜索", primary = true, click = discover)
+            }
+        } else AdaptiveCatalogList(app, entries.map { entry ->
             (catalog.firstOrNull { it.video.entryKey == entry.video.entryKey } ?: CatalogEntry(entry.video)).let { if (entry.completed) it.copy(progress = "已完成") else it }
         }, play, if (shortWindow) Modifier.height(300.dp) else Modifier.weight(1f), listState = listState, menu = { video ->
             val entry = entries.first { it.video.entryKey == video.entryKey }

@@ -93,7 +93,9 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         ui.onNodeWithTag("download-center").performScrollToIndex(0)
         f.shot("22-unified-downloads")
         ui.onNode(hasText("视频", substring = false) and hasAnyAncestor(hasTestTag("download-center"))).performClick()
-        ui.waitUntil(15000) { ui.onAllNodes(hasTestTag("download-video:${f.app.playback.key(clip, "720p")}")).fetchSemanticsNodes().isNotEmpty() }
+        val clipTag = "download-video:${f.app.playback.key(clip, "720p")}"
+        ui.onNodeWithTag("download-center").performScrollToNode(hasTestTag(clipTag))
+        ui.onNodeWithTag(clipTag).assertIsDisplayed()
         f.shot("23-video-downloads")
         runBlocking { f.app.playback.downloads().filter { f.app.playback.metadata(it)?.video?.id == f.video("r34v").id }.forEach { f.app.playback.remove(it.request.id) } }
     }

@@ -181,7 +181,11 @@ class NewFeaturesUiTest : ComposeUiCase() {
         waitText("管理标签"); clickText("管理标签"); waitText("示例标签")
         ui.onNodeWithContentDescription("取消订阅 示例标签").performClick(); clickText("完成")
         assertFalse(f.app.library.isSubscribed("sample", "r34v"))
-        f.launch(); waitHome(); clickText("订阅更新 · 0"); clickText("标签订阅")
+        f.launch(); waitHome(); openPersonalHome()
+        val inbox = hasText("订阅更新 · ", substring = true) and hasClickAction()
+        ui.waitUntil(15000) { ui.onAllNodes(inbox).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithTag("personal-home").performScrollToNode(inbox)
+        ui.onNode(inbox).performClick(); clickText("标签订阅")
         waitText("还没有订阅任何标签")
     }
 

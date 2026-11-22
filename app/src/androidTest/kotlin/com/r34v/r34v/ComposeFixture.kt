@@ -180,7 +180,11 @@ abstract class ComposeUiCase {
     fun openSourceHome() { clickText("首页"); waitHome() }
     fun openPersonalHome() {
         ui.onNode(hasText("我的") and hasAnyAncestor(hasTestTag("primary-navigation"))).performClick()
-        ui.waitUntil(15000) { ui.onAllNodesWithTag("personal-home").fetchSemanticsNodes().isNotEmpty() }; ui.waitForIdle()
+        ui.waitUntil(15000) {
+            ui.onAllNodesWithTag("personal-home").fetchSemanticsNodes().isNotEmpty() &&
+                ui.onAllNodesWithText("正在读取片库").fetchSemanticsNodes().isEmpty()
+        }
+        ui.waitForIdle()
     }
     fun clickText(text: String) { waitText(text); ui.onAllNodesWithText(text).onLast().performClick() }
     fun back(fixture: ComposeFixture) {

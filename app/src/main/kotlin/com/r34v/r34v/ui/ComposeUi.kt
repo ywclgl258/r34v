@@ -1,9 +1,7 @@
 @file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.r34v.r34v.ui
 
-import android.os.Build
 import androidx.annotation.DrawableRes
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.*
@@ -42,42 +40,39 @@ import com.r34v.r34v.data.*
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 
-val CanvasColor = Color.Black
-val SurfaceColor = Color(0xff141414)
-val RaisedColor = Color(0xff202020)
-val ControlColor = Color(0xff272727)
-val ActiveControlColor = Color(0xff404040)
-val ControlFocusColor = Color(0xff686868)
-val SelectedControlColor = Color(0xfff2f2f2)
-val MutedColor = Color(0xffb8b8b8)
-val BrandColor = Color(0xffff3547)
+val CanvasColor = RentalInk
+val SurfaceColor = RentalSurface
+val RaisedColor = Color(0xff252e32)
+val ControlColor = Color(0xff30393c)
+val ControlFocusColor = Color(0xff485459)
+val SelectedControlColor = RentalPaper
+val MutedColor = RentalMuted
+val BrandColor = RentalRed
 val MatchColor = Color(0xff46d369)
 val GlassTopColor = Color(0xee202020)
 val GlassBottomColor = Color(0xf0121212)
 
 @Composable fun filledFieldColors() = TextFieldDefaults.colors(
-    focusedContainerColor = ControlColor, unfocusedContainerColor = RaisedColor,
+    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest, unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
     disabledContainerColor = SurfaceColor, errorContainerColor = Color(0xff301417),
-    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
+    focusedIndicatorColor = RentalRed, unfocusedIndicatorColor = RentalEdge,
     disabledIndicatorColor = Color.Transparent, errorIndicatorColor = MaterialTheme.colorScheme.error,
-    cursorColor = Color.White, focusedLabelColor = Color.White, unfocusedLabelColor = MutedColor)
+    cursorColor = MaterialTheme.colorScheme.secondary, focusedLabelColor = MaterialTheme.colorScheme.onSurface, unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant)
 
 data class UiDensity(val compact: Boolean, val controlHeight: androidx.compose.ui.unit.Dp,
     val contentPadding: androidx.compose.ui.unit.Dp, val sectionGap: androidx.compose.ui.unit.Dp,
     val pagePadding: androidx.compose.ui.unit.Dp, val cardGap: androidx.compose.ui.unit.Dp)
-val LocalUiDensity = staticCompositionLocalOf { UiDensity(true, 38.dp, 10.dp, 16.dp, 14.dp, 9.dp) }
+val LocalUiDensity = staticCompositionLocalOf { UiDensity(false, 48.dp, 16.dp, 24.dp, 20.dp, 12.dp) }
 
 @Composable fun R34Theme(content: @Composable () -> Unit) {
-    // 手机默认也用紧凑档：原先只有 >=840dp 宽才收紧，手机上就是 26sp 标题、48dp 按钮、
-    // 18dp 页边距，密度远低于同类视频应用。大字体（>1.3x）仍回到宽松档保证可读。
-    val compact = LocalDensity.current.fontScale <= 1.3f
+    val compact = windowSizeDp().width >= 840 && LocalDensity.current.fontScale <= 1.3f
     val density = UiDensity(compact, if (compact) 38.dp else 48.dp, if (compact) 10.dp else 16.dp,
-        if (compact) 16.dp else 24.dp, if (compact) 14.dp else 18.dp, if (compact) 9.dp else 12.dp)
+        if (compact) 20.dp else 24.dp, if (compact) 16.dp else 20.dp, if (compact) 10.dp else 12.dp)
     val base = Typography()
     val typography = base.copy(
-        headlineLarge = base.headlineLarge.copy(fontSize = if (compact) 19.sp else 26.sp, lineHeight = if (compact) 24.sp else 32.sp, fontWeight = FontWeight.Bold),
-        headlineMedium = base.headlineMedium.copy(fontSize = if (compact) 17.sp else 22.sp, lineHeight = if (compact) 22.sp else 28.sp, fontWeight = FontWeight.Bold),
-        titleLarge = base.titleLarge.copy(fontSize = if (compact) 15.sp else 18.sp, lineHeight = if (compact) 20.sp else 24.sp, fontWeight = FontWeight.SemiBold),
+        headlineLarge = base.headlineLarge.copy(fontSize = if (compact) 25.sp else 30.sp, lineHeight = if (compact) 31.sp else 36.sp, fontWeight = FontWeight.Bold),
+        headlineMedium = base.headlineMedium.copy(fontSize = if (compact) 21.sp else 25.sp, lineHeight = if (compact) 26.sp else 32.sp, fontWeight = FontWeight.Bold),
+        titleLarge = base.titleLarge.copy(fontSize = if (compact) 17.sp else 20.sp, lineHeight = if (compact) 22.sp else 27.sp, fontWeight = FontWeight.Bold),
         titleMedium = base.titleMedium.copy(fontSize = if (compact) 13.sp else 15.sp, lineHeight = if (compact) 18.sp else 21.sp, fontWeight = FontWeight.SemiBold),
         titleSmall = base.titleSmall.copy(fontSize = if (compact) 12.sp else 14.sp, lineHeight = if (compact) 17.sp else 20.sp),
         bodyLarge = base.bodyLarge.copy(fontSize = if (compact) 13.sp else 16.sp, lineHeight = if (compact) 19.sp else 24.sp),
@@ -87,28 +82,29 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(true, 38.dp, 10.dp, 16
         labelMedium = base.labelMedium.copy(fontSize = if (compact) 10.sp else 12.sp, lineHeight = if (compact) 15.sp else 17.sp),
         labelSmall = base.labelSmall.copy(fontSize = if (compact) 9.sp else 11.sp, lineHeight = if (compact) 13.sp else 16.sp),
     )
-    MaterialTheme(typography = typography, colorScheme = darkColorScheme(primary = BrandColor, onPrimary = Color.White,
-        secondary = Color.White, background = CanvasColor, surface = SurfaceColor,
-        surfaceVariant = RaisedColor, onSurface = Color.White, onSurfaceVariant = MutedColor,
-        onBackground = Color.White, secondaryContainer = RaisedColor, onSecondaryContainer = Color.White,
-        primaryContainer = RaisedColor, onPrimaryContainer = Color.White, surfaceTint = Color.Transparent,
+    MaterialTheme(typography = typography, shapes = Shapes(
+        extraSmall = RentalShape, small = RentalShape, medium = RoundedCornerShape(6.dp),
+        large = RoundedCornerShape(8.dp), extraLarge = RoundedCornerShape(8.dp)), colorScheme = darkColorScheme(primary = BrandColor, onPrimary = CanvasColor,
+        secondary = SelectedControlColor, onSecondary = CanvasColor, background = CanvasColor, surface = SurfaceColor,
+        surfaceVariant = RaisedColor, onSurface = SelectedControlColor, onSurfaceVariant = MutedColor,
+        onBackground = SelectedControlColor, secondaryContainer = RaisedColor, onSecondaryContainer = SelectedControlColor,
+        primaryContainer = RaisedColor, onPrimaryContainer = SelectedControlColor, surfaceTint = Color.Transparent,
         surfaceContainer = SurfaceColor, surfaceContainerLow = SurfaceColor, surfaceContainerHigh = RaisedColor,
         surfaceContainerHighest = ControlColor, surfaceContainerLowest = CanvasColor,
-        outline = Color(0xff747474), error = Color(0xffff6670))) {
-        CompositionLocalProvider(LocalUiDensity provides density, LocalReduceTransparency provides rememberReducedTransparency()) {
-            Surface(Modifier.fillMaxSize(), color = CanvasColor, contentColor = Color.White, content = content)
+        outline = RentalEdge, outlineVariant = Color(0xff485052), error = Color(0xffff6670))) {
+        CompositionLocalProvider(LocalUiDensity provides density, LocalReduceTransparency provides rememberReducedTransparency(),
+            LocalMotionEnabled provides rememberSystemMotionEnabled()) {
+            Surface(Modifier.fillMaxSize(), color = CanvasColor, contentColor = SelectedControlColor, content = content)
         }
     }
 }
 @Composable fun Title(text: String, modifier: Modifier = Modifier, large: Boolean = false, maxLines: Int = Int.MAX_VALUE) {
-    val compact = LocalUiDensity.current.compact
     Text(text, modifier.semantics { heading() }, color = MaterialTheme.colorScheme.onSurface,
-        fontSize = (if (compact) if (large) 17 else 14 else if (large) 24 else 18).sp,
-        lineHeight = (if (compact) if (large) 22 else 19 else if (large) 30 else 25).sp, fontWeight = FontWeight.SemiBold,
+        style = if (large) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
         maxLines = maxLines, overflow = TextOverflow.Ellipsis)
 }
 @Composable fun Copy(text: String, modifier: Modifier = Modifier) {
-    Text(text, modifier, color = MutedColor, fontSize = if (LocalUiDensity.current.compact) 11.5.sp else 14.sp,
+    Text(text, modifier, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = if (LocalUiDensity.current.compact) 11.5.sp else 14.sp,
         lineHeight = if (LocalUiDensity.current.compact) 16.sp else 21.sp)
 }
 @Composable fun Glyph(@DrawableRes icon: Int, description: String?, modifier: Modifier = Modifier) {
@@ -120,22 +116,25 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(true, 38.dp, 10.dp, 16
 @Composable fun TextAction(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) {
     val compact = LocalUiDensity.current.compact
     TextButton(onClick, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight), enabled,
+        shape = RentalShape,
         contentPadding = PaddingValues(horizontal = if (compact) 10.dp else 16.dp, vertical = if (compact) 6.dp else 12.dp),
-        colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = MutedColor.copy(alpha = .5f)), content = content)
+        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface, disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .5f)), content = content)
 }
 @Composable fun Action(text: String, modifier: Modifier = Modifier, primary: Boolean = false, enabled: Boolean = true,
-    icon: Int? = null, selected: Boolean = false, click: () -> Unit) {
+    icon: Int? = null, selected: Boolean? = null, click: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val compact = LocalUiDensity.current.compact
-    Button(click, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight).semantics { this.selected = selected }, enabled,
-        shape = RoundedCornerShape(8.dp), interactionSource = interaction, elevation = null,
+    val colors = MaterialTheme.colorScheme
+    Button(click, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight).rentalKeyPress(interaction).semantics { if (selected != null) this.selected = selected }, enabled,
+        shape = RentalShape, interactionSource = interaction, elevation = null,
+        border = if (!primary) RentalBorder else null,
         contentPadding = PaddingValues(horizontal = if (compact) 11.dp else 16.dp, vertical = if (compact) 7.dp else 12.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (focused) ControlFocusColor else if (primary) SelectedControlColor else if (selected) ActiveControlColor else ControlColor,
-            contentColor = if (primary && !focused) Color.Black else Color.White,
+            containerColor = when { focused -> ControlFocusColor; primary -> colors.secondary; selected == true -> RentalPaper; else -> colors.surfaceContainerHighest },
+            contentColor = if ((primary || selected == true) && !focused) colors.background else colors.onSurface,
             disabledContainerColor = ControlColor.copy(alpha = .55f), disabledContentColor = MutedColor.copy(alpha = .65f))) {
-        val glyph = icon ?: R.drawable.ic_check.takeIf { selected }
+        val glyph = icon ?: R.drawable.ic_check.takeIf { selected == true }
         if (glyph != null) { Glyph(glyph, null, Modifier.size(if (compact) 16.dp else 18.dp)); Spacer(Modifier.width(if (compact) 6.dp else 8.dp)) }
         Text(text, fontSize = if (compact) 12.sp else 14.sp, lineHeight = if (compact) 16.sp else 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 2)
     }
@@ -145,11 +144,15 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(true, 38.dp, 10.dp, 16
     val focused by interaction.collectIsFocusedAsState()
     val compact = LocalUiDensity.current.compact
     val horizontalPadding = if (LocalDensity.current.fontScale > 1.3f) 10.dp else if (compact) 12.dp else 14.dp
-    val container by animateColorAsState(if (focused) ControlFocusColor else if (selected) SelectedControlColor else ControlColor, tween(120), label = "choice")
-    val content = if (selected && !focused) Color.Black else Color.White
-    Box(Modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight).clip(RoundedCornerShape(50))
+    val colors = MaterialTheme.colorScheme
+    val shape = RentalShape
+    val container = if (focused) ControlFocusColor else if (selected) colors.secondary else colors.surfaceContainerHigh
+    val content = if (selected && !focused) colors.background else colors.onSurface
+    Box(Modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight).rentalKeyPress(interaction).clip(shape)
         .selectable(selected, interactionSource = interaction, indication = LocalIndication.current, role = Role.Tab, onClick = click), contentAlignment = Alignment.Center) {
-        Row(Modifier.heightIn(min = if (compact) 27.dp else 34.dp).clip(RoundedCornerShape(50)).background(container).padding(horizontal = horizontalPadding, vertical = if (compact) 4.dp else 7.dp),
+        Row(Modifier.heightIn(min = if (compact) 27.dp else 34.dp).clip(shape).background(container)
+            .then(if (!selected) Modifier.border(RentalBorder, shape) else Modifier)
+            .padding(horizontal = horizontalPadding, vertical = if (compact) 4.dp else 7.dp),
             verticalAlignment = Alignment.CenterVertically) {
             if (selected) { CompositionLocalProvider(LocalContentColor provides content) { Glyph(R.drawable.ic_check, null, Modifier.size(if (compact) 12.dp else 14.dp)) }; Spacer(Modifier.width(6.dp)) }
             Text(text, color = content, fontSize = if (compact) 12.sp else 14.sp,
@@ -168,10 +171,11 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(true, 38.dp, 10.dp, 16
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val compact = LocalUiDensity.current.compact
-    FilledTonalButton(click, modifier.minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight), enabled,
-        shape = RoundedCornerShape(10.dp), interactionSource = interaction,
+    FilledTonalButton(click, modifier.rentalKeyPress(interaction).minimumInteractiveComponentSize().heightIn(min = LocalUiDensity.current.controlHeight), enabled,
+        shape = RentalShape, interactionSource = interaction,
+        border = RentalBorder,
         contentPadding = PaddingValues(horizontal = if (compact) 12.dp else 16.dp, vertical = if (compact) 9.dp else 12.dp),
-        colors = ButtonDefaults.filledTonalButtonColors(containerColor = if (focused) ControlFocusColor else ControlColor, contentColor = Color.White)) {
+        colors = ButtonDefaults.filledTonalButtonColors(containerColor = if (focused) ControlFocusColor else MaterialTheme.colorScheme.surfaceContainerHighest, contentColor = MaterialTheme.colorScheme.onSurface)) {
         Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = if (compact) 12.sp else 13.sp); Spacer(Modifier.width(if (compact) 6.dp else 8.dp)); Icon(painterResource(R.drawable.ic_chevron_down), null, Modifier.size(if (compact) 14.dp else 16.dp))
     }
 }
@@ -186,14 +190,18 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(true, 38.dp, 10.dp, 16
     }
 }
 @Composable fun EmptyState(title: String, body: String, action: String = "重试", click: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Title(title); Copy(body); Action(action, click = click)
+    Column(Modifier.fillMaxWidth().padding(16.dp).background(RentalSurface, RentalShape)
+        .border(RentalBorder, RentalShape).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Title(title)
+        Copy(body)
+        Action(action, primary = true, click = click)
     }
 }
 @Composable fun Expandable(title: String, expandedInitially: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
     var expanded by rememberSaveable(title) { mutableStateOf(expandedInitially) }
     val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "expandRotation")
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(SurfaceColor)) {
+    val panel = Modifier.clip(RentalShape).background(RentalSurface).border(RentalBorder, RentalShape)
+    Column(Modifier.fillMaxWidth().then(panel)) {
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { stateDescription = if (expanded) "已展开" else "已收起" }
             .clickable(role = Role.Button) { expanded = !expanded }.padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically) {
@@ -218,7 +226,7 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(true, 38.dp, 10.dp, 16
             site.id == SiteRegistry.LOCAL.id && app.localLibrary.ownsImageUri(url)
         ImageRequest.Builder(context).data(url.takeIf { allowed }).memoryCacheKey("${site.id}|$url").diskCacheKey("${site.id}|$url").build()
     }
-    Box(modifier.background(Brush.verticalGradient(listOf(Color(0xff242424), SurfaceColor)))) {
+    Box(modifier.background(Brush.verticalGradient(listOf(RaisedColor, SurfaceColor)))) {
         AsyncImage(request, contentDescription = null, imageLoader = app.coverLoader(site),
             modifier = Modifier.fillMaxSize().then(if (ready) Modifier.testTag("cover-ready") else Modifier),
             contentScale = if (fit) ContentScale.Fit else ContentScale.Crop,
@@ -232,7 +240,8 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(true, 38.dp, 10.dp, 16
 @Composable fun GlassSurface(modifier: Modifier = Modifier, radius: Int = 22, opaque: Boolean = false, content: @Composable BoxScope.() -> Unit) {
     Box(modifier.then(if (opaque) Modifier.contentPanel(radius) else Modifier.liquidSurface(radius)), content = content)
 }
-@Composable fun MediaCard(video: Video, modifier: Modifier = Modifier, menu: List<Pair<String, () -> Unit>> = emptyList(), progress: Float? = null, click: () -> Unit) {
+@Composable fun MediaCard(video: Video, modifier: Modifier = Modifier, menu: List<Pair<String, () -> Unit>> = emptyList(),
+    progress: Float? = null, progressLabel: String? = null, click: () -> Unit) {
     val site = SiteRegistry.byIdOrDefault(video.site)
     val personal = (LocalContext.current.applicationContext as R34Application).library.personal
     val personalRevision by personal.changes.collectAsState()
@@ -245,20 +254,34 @@ val LocalUiDensity = staticCompositionLocalOf { UiDensity(true, 38.dp, 10.dp, 16
     val gallery = site.mediaKind == MediaKind.GALLERY || video.mediaKind == MediaKind.GALLERY
     var ratio by remember(video.site, video.id) { mutableFloatStateOf(if (gallery) video.thumbAspectRatio else 16f / 9f) }
     var expanded by remember { mutableStateOf(false) }
-    val compact = LocalUiDensity.current.compact
-    Column(modifier.testTag("media-${video.site}-${video.id}").combinedClickable(onClick = click, onLongClick = { expanded = true }).padding(bottom = if (compact) 8.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 5.dp)) {
-        Box(Modifier.clip(RoundedCornerShape(8.dp))) {
+    val caseShape = RentalShape
+    val metadata = progressLabel ?: listOf(mediaCountOrDuration(video), video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
+    Column(modifier.testTag("media-${video.site}-${video.id}").clip(caseShape).background(RentalSurface).border(RentalBorder, caseShape)
+        .combinedClickable(role = Role.Button, onClick = click, onLongClickLabel = "更多作品操作", onLongClick = { expanded = true })
+        .padding(1.dp)) {
+        Box {
             SiteImage(video.thumb, site, Modifier.fillMaxWidth().aspectRatio(ratio.coerceIn(.45f, 1.8f)), gallery) { if (gallery && !video.hasThumbDimensions) ratio = it }
             Box(Modifier.align(Alignment.TopEnd)) {
-                IconAction(R.drawable.ic_more, "${video.title} 的更多操作", Modifier.background(Color.Black.copy(alpha = .65f), androidx.compose.foundation.shape.CircleShape)) { expanded = true }
+                IconButton(onClick = { expanded = true }) {
+                    Box(Modifier.size(25.dp).background(RentalInk.copy(alpha = .82f), caseShape), contentAlignment = Alignment.Center) {
+                        Icon(painterResource(R.drawable.ic_more), "${video.title} 的更多操作", Modifier.size(17.dp), tint = RentalPaper)
+                    }
+                }
                 DropdownMenu(expanded, { expanded = false }) { actions.forEach { (label, action) -> DropdownMenuItem({ Text(label) }, { expanded = false; action() }) } }
             }
         }
-        Text(video.title, fontSize = if (compact) 13.sp else 14.sp, lineHeight = if (compact) 19.sp else 20.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        val metadata = listOf(mediaCountOrDuration(video), video.views, video.rating).filter(String::isNotBlank).joinToString(" · ")
-        if (metadata.isNotBlank()) Text(metadata, color = MutedColor, fontSize = if (compact) 11.sp else 12.sp, lineHeight = if (compact) 16.sp else 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.fillMaxWidth().background(RentalPaper).rentalStock().padding(horizontal = 9.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(video.title, color = RentalInk, fontWeight = FontWeight.Bold, fontSize = 14.sp, lineHeight = 18.sp,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (metadata.isNotBlank()) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(metadata, Modifier.weight(1f), color = RentalInk.copy(alpha = .78f), fontSize = 11.sp,
+                    lineHeight = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                RentalStripes(Modifier.size(18.dp, 7.dp))
+            }
+        }
         if (progress != null) LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(2.dp),
-            color = BrandColor, trackColor = Color.White.copy(alpha = .15f), gapSize = 0.dp, drawStopIndicator = {})
+            color = BrandColor, trackColor = RentalEdge, gapSize = 0.dp, drawStopIndicator = {})
     }
     shelfDialogs.Host()
 }
@@ -269,29 +292,36 @@ class ComposeDialogs {
     fun dismiss() { content = null }
     @Composable fun Host() { content?.invoke() }
     fun message(title: String, body: String) { content = { AlertDialog(::dismiss, title = { Text(title) }, text = { Text(body, Modifier.verticalScroll(rememberScrollState())) },
-        shape = RoundedCornerShape(24.dp), containerColor = SurfaceColor, tonalElevation = 0.dp,
+        shape = RentalShape, containerColor = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 0.dp,
         confirmButton = { TextAction(::dismiss) { Text("关闭") } }) } }
     fun confirm(title: String, positive: String = "确认", body: String = "", action: () -> Unit) { content = {
         AlertDialog(::dismiss, title = { Text(title) }, text = if (body.isNotBlank()) ({ Text(body, Modifier.verticalScroll(rememberScrollState())) }) else null,
-            shape = RoundedCornerShape(24.dp), containerColor = SurfaceColor, tonalElevation = 0.dp,
+            shape = RentalShape, containerColor = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 0.dp,
             confirmButton = { TextAction({ dismiss(); action() }) { Text(positive) } }, dismissButton = { TextAction(::dismiss) { Text("取消") } })
     } }
     fun choose(title: String, values: List<String>, selected: Int = -1, action: (Int) -> Unit) { content = {
         ModalBottomSheet(::dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             containerColor = Color.Transparent, scrimColor = Color.Black.copy(alpha = .68f), dragHandle = null) {
-            GlassSurface(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp), radius = 28, opaque = true) {
+            val panel = Modifier.clip(RentalShape).background(RentalInk).border(RentalBorder, RentalShape)
+            Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp).then(panel)) {
                 Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Box(Modifier.align(Alignment.CenterHorizontally).size(32.dp, 4.dp).background(Color.White.copy(alpha = .3f), RoundedCornerShape(50)))
+                    Box(Modifier.align(Alignment.CenterHorizontally).size(32.dp, 4.dp)
+                        .background(RentalMuted, RoundedCornerShape(50)))
                     Title(title, Modifier.padding(top = 16.dp, bottom = 8.dp))
                     Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).selectableGroup()) {
-                        values.forEachIndexed { i, value -> Row(Modifier.fillMaxWidth().heightIn(min = if (LocalUiDensity.current.compact) 48.dp else 50.dp)
-                            .clip(RoundedCornerShape(if (LocalUiDensity.current.compact) 12.dp else 14.dp)).background(if (selected == i) Color.White.copy(alpha = .09f) else Color.Transparent)
+                        values.forEachIndexed { i, value ->
+                            val fill = if (selected != i) Color.Transparent else RentalPaper
+                            val ink = if (selected == i) RentalInk else MaterialTheme.colorScheme.onSurface
+                            Row(Modifier.fillMaxWidth().heightIn(min = if (LocalUiDensity.current.compact) 48.dp else 50.dp)
+                            .clip(RentalShape).background(fill)
                             .then(if (selected >= 0) Modifier.selectable(selected == i, role = Role.RadioButton) { dismiss(); action(i) }
                                 else Modifier.clickable(role = Role.Button) { dismiss(); action(i) })
                             .padding(horizontal = LocalUiDensity.current.contentPadding), verticalAlignment = Alignment.CenterVertically) {
-                            Text(value, Modifier.weight(1f).padding(vertical = if (LocalUiDensity.current.compact) 10.dp else 14.dp), fontSize = if (LocalUiDensity.current.compact) 12.sp else 13.sp,
+                            Text(value, Modifier.weight(1f).padding(vertical = if (LocalUiDensity.current.compact) 10.dp else 14.dp), color = ink, fontSize = if (LocalUiDensity.current.compact) 12.sp else 13.sp,
                                 fontWeight = if (selected == i) FontWeight.SemiBold else FontWeight.Normal)
-                            if (selected == i) Glyph(R.drawable.ic_check, null, Modifier.size(if (LocalUiDensity.current.compact) 18.dp else 20.dp))
+                            if (selected == i) CompositionLocalProvider(LocalContentColor provides ink) {
+                                Glyph(R.drawable.ic_check, null, Modifier.size(if (LocalUiDensity.current.compact) 18.dp else 20.dp))
+                            }
                         } }
                     }
                     TextAction(::dismiss, Modifier.align(Alignment.End)) { Text("取消") }
@@ -303,9 +333,9 @@ class ComposeDialogs {
         var value by remember { mutableStateOf(initial) }; var error by remember { mutableStateOf<String?>(null) }
         AlertDialog(::dismiss, title = { Text(title) }, text = { Column {
             TextField(value, { value = it; error = null }, Modifier.fillMaxWidth(), label = { Text(hint.ifBlank { title }) },
-                shape = RoundedCornerShape(16.dp), colors = filledFieldColors(), isError = error != null, keyboardOptions = KeyboardOptions(keyboardType = keyboard))
+                shape = RentalShape, colors = filledFieldColors(), isError = error != null, keyboardOptions = KeyboardOptions(keyboardType = keyboard))
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        } }, shape = RoundedCornerShape(24.dp), containerColor = SurfaceColor, tonalElevation = 0.dp,
+        } }, shape = RentalShape, containerColor = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 0.dp,
             confirmButton = { TextAction({ error = validate(value.trim()); if (error == null) { dismiss(); action(value.trim()) } }) { Text("确定") } }, dismissButton = { TextAction(::dismiss) { Text("取消") } })
     } }
 }

@@ -12,7 +12,8 @@ import android.widget.FrameLayout
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.semantics.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,7 +38,7 @@ class SiteAuthActivity : ComponentActivity() {
     private var browser: WebView? = null
     private var cookies: CookieManager? = null
     private var openedTarget = false
-    private var verifying = false
+    private var verifying by mutableStateOf(false)
     private var verificationMessage = false
     /** 只有全新进入时才清空临时 Cookie；Activity 重建时保留正在进行的登录会话。 */
     private var freshEntry = true
@@ -56,12 +57,15 @@ class SiteAuthActivity : ComponentActivity() {
             Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
                 Row(verticalAlignment = Alignment.CenterVertically) { IconAction(R.drawable.ic_back, "取消登录") { finish() }; Title("${site.name} 官方登录") }
                 Copy("在官方论坛完成登录后，应用会验证本站权限。ExHentai 仍要求账号具备访问资格。", Modifier.padding(16.dp))
-                Copy(status, Modifier.padding(horizontal = 16.dp))
+                Copy(status, Modifier.padding(horizontal = 16.dp).semantics { liveRegion = LiveRegionMode.Polite })
                 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-                FlowRow { TextAction({ completeLogin() }) { Text("验证登录") }
-                    TextAction({ openedTarget = false; verificationMessage = false; cookies?.removeAllCookies { browser?.loadUrl(EhLogin.officialUrl) } }) { Text("重新登录") }
+                FlowRow(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.Center) {
+                    Action("验证登录", enabled = !verifying, primary = true, click = ::completeLogin)
+                    TextAction({ openedTarget = false; verificationMessage = false; cookies?.removeAllCookies { browser?.loadUrl(EhLogin.officialUrl) } }, enabled = !verifying) { Text("重新登录") }
                     TextAction({ runCatching { startActivity(Intent(Intent.ACTION_VIEW, EhLogin.officialUrl.toUri())) }.onFailure { toast("没有可用浏览器，请更新系统 WebView 或导入 Cookie") } }) { Text("用浏览器打开") }
                 }
+                HorizontalDivider(color = RentalEdge)
                 AndroidView(factory = { context -> FrameLayout(context).apply { createBrowser()?.let { addView(it, FrameLayout.LayoutParams(-1, -1)) } } }, modifier = Modifier.fillMaxWidth().weight(1f), onRelease = { releaseBrowser() })
             }
         } }

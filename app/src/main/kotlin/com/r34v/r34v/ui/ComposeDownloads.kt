@@ -2,25 +2,25 @@
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 package com.r34v.r34v.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.media3.exoplayer.offline.Download
 import com.r34v.r34v.R
 import com.r34v.r34v.R34Application
@@ -52,6 +52,7 @@ private data class DownloadSnapshot(
     var groupFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     var sort by rememberSaveable { mutableIntStateOf(0) }
+    var showFilters by rememberSaveable { mutableStateOf(false) }
     var scanNote by remember { mutableStateOf<String?>(null) }
     val policyRevision by app.downloadPolicy.revision.collectAsState()
     val onlyUnmetered = remember(policyRevision) { app.downloadPolicy.unmeteredOnly }
@@ -140,30 +141,49 @@ private data class DownloadSnapshot(
     val diskVideos = restoredVideos.filter { kind != 2 && (siteFilter == null || it.site == siteFilter) && textMatches(it.title, it.site) &&
         (statusFilter == 0 || statusFilter == 2 && it.state == LibraryRecord.STATE_COMPLETED || statusFilter == 3 && it.state != LibraryRecord.STATE_COMPLETED) }
     val count = videos.size + books.size + legacy.size + diskComics.size + diskVideos.size
+    val advancedFilterCount = listOf(siteFilter, groupFilter).count { it != null }
+    val filtersActive = advancedFilterCount > 0 || kind != 0 || statusFilter != 0 || query.isNotBlank()
     LazyColumn(Modifier.fillMaxSize().testTag("download-center"), contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item("filters") {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { Title("下载中心"); Copy("视频与图集，统一管理 · $count 项") }
-                Selector(siteFilter?.let { SiteRegistry.byIdOrDefault(it).name } ?: "全部站点") {
-                    val owners = listOf<SiteContext?>(null) + SiteRegistry.all
-                    dialogs.choose("下载来源", owners.map { it?.name ?: "全部站点" }, owners.indexOfFirst { it?.id == siteFilter }) { siteFilter = owners[it]?.id }
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextField(
+                    query, { query = it }, Modifier.weight(1f), singleLine = true,
+                    label = { Text("搜索标题、来源或分组") },
+                    shape = RentalShape, colors = filledFieldColors(),
+                    leadingIcon = { Glyph(R.drawable.ic_search, null) },
+                    trailingIcon = { if (query.isNotEmpty()) IconAction(R.drawable.ic_close, "清空下载搜索") { query = "" } },
+                )
+                TextAction({ showFilters = !showFilters }) {
+                    Text(if (advancedFilterCount == 0) "筛选" else "筛选 · $advancedFilterCount")
+                    Spacer(Modifier.width(4.dp))
+                    Glyph(R.drawable.ic_chevron_down, null, Modifier.size(14.dp).rotate(if (showFilters) 180f else 0f))
+                }
+            }
+            AnimatedVisibility(showFilters) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Selector(siteFilter?.let { SiteRegistry.byIdOrDefault(it).name } ?: "全部站点") {
+                        val owners = listOf<SiteContext?>(null) + SiteRegistry.all
+                        dialogs.choose("下载来源", owners.map { it?.name ?: "全部站点" }, owners.indexOfFirst { it?.id == siteFilter }) {
+                            siteFilter = owners[it]?.id
+                        }
+                    }
+                    val sortLabels = listOf("队列优先", "最近添加", "体积", "完成度", "标题")
+                    Selector("排序 · ${sortLabels[sort]}") { dialogs.choose("下载排序", sortLabels, sort) { sort = it } }
+                    val groups = snapshot.books.mapNotNull { it.group }.distinct()
+                    if (groups.isNotEmpty()) Selector(groupFilter ?: "全部分组") {
+                        dialogs.choose("下载分组", listOf("全部分组") + groups, (groups.indexOf(groupFilter) + 1).coerceAtLeast(0)) {
+                            groupFilter = if (it == 0) null else groups[it - 1]
+                        }
+                    }
                 }
             }
             Choices(listOf("全部内容", "视频", "图集"), kind) { kind = it }
-            TextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索标题、来源或分组") },
-                shape = RoundedCornerShape(16.dp), colors = filledFieldColors(), leadingIcon = { Glyph(R.drawable.ic_search, null) },
-                trailingIcon = { if (query.isNotEmpty()) IconAction(R.drawable.ic_close, "清空下载搜索") { query = "" } })
-            Choices(listOf("全部状态", "进行中", "已完成", "需处理"), statusFilter) { statusFilter = it }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                val sortLabels = listOf("队列优先", "最近添加", "体积", "完成度", "标题")
-                Selector("排序 · ${sortLabels[sort]}") { dialogs.choose("下载排序", sortLabels, sort) { sort = it } }
-                val groups = snapshot.books.mapNotNull { it.group }.distinct()
-                if (groups.isNotEmpty()) Selector(groupFilter ?: "全部分组") {
-                    dialogs.choose("下载分组", listOf("全部分组") + groups, (groups.indexOf(groupFilter) + 1).coerceAtLeast(0)) { selected -> groupFilter = if (selected == 0) null else groups[selected - 1] }
-                }
-            }
-            if (videos.isNotEmpty()) Copy("图集支持持久队列优先级；视频由 Media3 原生调度。")
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ContentTabs(listOf("全部状态", "进行中", "已完成", "需处理"), statusFilter) { statusFilter = it }
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), itemVerticalAlignment = Alignment.CenterVertically) {
                 Selector(if (onlyUnmetered) "仅非计费网络" else "任意网络") {
                     dialogs.choose("下载网络条件", listOf("任意网络", "仅非计费网络"), if (onlyUnmetered) 1 else 0) { app.downloadPolicy.setUnmetered(it == 1) }
                 }
@@ -198,17 +218,25 @@ private data class DownloadSnapshot(
                 if (batch.running) TextAction(app.batchDownloads::cancel) { Text("停止添加剩余作品") }
                 if (batch.errors.isNotEmpty()) TextAction({ dialogs.message("${batch.errors.size} 项添加失败", batch.errors.joinToString("\n")) }) { Text("查看失败项") }
             }
-            if (count == 0 || diskComics.isNotEmpty() || diskVideos.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
-                Copy(snapshot.root, Modifier.weight(1f))
-                TextAction({ act("rescan") { scanNote = "已重新扫描：${rescan()} 项" } }, enabled = "rescan" !in busy) { Text("重新扫描") }
-            }
-            scanNote?.let { Copy(it) }
         }
         message?.let { text -> item("error") { EmptyState("下载任务读取失败", text) { refresh++ } } }
         if (!ready) item("loading") { Loading(title = "正在读取下载任务") }
         else if (count == 0 && message == null) item("empty") {
-            EmptyState("还没有下载内容", "在视频详情选择清晰度下载，或在漫画/写真详情下载整本。原有视频下载会自动显示在这里。", "去发现", discover)
+            Column(Modifier.fillMaxWidth().clip(RentalShape).background(SurfaceColor).border(RentalBorder, RentalShape).padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (filtersActive) {
+                    Title("没有符合条件的下载", large = true)
+                    Copy("试试其他关键词，或清空筛选条件。")
+                    Action("清空筛选", primary = true) { kind = 0; statusFilter = 0; siteFilter = null; groupFilter = null; query = "" }
+                } else {
+                    Glyph(R.drawable.ic_download, null, Modifier.size(24.dp))
+                    Title("还没有下载内容", large = true)
+                    Copy("在视频详情选择清晰度，或在漫画和写真详情下载整本。")
+                    Action("去发现", primary = true, icon = R.drawable.ic_explore, click = discover)
+                }
+            }
         }
+        if (count > 0) item("result-count") { Copy("$count 项下载", Modifier.padding(top = 4.dp)) }
         items(books, key = { "gallery:${it.id}" }) { book ->
             val downloading = book.state in listOf(GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED)
             val completed = book.state == GalleryDownloadState.COMPLETED
@@ -332,25 +360,42 @@ private data class DownloadSnapshot(
                 TextAction({ dialogs.confirm("删除这份视频下载？", "删除") { act("legacy:${local.site}:${local.id}") { withContext(Dispatchers.IO) { app.library.removeLocal(local.id, local.site) } } } }) { Text("删除") }
             }
         }
+        if (ready && (count == 0 || diskComics.isNotEmpty() || diskVideos.isNotEmpty() || scanNote != null)) item("storage") {
+            HorizontalDivider(color = RaisedColor)
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("存储位置", style = MaterialTheme.typography.titleSmall)
+                    Copy(snapshot.root)
+                    scanNote?.let { Copy(it) }
+                }
+                TextAction({ act("rescan") { scanNote = "已重新扫描：${rescan()} 项" } }, enabled = "rescan" !in busy) { Text("重新扫描") }
+            }
+        }
     }
 }
 
 @Composable private fun DownloadTile(id: String, entry: Video, type: String, status: String, progress: Float? = null,
     error: String = "", details: @Composable ColumnScope.() -> Unit = {}, actions: @Composable FlowRowScope.() -> Unit) {
-    val compact = LocalUiDensity.current.compact
-    Column(Modifier.fillMaxWidth().testTag("download-$id").contentPanel(20).padding(if (compact) 12.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp)) {
-            SiteImage(entry.thumb, SiteRegistry.byIdOrDefault(entry.site), Modifier.size(if (compact) 54.dp else 62.dp, if (compact) 74.dp else 84.dp).clip(RoundedCornerShape(10.dp)))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(entry.title.ifBlank { "未命名内容" }, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text("${SiteRegistry.byIdOrDefault(entry.site).name} · $type", fontSize = 11.sp, color = MutedColor)
-                Text(status, fontSize = 12.sp, color = Color.White)
+    val site = SiteRegistry.byIdOrDefault(entry.site)
+    Column(Modifier.fillMaxWidth().testTag("download-$id"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            SiteImage(entry.thumb, site, Modifier.size(66.dp, 76.dp).clip(RentalShape))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(entry.title.ifBlank { "未命名内容" }, style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Copy("${site.name} · $type")
+                Text(status, style = MaterialTheme.typography.bodyMedium)
+                if (progress != null) {
+                    LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(4.dp), color = BrandColor, trackColor = RentalEdge,
+                        gapSize = 0.dp, drawStopIndicator = {})
+                }
             }
         }
-        if (progress != null) LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(3.dp), color = BrandColor, trackColor = Color.White.copy(alpha = .15f), gapSize = 0.dp, drawStopIndicator = {})
-        if (error.isNotBlank()) Copy(error)
+        if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         details()
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), content = actions)
+        HorizontalDivider(color = RaisedColor)
     }
 }
 

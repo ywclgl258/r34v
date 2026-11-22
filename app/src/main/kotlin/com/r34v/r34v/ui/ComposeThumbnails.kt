@@ -4,6 +4,9 @@ import android.graphics.Bitmap
 import androidx.core.graphics.scale
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,13 +39,17 @@ import kotlinx.coroutines.sync.withPermit
                         }
                     }
                 } catch (e: Exception) { if (e is CancellationException) throw e; failed = true } }
-                Column(Modifier.fillMaxWidth().background(if (index + 1 == current) ControlColor else SurfaceColor).clickable { choose(index + 1) }.padding(5.dp)
+                val selected = index + 1 == current
+                Column(Modifier.fillMaxWidth().clip(RentalShape).background(if (selected) RentalPaper else RentalSurface)
+                    .border(1.dp, if (selected) RentalPaper else RentalEdge, RentalShape)
+                    .selectable(selected, role = Role.RadioButton) { choose(index + 1) }.padding(5.dp)
                     .semantics { contentDescription = "跳到第 ${index + 1} 页" }, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(Modifier.fillMaxWidth().aspectRatio(.7f), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxWidth().aspectRatio(.7f).background(RentalInk), contentAlignment = Alignment.Center) {
                         bitmap?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
                             ?: Copy(if (failed) "暂不可用" else "加载中")
                     }
-                    Copy("第 ${index + 1} 页")
+                    Text("第 ${index + 1} 页", Modifier.padding(top = 4.dp), color = if (selected) RentalInk else RentalMuted,
+                        style = MaterialTheme.typography.labelMedium)
                 }
             }
         }

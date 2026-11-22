@@ -12,9 +12,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.r34v.r34v.R
@@ -32,16 +36,23 @@ import kotlinx.coroutines.*
     BackHandler(current != null) { selected = null }
     val compact = LocalUiDensity.current.compact
     Row(modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(if (compact) 14.dp else 18.dp)) {
-        if (wide || current == null) LazyColumn(Modifier.weight(1f).testTag("catalog-list"), state = listState, contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
+        if (wide || current == null) LazyColumn(Modifier.weight(1f).testTag("catalog-list"), state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
             if (header != null) item(key = "catalog-header") { header() }
             if (entries.isEmpty()) item { Copy("当前条件下暂无作品") }
             items(entries, key = { it.video.entryKey }) { entry ->
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (selected == entry.video.entryKey) ControlColor else SurfaceColor)
-                    .clickable { if (wide) selected = entry.video.entryKey else play(entry.video) }.padding(if (compact) 8.dp else 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    SiteImage(entry.video.thumb, SiteRegistry.byIdOrDefault(entry.video.site), Modifier.width(if (compact) 48.dp else 56.dp).height(if (compact) 68.dp else 78.dp), true)
-                    Column(Modifier.weight(1f).padding(horizontal = if (compact) 10.dp else 12.dp), verticalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp)) {
-                        Text(entry.video.title, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                        Copy("${SiteRegistry.byIdOrDefault(entry.video.site).name} · ${entry.progress}")
+                val site = SiteRegistry.byIdOrDefault(entry.video.site)
+                val coverShape = RentalShape
+                Row(Modifier.fillMaxWidth().clip(RentalShape).background(if (selected == entry.video.entryKey) RentalSurface else Color.Transparent)
+                    .clickable(role = Role.Button) { if (wide) selected = entry.video.entryKey else play(entry.video) }
+                    .padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val gallery = entry.video.mediaKind == MediaKind.GALLERY || site.mediaKind == MediaKind.GALLERY
+                    val thumb = if (!gallery) Modifier.size(78.dp, 54.dp) else Modifier.size(56.dp, 72.dp)
+                    SiteImage(entry.video.thumb, site, thumb.clip(coverShape)
+                        .border(RentalBorder, coverShape), fit = gallery)
+                    Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(entry.video.title, color = RentalPaper,
+                            style = MaterialTheme.typography.titleMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        Copy("${site.name} · ${entry.progress}")
                         if (entry.offline) Copy(entry.downloadState)
                     }
                     val actions = menu(entry.video)
@@ -52,6 +63,7 @@ import kotlinx.coroutines.*
                         }
                     }
                 }
+                HorizontalDivider(color = RentalEdge.copy(alpha = .5f))
             }
         }
         if (wide || current != null) Column(Modifier.weight(if (wide) 1.2f else 1f).testTag("catalog-detail").verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp)) {
@@ -96,11 +108,17 @@ import kotlinx.coroutines.*
                                     app.localLibrary.imageUri(favorite.video.id, favorite.page).orEmpty()
                                 } else favorite.imageUrl.ifBlank { favorite.video.thumb }
                             }
-                            Column(Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(SurfaceColor).clickable { image(favorite) }.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            val sleeve = RoundedCornerShape(4.dp)
+                            Column(Modifier.weight(1f).clip(sleeve).background(RentalSurface).border(1.dp, RentalEdge, sleeve)
+                                .clickable(role = Role.Button) { image(favorite) }.padding(1.dp)) {
                                 SiteImage(thumbnail, SiteRegistry.byIdOrDefault(favorite.video.site), Modifier.fillMaxWidth().height(210.dp), true)
-                                Text(favorite.video.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Copy("${SiteRegistry.byIdOrDefault(favorite.video.site).name} · 第 ${favorite.page} 页")
-                                TextAction({ app.library.personal.toggleImageFavorite(favorite.video, favorite.page, favorite.pageUrl, favorite.imageUrl) }) { Text("取消收藏") }
+                                Column(Modifier.fillMaxWidth().background(RentalPaper).rentalStock().padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text(favorite.video.title, color = RentalInk, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text("${SiteRegistry.byIdOrDefault(favorite.video.site).name} · 第 ${favorite.page} 页",
+                                        color = RentalInk.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall)
+                                }
+                                TextAction({ app.library.personal.toggleImageFavorite(favorite.video, favorite.page, favorite.pageUrl, favorite.imageUrl) }) { Text("取消收藏", color = RentalMuted) }
                             }
                         }
                         if (row.size < shelfColumns) Spacer(Modifier.weight(1f))
@@ -121,23 +139,31 @@ import kotlinx.coroutines.*
                 if (video.site == SiteRegistry.LOCAL.id) listOf("移除本地副本" to { dialogs.confirm("移除「${video.title}」的本地副本？", body = "原始文件和阅读记录保留，重新导入同一内容可恢复。") { dialogs.content = { LocalRemoveDialog(app, video) { dialogs.dismiss() } } } }) else emptyList()
             })
         }
-    } else LazyColumn(Modifier.fillMaxSize().testTag("library-hub"), contentPadding = PaddingValues(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    } else LazyColumn(
+        Modifier.fillMaxSize().testTag("library-hub"), contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         item("shortcuts") {
             val shortcuts = listOf("记录" to R.drawable.ic_history, "收藏" to R.drawable.ic_bookmark,
                 "下载" to R.drawable.ic_download, "更新" to R.drawable.ic_updates)
             val columns = if (configuration.fontScale > 1.3f || windowSizeDp().width < 360) 2 else 4
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                shortcuts.chunked(columns).forEach { row -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { (label, icon) ->
-                        val target = Modifier.weight(1f).heightIn(min = 56.dp).clip(RoundedCornerShape(10.dp)).clickable { task(label) }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                shortcuts.chunked(columns).forEach { row -> Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(RentalSurface).rentalStock()
+                        .border(1.dp, RentalEdge.copy(alpha = .75f), RoundedCornerShape(4.dp)),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    row.forEachIndexed { index, (label, icon) ->
+                        if (index > 0) Spacer(Modifier.size(1.dp, 28.dp).background(RentalEdge.copy(alpha = .6f)))
+                        val target = Modifier.weight(1f).heightIn(min = 56.dp).clickable(role = Role.Button) { task(label) }
                         if (configuration.fontScale > 1.3f) Row(target.padding(12.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Glyph(icon, null, Modifier.size(24.dp))
-                            Text(label, style = MaterialTheme.typography.labelLarge)
-                        } else Column(target.padding(horizontal = 8.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Box(Modifier.size(36.dp).contentPanel(10), contentAlignment = Alignment.Center) { Glyph(icon, null, Modifier.size(22.dp)) }
-                            Text(label, style = MaterialTheme.typography.labelLarge)
+                            CompositionLocalProvider(LocalContentColor provides RentalPaper) { Glyph(icon, null, Modifier.size(24.dp)) }
+                            Text(label, color = RentalPaper, style = MaterialTheme.typography.labelLarge)
+                        } else Column(target.padding(horizontal = 4.dp, vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            CompositionLocalProvider(LocalContentColor provides RentalPaper) { Glyph(icon, null, Modifier.size(22.dp)) }
+                            Text(label, color = RentalPaper, style = MaterialTheme.typography.labelLarge)
                         }
                     }
                 } }
@@ -148,7 +174,11 @@ import kotlinx.coroutines.*
             0 -> {
                 item("shelf-heading") { Row(verticalAlignment = Alignment.CenterVertically) {
                     Copy("${snapshot.shelves.size} 个片单", Modifier.weight(1f))
-                    TextAction({ dialogs.edit("新建合集", validate = { if (it.isBlank() || it.length > 80) "请输入 1–80 个字" else null }) { selected = app.library.personal.createShelf(it) } }) { Text("新建") }
+                    Action("新建", primary = true, icon = R.drawable.ic_add) {
+                        dialogs.edit("新建合集", validate = { if (it.isBlank() || it.length > 80) "请输入 1–80 个字" else null }) {
+                            selected = app.library.personal.createShelf(it)
+                        }
+                    }
                 } }
                 items(snapshot.shelves.displayOrder().chunked(shelfColumns), key = { "shelf:${it.first().id}" }) { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -165,7 +195,7 @@ import kotlinx.coroutines.*
             1 -> {
                 item("smart-heading") { Row(verticalAlignment = Alignment.CenterVertically) {
                     Copy("按规则自动整理", Modifier.weight(1f))
-                    TextAction({ newSmartShelf(dialogs, app) }) { Text("新建智能片单") }
+                    Action("新建智能片单", primary = true, icon = R.drawable.ic_add) { newSmartShelf(dialogs, app) }
                 } }
                 items(snapshot.smartShelves.chunked(shelfColumns), key = { "smart:${it.first().id}" }) { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -174,28 +204,22 @@ import kotlinx.coroutines.*
                     }
                 }
                 if (snapshot.smartShelves.isEmpty()) item("smart-empty") {
-                    Column(Modifier.padding(vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Title("让片单自己整理")
-                        Copy("按未看完、已离线未看或最近加入，自动归集已有作品。")
-                    }
+                    LibraryNotice("让片单自己整理", "按未看完、已离线未看或最近加入，自动归集已有作品。")
                 }
             }
             else -> {
                 val local = catalog.filter { it.video.site == SiteRegistry.LOCAL.id }
-                item("local-heading") { Copy("${local.size} 本已导入 · 可离线阅读") }
+                item("local-heading") { Copy("${local.size} 部已导入 · 可离线打开") }
                 items(local, key = { "local:${it.video.entryKey}" }) { entry ->
                     ShelfCover(entry.video.title, entry.progress, listOf(entry.video)) { play(entry.video) }
                 }
                 if (local.isEmpty()) item("local-empty") {
-                    Column(Modifier.padding(vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Title("把喜欢的内容带在身边")
-                        Copy("导入 CBZ、ZIP 或图片目录，整理成自己的离线书库。")
-                    }
+                    LibraryNotice("还没有本地作品", "导入视频、CBZ、ZIP 或图片目录后，可以在这里离线打开。")
                 }
-                item("local-all") { NavigationRow("本地导入 · ${local.size} 本", R.drawable.ic_download) { selected = "local" } }
+                item("local-all") { NavigationRow("本地导入 · ${local.size} 部", R.drawable.ic_download) { selected = "local" } }
             }
         }
-        item("other-heading") { HorizontalDivider(color = RaisedColor); Spacer(Modifier.height(18.dp)); Title("更多内容") }
+        item("other-heading") { Title("更多内容", Modifier.padding(top = 12.dp)) }
         item("images") { NavigationRow("单图收藏 · ${snapshot.imageFavorites.size} 张", R.drawable.ic_bookmark) { selected = "images" } }
         item("subscriptions") { NavigationRow("标签订阅", R.drawable.ic_updates) { task("标签订阅") } }
         item("import") { NavigationRow("导入 CBZ / ZIP / 图片目录", R.drawable.ic_add, click = importLocal) }
@@ -203,21 +227,57 @@ import kotlinx.coroutines.*
     }
 }
 
+@Composable internal fun LibraryNotice(title: String, body: String, action: (@Composable () -> Unit)? = null) {
+    val shape = RoundedCornerShape(4.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(RentalSurface).rentalStock().border(1.dp, RentalEdge, shape)
+        .padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Title(title)
+        Copy(body)
+        action?.invoke()
+    }
+}
+
 @Composable private fun ShelfCover(title: String, subtitle: String, covers: List<Video>, modifier: Modifier = Modifier, note: String = "", pinned: Boolean = false, click: () -> Unit) {
-    val compact = LocalUiDensity.current.compact
-    Row(modifier.fillMaxWidth().contentPanel(12).clickable(onClick = click).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(if (covers.isEmpty()) 56.dp else if (compact) 72.dp else 80.dp), contentAlignment = Alignment.Center) {
-            if (covers.isEmpty()) Box(Modifier.fillMaxSize().contentPanel(8).background(RaisedColor), contentAlignment = Alignment.Center) {
-                Glyph(R.drawable.ic_bookmark, null, Modifier.size(28.dp))
+    val sleeve = RoundedCornerShape(4.dp)
+    Row(modifier.fillMaxWidth().clip(sleeve).border(1.dp, RentalEdge, sleeve).background(RentalPaper).rentalStock()
+        .clickable(role = Role.Button, onClick = click).padding(2.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        val thumb = Modifier.size(94.dp, 70.dp).clip(RoundedCornerShape(2.dp))
+        if (covers.isEmpty()) {
+            Box(thumb.background(RentalSurface).rentalStock(), contentAlignment = Alignment.Center) {
+                EmptyTapeArt(Modifier.size(66.dp, 39.dp))
             }
-            covers.reversed().forEachIndexed { i, video -> SiteImage(video.thumb, SiteRegistry.byIdOrDefault(video.site), Modifier.padding(start = (i * 18).dp).width(56.dp).height(if (compact) 72.dp else 80.dp).clip(RoundedCornerShape(6.dp)), true) }
+        } else Row(thumb.background(RentalSurface), horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+            covers.take(3).forEach { video ->
+                SiteImage(video.thumb, SiteRegistry.byIdOrDefault(video.site), Modifier.weight(1f).fillMaxHeight())
+            }
         }
-        Column(Modifier.weight(1f).padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (pinned) Copy("已置顶")
-            Title(title); Copy(subtitle)
-            if (note.isNotBlank()) Text(note, color = MutedColor, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 7.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, color = RentalInk, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(subtitle, color = RentalInk.copy(alpha = .76f), style = MaterialTheme.typography.bodySmall)
+            if (pinned) Text("已置顶", color = RentalInk, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+            if (note.isNotBlank()) Text(note, color = RentalInk.copy(alpha = .78f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        Glyph(R.drawable.ic_chevron_right, null, Modifier.size(16.dp))
+        CompositionLocalProvider(LocalContentColor provides RentalInk) {
+            Glyph(R.drawable.ic_chevron_right, null, Modifier.padding(end = 8.dp).size(16.dp))
+        }
+    }
+}
+
+@Composable private fun EmptyTapeArt(modifier: Modifier) {
+    val shape = RoundedCornerShape(3.dp)
+    Canvas(modifier.clip(shape).background(RentalInk).border(1.dp, RentalMuted.copy(alpha = .65f), shape)) {
+        val w = size.width
+        val h = size.height
+        drawRect(RentalPaper, Offset(w * .10f, h * .14f), Size(w * .8f, h * .16f))
+        drawRect(RentalRed, Offset(w * .10f, h * .26f), Size(w * .8f, h * .06f))
+        drawRect(RentalSurface, Offset(w * .12f, h * .42f), Size(w * .76f, h * .38f))
+        for (x in listOf(.25f, .75f)) {
+            val center = Offset(w * x, h * .61f)
+            drawCircle(RentalMuted, h * .145f, center)
+            drawCircle(RentalInk, h * .060f, center)
+        }
+        drawRect(RentalBlue.copy(alpha = .65f), Offset(w * .40f, h * .55f), Size(w * .20f, h * .12f))
     }
 }
 

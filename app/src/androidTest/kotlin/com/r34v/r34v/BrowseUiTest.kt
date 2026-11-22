@@ -15,7 +15,7 @@ class BrowseUiTest : ComposeUiCase() {
         assertTrue("The hero must be visible on the initial viewport", ui.onNodeWithTag("home-carousel").fetchSemanticsNode().boundsInRoot.height > f.ins.targetContext.resources.displayMetrics.density * 200)
         f.shot("01-home")
         ui.onNodeWithContentDescription("暂停轮播").performClick(); ui.onNodeWithContentDescription("继续轮播").assertExists()
-        ui.onNodeWithContentDescription("内容列表").performScrollToIndex(5)
+        repeat(3) { ui.onNodeWithContentDescription("内容列表").performTouchInput { swipeUp() } }
         ui.waitUntil(15000) { f.requests.any { it.first == "r34v" && it.second.page == 2 } }
         clickText("搜索"); ui.onNodeWithContentDescription("提交搜索").performClick(); waitText("请输入关键词")
         ui.onNode(hasSetTextAction()).performTextInput("sample query"); clickText("标签"); ui.onNodeWithContentDescription("提交搜索").performClick()
@@ -40,20 +40,26 @@ class BrowseUiTest : ComposeUiCase() {
         val field = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
         fun engine() = field.get(activity) as? androidx.media3.exoplayer.ExoPlayer
         fun ready() { ui.waitUntil(20000) { var ready = false; f.ins.runOnMainSync { ready = engine()?.playbackState == androidx.media3.common.Player.STATE_READY }; ready } }
-        ready(); ui.onNodeWithContentDescription("清晰度，当前 720p").performScrollTo().performClick()
+        fun showControls() {
+            if (ui.onAllNodesWithContentDescription("播放器菜单").fetchSemanticsNodes().isEmpty()) {
+                ui.onNodeWithTag("player-surface").performTouchInput { click() }
+                ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("播放器菜单").fetchSemanticsNodes().isNotEmpty() }
+            }
+        }
+        ready(); showControls(); ui.onNodeWithContentDescription("清晰度，当前 720p").performClick()
         ui.onNode(hasText("720p") and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role, androidx.compose.ui.semantics.Role.RadioButton))
             .assertIsSelected(); f.shot("05-player-quality"); ui.onNodeWithText("480p").performScrollTo().performClick(); ready()
-        ui.onNodeWithContentDescription("播放速度，当前 1.0 倍").performScrollTo().performClick()
+        showControls(); ui.onNodeWithContentDescription("播放速度，当前 1.0 倍").performClick()
         ui.onNodeWithText("2.0×").performScrollTo().assertIsDisplayed(); f.shot("05-player-speed")
         ui.onNodeWithText("取消").assertIsDisplayed()
         ui.onNodeWithText("2.0×").performClick()
         ui.runOnIdle { assertEquals(2f, engine()!!.playbackParameters.speed, .001f); engine()!!.seekTo(2000) }
         f.shot("05-player")
-        if (ui.onAllNodesWithContentDescription("全屏").fetchSemanticsNodes().isEmpty()) ui.onNodeWithTag("player-surface").performTouchInput { click() }
+        showControls()
         ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("全屏").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithContentDescription("全屏").performClick(); ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("退出全屏").fetchSemanticsNodes().isNotEmpty() }
         f.shot("06-player-fullscreen"); back(f)
-        ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("清晰度，当前 480p").fetchSemanticsNodes().isNotEmpty() }
+        showControls(); ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("清晰度，当前 480p").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithContentDescription("清晰度，当前 480p").assertExists()
         ui.runOnIdle { activity.recreate() }; waitText("${f.video().title}")
         ui.waitUntil(15000) { f.app.library.watch(f.video().id)?.position?.let { it >= 1 } == true }

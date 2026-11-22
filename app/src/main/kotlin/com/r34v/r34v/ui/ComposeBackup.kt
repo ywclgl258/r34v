@@ -9,13 +9,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
@@ -82,11 +82,11 @@ private fun InputStream.readBackup(): ByteArray {
         if (preview == null) {
             if (mode == 0 || sourceUri != null) TextField(password, { password = it; status = null }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text("备份密码") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(), colors = filledFieldColors(),
-                shape = RoundedCornerShape(16.dp),
+                shape = RentalShape,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
             if (mode == 0) TextField(confirmation, { confirmation = it }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text("再次输入密码") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(), colors = filledFieldColors(),
-                shape = RoundedCornerShape(16.dp),
+                shape = RentalShape,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
             if (mode == 0) {
                 Copy("密码至少 8 个字符。恢复备份时需要此密码。")
@@ -139,6 +139,6 @@ private fun InputStream.readBackup(): ByteArray {
             TextAction({ preview = null }, enabled = !busy) { Text("取消恢复") }
         }
         if (busy) Loading(title = if (preview == null) "正在处理备份" else "正在合并数据")
-        status?.let { Text(it) }
+        status?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
     }
 }

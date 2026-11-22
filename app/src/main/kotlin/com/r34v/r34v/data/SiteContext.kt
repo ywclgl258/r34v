@@ -184,7 +184,7 @@ object SiteRegistry {
         mirrors = listOf("missav.media"),
         mediaDomains = setOf("mrstcdn.store"),
         accent = 0xFFE23E57.toInt(),
-        accessNote = "主域名被拦截时自动改用镜像",
+        accessNote = "受限时切换镜像",
     )
 
     /**
@@ -213,7 +213,7 @@ object SiteRegistry {
         id = "kbj", name = "KBJ", base = "https://kbj.im", host = "kbj.im",
         mediaDomains = setOf("i1.wp.com"),
         accent = 0xFFF59E0B.toInt(),
-        accessNote = "播放器由第三方托管，需在浏览器打开",
+        accessNote = "浏览器播放",
     )
 
     /** kbjfree.com — Next.js 版 BJ 录播站，列表数据在 RSC payload，播放地址是 CDN 上的 mp4。 */
@@ -233,7 +233,7 @@ object SiteRegistry {
 
     val NETFLAV = SiteContext(
         id = "netflav", name = "Netflav", base = "https://netflav.com", host = "netflav.com",
-        accessNote = "播放通过原站打开",
+        accessNote = "原站播放",
     )
 
     val WNACG = SiteContext(
@@ -252,7 +252,7 @@ object SiteRegistry {
             "cdn-msp.jmcomic-zzz.one", "cdn-msp2.jmcomic-zzz.one", "cdn-msp3.jmcomic-zzz.one",
         ),
         mediaKind = MediaKind.GALLERY, category = SiteCategory.COMIC,
-        accessNote = "按当前网络自动选择镜像",
+        accessNote = "自动选择镜像",
     )
 
     val all: List<SiteContext> get() = listOf(

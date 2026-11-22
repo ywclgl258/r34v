@@ -1,23 +1,24 @@
 package com.r34v.r34v.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.r34v.r34v.R
 import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
 import com.r34v.r34v.data.adapter.*
@@ -87,16 +88,25 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
     val sites = searchableSiteIds(app.network).mapNotNull(SiteRegistry::byId)
     content = {
         var checked by remember { mutableStateOf(selected.toSet().ifEmpty { sites.map { it.id }.toSet() }) }
-        AlertDialog(::dismiss, title = { Text("搜索来源") }, text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                sites.forEach { site -> CheckRow("${site.name} · ${site.category.title}", site.id in checked) {
-                    checked = if (it) checked + site.id else checked - site.id
-                } }
+        AlertDialog(::dismiss, title = { Title("搜索来源", large = true) }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Copy("已选择 ${checked.size} 个站点")
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                    sites.forEach { site ->
+                        CheckRow("${site.name} · ${site.category.title}", site.id in checked) {
+                            checked = if (it) checked + site.id else checked - site.id
+                        }
+                    }
+                }
             }
-        }, confirmButton = {
+        }, shape = RoundedCornerShape(6.dp), containerColor = RentalInk, titleContentColor = RentalPaper,
+            textContentColor = RentalMuted, tonalElevation = 0.dp, confirmButton = {
             Row {
                 TextAction({ checked = sites.map { it.id }.toSet() }) { Text("全选") }
-                TextAction({ dismiss(); action(sites.filter { it.id in checked }.map { it.id }) }, enabled = checked.isNotEmpty()) { Text("确定") }
+                Action("确定", primary = true, enabled = checked.isNotEmpty()) {
+                    dismiss()
+                    action(sites.filter { it.id in checked }.map { it.id })
+                }
             }
         }, dismissButton = { TextAction(::dismiss) { Text("取消") } })
     }
@@ -106,8 +116,6 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
     play: (Video) -> Unit, favorite: (Video) -> Unit, rulesVersion: Int, initialCategory: String = "", languages: Map<String, String> = emptyMap(),
     categoryChanged: (String) -> Unit = {}, save: (() -> Unit)? = null, condition: SearchCondition? = null) {
     var category by rememberSaveable(initialCategory) { mutableIntStateOf(SiteCategory.entries.indexOfFirst { it.name == initialCategory } + 1) }
-    // 来源筛选：空集=全部来源。分组标题会让同一关键词的结果被切成十几段，
-    // 混合瀑布流更接近“一次搜索看全部来源”的预期。
     var only by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(query, sites, rulesVersion, languages, condition) { state.search(app, query, sites, languageOverrides = languages, condition = condition) }
     val columns = when {
@@ -119,54 +127,90 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
         else -> 2
     }
     val visible = sites.filter { category == 0 || SiteRegistry.byIdOrDefault(it).category == SiteCategory.entries[category - 1] }
-    // 切换内容分类后，旧的来源选择可能已不在当前分类里：那样会把所有结果与“加载更多”都过滤掉，
-    // 而来源选择器又只在 visible.size > 1 时显示，用户就看不到任何清除入口。
-    val activeOnly = only.takeIf { it.isNotBlank() && it in visible }.orEmpty()
-    val merged = remember(state.buckets, visible, activeOnly) {
-        visible.filter { activeOnly.isBlank() || activeOnly == it }
-            .flatMap { id -> (state.buckets[id]?.videos.orEmpty()).map { it.copy(site = id) } }
+    val activeOnly = only.takeIf { it in visible }.orEmpty()
+    val activeSites = if (activeOnly.isBlank()) visible else listOf(activeOnly)
+    val merged = remember(state.buckets, activeSites) {
+        activeSites.flatMap { id -> (state.buckets[id]?.videos.orEmpty()).map { it.copy(site = id) } }
             .distinctBy { it.entryKey }
     }
-    val failures = visible.mapNotNull { id -> state.buckets[id]?.takeIf { it.error != null }?.let { SiteRegistry.byIdOrDefault(id).name to it } }
-    val busy = visible.any { state.buckets[it]?.busy == true }
-    val density = LocalUiDensity.current
-    val grid = rememberScrollState()
-    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().testTag("cross-search-results"),
-        contentPadding = PaddingValues(start = density.pagePadding, end = density.pagePadding, top = 12.dp, bottom = 120.dp),
-        horizontalArrangement = Arrangement.spacedBy(density.cardGap), verticalItemSpacing = 10.dp) {
+    val failures = activeSites.mapNotNull { id -> state.buckets[id]?.error?.let { id to it } }
+    val busy = activeSites.any { state.buckets[it]?.busy == true }
+    LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().background(RentalInk).testTag("cross-search-results"),
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 32.dp),
+        horizontalArrangement = Arrangement.spacedBy(9.dp), verticalItemSpacing = 10.dp) {
         item(span = StaggeredGridItemSpan.FullLine, key = "head") {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Title(if (query.isBlank()) "高级条件搜索" else "搜索：$query")
-                if (condition != null && !condition.isEmpty) Copy("已应用组合条件；各来源的实际筛选范围如下。")
-                Choices(listOf("全部") + SiteCategory.entries.map { it.title }, category) { category = it; categoryChanged(if (it == 0) "" else SiteCategory.entries[it - 1].name) }
-                if (visible.size > 1 || activeOnly.isNotBlank()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Choice("全部来源 · ${visible.sumOf { state.buckets[it]?.videos?.size ?: 0 }}", activeOnly.isBlank()) { only = "" }
-                    visible.forEach { id ->
-                        val bucket = state.buckets[id]
-                        Choice("${SiteRegistry.byIdOrDefault(id).name} · ${bucket?.videos?.size ?: 0}", activeOnly == id) { only = if (activeOnly == id) "" else id }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Title(if (query.isBlank()) "高级条件搜索" else "搜索：$query", large = true, maxLines = 3)
+                if (condition != null && !condition.isEmpty && query.isNotBlank()) Copy("已应用高级筛选")
+                ContentTabs(listOf("全部") + SiteCategory.entries.map { it.title }, category) { index ->
+                    category = index
+                    categoryChanged(if (index == 0) "" else SiteCategory.entries[index - 1].name)
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (visible.size > 1 || activeOnly.isNotBlank()) SearchSourceFilter(visible, activeOnly, state.buckets) { only = it }
+                    else if (visible.size == 1) Copy(SiteRegistry.byIdOrDefault(visible.first()).name)
+                    if (merged.isNotEmpty()) Copy("已加载 ${merged.size} 项")
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (save != null) TextAction(save) {
+                        Glyph(R.drawable.ic_bookmark, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("保存搜索方案")
+                    }
+                    TextAction({ state.search(app, query, sites, force = true, languageOverrides = languages, condition = condition) }) {
+                        Text("刷新全部来源", color = RentalMuted)
                     }
                 }
-                Copy("结果按来源混合排列；点上方站点只显示该站。")
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TextAction({ state.search(app, query, sites, force = true, languageOverrides = languages, condition = condition) }) { Text("刷新全部来源") }
-                    if (save != null) TextAction(save) { Text("保存搜索方案") }
-                }
-                if (failures.isNotEmpty()) failures.forEach { (name, bucket) -> Copy("$name：${bucket.error}") }
+                HorizontalDivider(color = RentalEdge)
             }
         }
         items(merged.size, key = { merged[it].entryKey }, contentType = { "result" }) { index ->
             val video = merged[index]
             MediaCard(video, menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) }
         }
+        if (failures.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, key = "source-errors") {
+            Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Title("来源状态")
+                failures.forEach { (id, message) ->
+                    Row(Modifier.fillMaxWidth().background(RentalSurface, RoundedCornerShape(4.dp))
+                        .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(SiteRegistry.byIdOrDefault(id).name, color = RentalPaper, style = MaterialTheme.typography.titleMedium)
+                            Copy(message)
+                        }
+                        TextAction({ state.refreshSource(app, query, id) }) { Text("刷新来源") }
+                    }
+                }
+            }
+        }
         item(span = StaggeredGridItemSpan.FullLine, key = "status") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (busy) Loading(title = "正在搜索 ${visible.size} 个来源")
-                if (!busy && merged.isEmpty() && failures.isEmpty()) Copy("当前条件下暂无结果")
-                if (!busy) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    visible.filter { activeOnly.isBlank() || activeOnly == it }
-                        .filter { state.buckets[it]?.more == true && state.buckets[it]?.busy != true && state.buckets[it]?.error == null }
-                        .forEach { id -> Action("加载 ${SiteRegistry.byIdOrDefault(id).name} 更多") { state.load(app, query, id) } }
+                if (busy) Loading(title = "正在搜索 ${activeSites.count { state.buckets[it]?.busy == true }} 个来源")
+                if (!busy && merged.isEmpty() && failures.isEmpty()) Copy("当前条件下暂无结果", Modifier.padding(vertical = 16.dp))
+                if (!busy) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    activeSites.filter { state.buckets[it]?.more == true && state.buckets[it]?.error == null }
+                        .forEach { id -> Action("加载 ${SiteRegistry.byIdOrDefault(id).name} 下一页") { state.load(app, query, id) } }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchSourceFilter(sites: List<String>, active: String, buckets: Map<String, SearchBucket>, select: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Selector(if (active.isBlank()) "全部来源" else SiteRegistry.byIdOrDefault(active).name) { open = true }
+        DropdownMenu(open, { open = false }) {
+            (listOf("") + sites).forEach { id ->
+                val name = if (id.isBlank()) "全部来源" else SiteRegistry.byIdOrDefault(id).name
+                val count = if (id.isBlank()) sites.sumOf { buckets[it]?.videos?.size ?: 0 } else buckets[id]?.videos?.size ?: 0
+                DropdownMenuItem(
+                    text = { Text("$name · $count") },
+                    onClick = { open = false; select(id) },
+                    trailingIcon = if (active == id) ({ Glyph(R.drawable.ic_check, null) }) else null,
+                )
             }
         }
     }

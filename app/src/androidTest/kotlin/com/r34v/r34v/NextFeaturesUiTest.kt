@@ -80,6 +80,8 @@ class NextFeaturesUiTest : ComposeUiCase() {
         ui.waitUntil(15000) { ui.onAllNodesWithTag("reader-page-1").fetchSemanticsNodes().isNotEmpty() }
         readerTool("页面缩略图总览")
         waitText("页面总览 · 1 / 8")
+        ui.onNodeWithContentDescription("跳到第 1 页").assertIsSelected()
+        f.shot("reader-page-overview")
         ui.onNodeWithContentDescription("跳到第 6 页").performScrollTo().performClick()
         ui.waitUntil(15000) { f.app.library.reading(f.video("ehentai").id, "ehentai")?.page == 6 }
         f.shot("next-thumbnails-jump")
