@@ -13,6 +13,8 @@ import android.provider.Settings
 import android.util.Base64
 import android.view.View
 import android.view.WindowManager
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -62,18 +64,16 @@ class BrowseUiTest : ComposeUiCase() {
         val title = f.video().title
         val originalOrientation = ui.runOnIdle { activity.resources.configuration.orientation }
         val field = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
-        waitForDecodedVideo(f); showPlayerControls()
+        waitForDecodedVideo(f)
+        openPlaybackOption("清晰度")
         // Startup quality adapts to the process-wide measured link speed.
-        val initialQuality = listOf("720p", "480p").first { label ->
-            ui.onAllNodesWithContentDescription("清晰度，当前 $label").fetchSemanticsNodes().isNotEmpty()
-        }
+        val initialQuality = ui.onNode(hasAnyQualityOption() and isSelected()).fetchSemanticsNode()
+            .config[SemanticsProperties.Text].single().text
         val changedQuality = if (initialQuality == "720p") "480p" else "720p"
-        ui.onNodeWithContentDescription("清晰度，当前 $initialQuality").performClick()
-        ui.onNode(hasText(initialQuality) and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role, androidx.compose.ui.semantics.Role.RadioButton))
-            .assertIsSelected(); f.shot("05-player-quality")
+        f.shot("05-player-quality")
         ui.onNodeWithText(changedQuality).performScrollTo().performClick(); waitForDecodedVideo(f)
         assertEquals(changedQuality, f.app.library.string("quality"))
-        showPlayerControls(); ui.onNodeWithContentDescription("播放速度，当前 1.0 倍").performClick()
+        openPlaybackOption("播放速度")
         ui.onNodeWithText("2.0×").performScrollTo().assertIsDisplayed(); f.shot("05-player-speed")
         ui.onNodeWithText("取消").assertIsDisplayed()
         ui.onNodeWithText("2.0×").performClick()
@@ -179,6 +179,15 @@ class BrowseUiTest : ComposeUiCase() {
         }
     }
 
+    private fun hasAnyQualityOption() = (hasText("720p") or hasText("480p")) and
+        SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.RadioButton)
+
+    private fun openPlaybackOption(label: String) {
+        showPlayerControls()
+        ui.onNodeWithContentDescription("播放器菜单").performClick()
+        ui.onNode(hasText(label) and hasClickAction()).performScrollTo().performClick()
+    }
+
     private fun showPlayerControls() {
         val menu = ui.onNodeWithContentDescription("播放器菜单")
         if (!menu.isDisplayed()) {
@@ -224,29 +233,34 @@ class BrowseUiTest : ComposeUiCase() {
         return requireNotNull(recreated)
     }
 
-    @Test fun aStoredAutoDowngradeDoesNotPinTheNextPlayback() = ComposeFixture().use { f ->
+    @Test fun aStoredAutoDowngradeDoesNotPinTheNextPlayback(): Unit = ComposeFixture().use { f ->
         val link = f.app.linkSpeed
         val sampled = LinkSpeed::class.java.getDeclaredField("sampled").apply { isAccessible = true }
         val seeded = LinkSpeed::class.java.getDeclaredField("seeded").apply { isAccessible = true }
         val sampledAt = LinkSpeed::class.java.getDeclaredField("sampledAt").apply { isAccessible = true }
         val seededAt = LinkSpeed::class.java.getDeclaredField("seededAt").apply { isAccessible = true }
-        var previous: List<Long> = listOf(0L, 0L, 0L, 0L)
-        f.ins.runOnMainSync { previous = listOf(sampled.getInt(link).toLong(), seeded.getInt(link).toLong(), sampledAt.getLong(link), seededAt.getLong(link)) }
+        val (epoch, previous) = synchronized(link) {
+            link.routeEpoch() to listOf(sampled.getInt(link).toLong(), seeded.getInt(link).toLong(), sampledAt.getLong(link), seededAt.getLong(link))
+        }
         f.app.library.set("quality", "720p")
         val video = f.video()
         // 旧版会把自动降档的结果写回本片偏好，之后网络再好也永远从 480p 起播。
         f.app.library.saveWatch(Watch(video.id, video.title, video.thumb, video.url, 5, 300, quality = "480p", site = video.site))
         try {
-            // 固定成健康链路，并让注入值被当作“刚测到”。
-            f.ins.runOnMainSync { sampled.setInt(link, 0); seeded.setInt(link, 20_000); sampledAt.setLong(link, 0); seededAt.setLong(link, 0) }
-            val activity = f.launchPlayer()
-            val field = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
-            ui.waitUntil(20000) { var ready = false; f.ins.runOnMainSync { ready = (field.get(activity) as? androidx.media3.common.Player)?.playbackState == androidx.media3.common.Player.STATE_READY }; ready }
-            ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("清晰度，当前 720p").fetchSemanticsNodes().isNotEmpty() }
+            synchronized(link) {
+                sampled.setInt(link, 0)
+                assertTrue(link.seed(20_000, epoch))
+            }
+            f.launchPlayer()
+            waitForDecodedVideo(f)
+            openPlaybackOption("清晰度")
+            ui.onNode(hasAnyQualityOption() and hasText("720p")).assertIsSelected()
         } finally {
-            f.ins.runOnMainSync {
-                sampled.setInt(link, previous[0].toInt()); seeded.setInt(link, previous[1].toInt())
-                sampledAt.setLong(link, previous[2]); seededAt.setLong(link, previous[3])
+            synchronized(link) {
+                if (link.routeEpoch() == epoch) {
+                    sampled.setInt(link, previous[0].toInt()); seeded.setInt(link, previous[1].toInt())
+                    sampledAt.setLong(link, previous[2]); seededAt.setLong(link, previous[3])
+                }
             }
         }
     }
