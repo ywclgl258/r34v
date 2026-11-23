@@ -200,16 +200,23 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
         val link = fixture.app.linkSpeed
         val sampled = field(link, "sampled")
         val seeded = field(link, "seeded")
-        val original = main { sampled.getInt(link) to seeded.getInt(link) }
+        val sampledAt = field(link, "sampledAt")
+        val seededAt = field(link, "seededAt")
+        val original = main { listOf(sampled.getInt(link), seeded.getInt(link), sampledAt.getLong(link), seededAt.getLong(link)) }
         try {
             run { kbps ->
                 sampled.setInt(link, 0)
                 seeded.setInt(link, kbps)
+                // 注入值没有时间戳，按“刚测到”处理，避免长轮次被判成过期。
+                sampledAt.setLong(link, 0)
+                seededAt.setLong(link, 0)
             }
         } finally {
             main {
-                sampled.setInt(link, original.first)
-                seeded.setInt(link, original.second)
+                sampled.setInt(link, original[0] as Int)
+                seeded.setInt(link, original[1] as Int)
+                sampledAt.setLong(link, original[2] as Long)
+                seededAt.setLong(link, original[3] as Long)
             }
         }
     }

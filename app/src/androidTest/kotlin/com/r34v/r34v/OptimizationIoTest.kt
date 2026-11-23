@@ -143,9 +143,9 @@ class OptimizationIoTest : ComposeUiCase() {
         ui.waitUntil(20000) { f.app.galleryDownloads.task(f.video("ehentai"))?.state == GalleryDownloadState.COMPLETED }
         f.launchDownloads()
         val row = hasTestTag("download-gallery:${f.app.galleryDownloads.key(f.video("ehentai"))}")
-        val offlineAction = hasAnyAncestor(row) and hasText("离线打开")
+        val complete = hasAnyAncestor(row) and hasText("已完成 ·", substring = true)
         ui.onNodeWithTag("download-center").performScrollToNode(row)
-        ui.waitUntil(15000) { ui.onAllNodes(offlineAction).fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(15000) { ui.onAllNodes(complete).fetchSemanticsNodes().isNotEmpty() }
         runBlocking { delay(1200) }
         val id = MessageDigest.getInstance("SHA-256").digest(f.video("ehentai").id.toByteArray()).joinToString("") { "%02x".format(it) }
         val book = File(f.app.storage.layout().comics, "ehentai/$id")

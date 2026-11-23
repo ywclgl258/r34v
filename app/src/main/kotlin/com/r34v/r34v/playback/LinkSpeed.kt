@@ -4,6 +4,7 @@ package com.r34v.r34v.playback
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.media3.exoplayer.upstream.BandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 
@@ -28,21 +29,52 @@ class LinkSpeed(context: Context) {
     /** 起播前探测得到的估计（kbps）。 */
     @Volatile private var seeded = 0
 
+    /** 证据时间；0 表示由测试直接注入的值，不做过期判断。 */
+    @Volatile private var sampledAt = 0L
+    @Volatile private var seededAt = 0L
+
     init {
         meter.addEventListener(Handler(Looper.getMainLooper()), object : BandwidthMeter.EventListener {
             override fun onBandwidthSample(elapsedMs: Int, bytes: Long, bitrate: Long) {
+                // 播放列表、清单和 1 KB 级的探测只有往返延迟，没有吞吐量。让它们写进估计，
+                // 会让一个 HLS 站点把整个进程的档位钉在最低档（见 PlayerActivity.chosenStream）。
+                if (bytes < MIN_SAMPLE_BYTES) return
                 val estimate = (bitrate / 1000).toInt()
-                if (estimate > 0) sampled = estimate
+                if (estimate > 0) { sampled = estimate; sampledAt = SystemClock.elapsedRealtime() }
             }
         })
     }
 
-    /** 播放实测优先；没有播放实测时用探测值。两者都没有就返回 0，调用方按“未知”处理。 */
-    fun estimateKbps(): Int = StreamSelection.mergeEstimates(sampled, seeded)
+    /**
+     * 播放实测优先；没有播放实测时用探测值。两者都没有就返回 0，调用方按“未知”处理。
+     *
+     * 证据有寿命：弱网下录到的一个低样本不该让整个进程此后永远按最低档起播，
+     * 换了网络之后更不该继续生效。过期后回到“未知”，由下一次探测重新测。
+     */
+    fun estimateKbps(): Int {
+        val now = SystemClock.elapsedRealtime()
+        val sample = sampled.takeIf { it > 0 && fresh(sampledAt, now) } ?: 0
+        val probe = seeded.takeIf { it > 0 && fresh(seededAt, now) } ?: 0
+        return StreamSelection.mergeEstimates(sample, probe)
+    }
 
-    /** 记录一次起播前探测，让本次播放立刻有依据选档。 */
+    private fun fresh(at: Long, now: Long) = at == 0L || now - at < ESTIMATE_TTL_MS
+
     fun seed(kbps: Int) {
-        if (kbps > 0) seeded = kbps
+        if (kbps > 0) { seeded = kbps; seededAt = SystemClock.elapsedRealtime() }
+    }
+
+    /**
+     * 丢掉旧证据。
+     *
+     * 估值是整个进程共享的，但网络随时会换：开关系统代理、Wi-Fi 与移动数据互切之后，
+     * 旧样本既不代表新链路的吞吐，也会让新会话继续按旧档位起播。代理变化时调用。
+     */
+    fun reset() {
+        sampled = 0
+        seeded = 0
+        sampledAt = 0L
+        seededAt = 0L
     }
 
     fun known(): Boolean = estimateKbps() > 0
@@ -50,5 +82,13 @@ class LinkSpeed(context: Context) {
     fun describe(): String {
         val value = estimateKbps()
         return if (value <= 0) "尚未测得链路速度" else "约 $value kbps（${"%.2f".format(value / 8.0 / 1024)} MB/s）"
+    }
+
+    private companion object {
+        /** 低于这个字节数的传输按延迟处理，不当作吞吐样本。 */
+        const val MIN_SAMPLE_BYTES = 16L * 1024
+
+        /** 证据有效期：过了这段时间就重新测，避免一次弱网把进程钉死在低档。 */
+        const val ESTIMATE_TTL_MS = 5 * 60_000L
     }
 }

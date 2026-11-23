@@ -103,7 +103,8 @@ class HlsPlaybackIntegrationTest : ComposeUiCase() {
             ui.waitUntil(15000) { runCatching { center.performScrollToNode(empty) }.isSuccess }
             center.performScrollToIndex(0)
             clickText("已完成"); center.performScrollToNode(tile)
-            ui.onNode(hasAnyAncestor(tile) and hasText("离线打开")).assertExists()
+            ui.onNode(hasAnyAncestor(tile) and hasText("已完成 ·", substring = true)).assertExists()
+            ui.onNode(hasAnyAncestor(tile) and hasText("离线打开")).assertDoesNotExist()
         } finally {
             f.ins.runOnMainSync {
                 activity?.finish(); f.app.playback.remove(key)

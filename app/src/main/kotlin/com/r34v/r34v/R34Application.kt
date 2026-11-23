@@ -59,7 +59,7 @@ class R34Application : Application() {
         playback.manager
         downloadPolicy.start()
         androidx.core.content.ContextCompat.registerReceiver(this, object : android.content.BroadcastReceiver() {
-            override fun onReceive(context: android.content.Context, intent: android.content.Intent) { network.invalidate() }
+            override fun onReceive(context: android.content.Context, intent: android.content.Intent) { network.invalidate(); linkSpeed.reset() }
         }, android.content.IntentFilter(android.net.Proxy.PROXY_CHANGE_ACTION), androidx.core.content.ContextCompat.RECEIVER_EXPORTED)
     }
 

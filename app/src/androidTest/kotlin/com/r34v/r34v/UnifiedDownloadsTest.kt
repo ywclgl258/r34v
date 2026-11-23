@@ -184,7 +184,8 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         f.offline = true
         try {
             repeat(3) {
-                ui.onNode(hasAnyAncestor(clipTag) and hasText("离线打开")).performClick()
+                ui.onNode(hasAnyAncestor(clipTag) and hasText("离线打开")).assertDoesNotExist()
+                ui.onNode(clipTag).performClick()
                 waitForDecodedVideo(f)
                 back(f)
                 // The system Back action can outlive Compose and accessibility becoming idle.
@@ -206,7 +207,8 @@ class UnifiedDownloadsTest : ComposeUiCase() {
             clickText("筛选 · 1")
             ui.onNode(clipTag).assertDoesNotExist()
             center.performScrollToNode(bookTag)
-            ui.onNode(hasAnyAncestor(bookTag) and hasText("离线打开")).performClick()
+            ui.onNode(hasAnyAncestor(bookTag) and hasText("离线打开")).assertDoesNotExist()
+            ui.onNode(bookTag).performClick()
             ui.waitUntil(15000) { ui.onAllNodesWithTag("reader-page-1").fetchSemanticsNodes().isNotEmpty() }
             assertEquals(galleryCalls, f.galleryCalls.size)
             assertEquals(imageRequests, f.imageRequests.size)

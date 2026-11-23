@@ -457,8 +457,11 @@ class GalleryActivity : ComponentActivity() {
     @Composable private fun GalleryJacket(gallery: GalleryDetail, metadata: String, startLabel: String, startPage: Int, open: () -> Unit) {
         val comic = site.category == SiteCategory.COMIC
         val heading: @Composable () -> Unit = {
+            // 漫画的标题与 108dp 封面同排，共用一列宽度；30sp 的标题在这一列里会连折几行，
+            // 把封面压成视觉配角。降到与视频详情页标题一致的一档，保留全宽写真页的大标题。
             Text(entry.title, Modifier.semantics { heading() }, color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
+                style = if (comic) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineLarge,
+                fontWeight = if (comic) FontWeight.Bold else FontWeight.Black)
             Copy(metadata)
         }
         Column(Modifier.fillMaxWidth().testTag(if (comic) "comic-stage" else "photo-stage"), verticalArrangement = Arrangement.spacedBy(10.dp)) {

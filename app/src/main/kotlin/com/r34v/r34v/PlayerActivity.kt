@@ -58,6 +58,7 @@ import com.r34v.r34v.data.*
 import com.r34v.r34v.playback.BufferPlan
 import com.r34v.r34v.playback.HlsDownloads
 import com.r34v.r34v.playback.HlsSeekSession
+import com.r34v.r34v.playback.MediaProbe
 import com.r34v.r34v.playback.StallPolicy
 import com.r34v.r34v.playback.StreamSelection
 import com.r34v.r34v.ui.*
@@ -174,7 +175,10 @@ class PlayerActivity : ComponentActivity() {
                         phase = null; status = "请在浏览器播放"; controls = true
                         return@launch
                     }
-                    val preferred = store.watch(video.id, video.site)?.quality?.takeIf(String::isNotBlank) ?: store.string("quality", "720p")
+                    // 起播档位永远从“默认清晰度”出发。以前这里优先读本片上次播放的档位，
+                    // 而那次档位可能是弱网自动降下来的——于是一部片被降过一次 480p，之后
+                    // 网络再好也永远从 480p 开始。自动降档只影响本次播放，不能写回偏好。
+                    val preferred = store.string("quality", "720p")
                     chosenStream(result.streams, preferred)
                 }
             }
@@ -198,9 +202,15 @@ class PlayerActivity : ComponentActivity() {
         streams.singleOrNull()?.let { return it }
         val local = app.linkSpeed.estimateKbps()
         if (local > 0) return noteChoice(StreamSelection.pick(streams, preferred, local), preferred, local, measured = false)
-        phase = "正在测试链路速度"
         val sample = StreamSelection.preferred(streams, preferred) ?: streams.first()
-        val measured = runCatching { app.mediaProbe.measure(SiteRegistry.byIdOrDefault(video.site), sample).kbps }.getOrNull() ?: 0
+        // HLS 地址的“文件”是播放列表：1 MB Range 只会读到几百字节的 .m3u8，算出来的是
+        // 请求延迟而不是吞吐。拿它选档会把所有多档站点压到最低档，所以这类片源不对
+        // 播放列表测速：按用户设置起播，主清单交给 Media3 自适应，单档靠卡顿策略降档。
+        if (HlsDownloads.mime(sample.url) != null) return noteChoice(StreamSelection.pick(streams, preferred, 0), preferred, 0, measured = false)
+        phase = "正在测试链路速度"
+        val result = runCatching { app.mediaProbe.measure(SiteRegistry.byIdOrDefault(video.site), sample) }.getOrNull()
+        // 服务器只回几百字节时同样只代表延迟，不能作为吞吐证据。
+        val measured = result?.takeIf { it.bytes >= MediaProbe.MIN_TRUSTED_BYTES }?.kbps ?: 0
         if (measured > 0) app.linkSpeed.seed(measured)
         return noteChoice(StreamSelection.pick(streams, preferred, measured), preferred, measured, measured = true)
     }
@@ -347,7 +357,9 @@ class PlayerActivity : ComponentActivity() {
     }
     @Composable private fun Content() {
         BackHandler { if (locked) { locked = false; controls = true } else if (fullscreen) fullscreen = false else finish() }
-        SideEffect { applyFullscreen() }
+        // 只在进入/退出全屏时应用一次。用 SideEffect 会在每次重组（进度、状态、提示语都在
+        // 触发重组）重新请求方向和隐藏系统栏，既浪费又会在旋转过程中反复打断窗口动画。
+        LaunchedEffect(fullscreen) { applyFullscreen() }
         val engine = remember(engineRevision) { player }
         @Suppress("UNUSED_VARIABLE") val changed = revision
         val palette = rememberArtworkPalette(SiteRegistry.byIdOrDefault(video.site), video.thumb, SiteCategory.VIDEO,
@@ -752,8 +764,20 @@ class PlayerActivity : ComponentActivity() {
     private fun applyFullscreen() {
         if (pipMode || enteringPip) return
         val bars = WindowCompat.getInsetsController(window, window.decorView)
-        if (fullscreen) { val size = player?.videoSize; requestedOrientation = if (size != null && size.height > size.width) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE; bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE; bars.hide(WindowInsetsCompat.Type.systemBars()) }
-        else { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED; bars.show(WindowInsetsCompat.Type.systemBars()) }
+        if (fullscreen) {
+            // 全屏必须真的转过去。SENSOR_* 在部分机型/ROM（以及方向锁定开启时）会停在竖屏，
+            // 用户看到的就是“进了全屏，画面还是竖的”。LANDSCAPE / PORTRAIT 是强制方向，
+            // 不受方向锁定影响；代价是全屏内不能靠翻转手机换 180°，这是全屏按钮的标准取舍。
+            val size = player?.videoSize
+            val portrait = size != null && size.height > size.width
+            requestedOrientation = if (portrait) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            bars.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            bars.show(WindowInsetsCompat.Type.systemBars())
+        }
     }
     private fun savePosition() { val exo = player ?: return; position = exo.currentPosition.coerceAtLeast(0); val duration = exo.duration.takeIf { it > 0 } ?: durationSeconds(video.duration) * 1000
         store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000, quality = stream?.label.orEmpty(), site = video.site))

@@ -446,6 +446,9 @@ class PlaybackPerformanceProbe {
             app.library.set("stream_cache", profile.streamCache)
             field(app.linkSpeed, "sampled").setInt(app.linkSpeed, 0)
             field(app.linkSpeed, "seeded").setInt(app.linkSpeed, if (profile.knownSpeed) 1600 else 0)
+            // 注入的估值没有时间戳，必须当作“刚测到”，否则长轮次里会被有效期判成过期。
+            field(app.linkSpeed, "sampledAt").setLong(app.linkSpeed, 0)
+            field(app.linkSpeed, "seededAt").setLong(app.linkSpeed, 0)
         }
         val intent = Intent(app, PlayerActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)

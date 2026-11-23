@@ -36,10 +36,12 @@ class MediaProbe(private val network: Network) {
                 .header("Cache-Control", "no-store")
                 .header("Range", "bytes=0-${limitBytes - 1}")
                 .build()
-            val started = System.currentTimeMillis()
             network.mediaClient.readResponse(request) { response ->
                 if (!response.isSuccessful) throw IOException("媒体 HTTP ${response.code}")
                 val input = response.body?.byteStream() ?: throw IOException("媒体没有响应体")
+                // 在拿到响应头后再开始计时：避免把 DNS / TLS / 302 重定向和首包等待算成下载速率，
+                // 否则高延迟节点上的 1 MB 样本会被严重低估，误把 720p/1080p 压到 480p。
+                val started = System.currentTimeMillis()
                 var total = 0L
                 val buffer = ByteArray(64 * 1024)
                 input.use { source ->
@@ -58,5 +60,13 @@ class MediaProbe(private val network: Network) {
     companion object {
         /** 1 MB：720p 大约半秒的量，足够暴露限速，又不至于让诊断等太久。 */
         const val SAMPLE_BYTES = 1024L * 1024
+
+        /**
+         * 只有读到这么多字节，样本才能代表吞吐。
+         *
+         * HLS 的“文件”是播放列表：1 MB Range 实际只回几百字节，算出来的是请求延迟。把这种
+         * 样本交给选档逻辑，会把整条链路误判成极慢，见 [StreamSelection.pick]。
+         */
+        const val MIN_TRUSTED_BYTES = 128L * 1024
     }
 }

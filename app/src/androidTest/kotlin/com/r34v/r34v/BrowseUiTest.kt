@@ -3,6 +3,7 @@ package com.r34v.r34v
 import androidx.compose.ui.test.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.r34v.r34v.data.*
+import com.r34v.r34v.playback.LinkSpeed
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,6 +67,8 @@ class BrowseUiTest : ComposeUiCase() {
         showControls()
         ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("全屏").fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithContentDescription("全屏").performClick(); ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("退出全屏").fetchSemanticsNodes().isNotEmpty() }
+        // 横屏视频进全屏必须真的旋转；SENSOR_* 在方向锁定或部分 ROM 上会留在竖屏。
+        ui.waitUntil(10000) { var landscape = false; f.ins.runOnMainSync { landscape = activity.resources.configuration.screenWidthDp > activity.resources.configuration.screenHeightDp }; landscape }
         f.shot("06-player-fullscreen"); back(f)
         // Reattaching the surface can buffer long enough for the existing adaptive
         // policy to drop to 480p. The preference must still survive the transition.
@@ -75,5 +78,32 @@ class BrowseUiTest : ComposeUiCase() {
         ui.runOnIdle { activity.recreate() }; waitText("${f.video().title}")
         ui.waitUntil(15000) { f.app.library.watch(f.video().id)?.position?.let { it >= 1 } == true }
         assertEquals(changedQuality, f.app.library.string("quality")); assertEquals("2.0", f.app.library.string("native_speed"))
+    }
+
+    @Test fun aStoredAutoDowngradeDoesNotPinTheNextPlayback() = ComposeFixture().use { f ->
+        val link = f.app.linkSpeed
+        val sampled = LinkSpeed::class.java.getDeclaredField("sampled").apply { isAccessible = true }
+        val seeded = LinkSpeed::class.java.getDeclaredField("seeded").apply { isAccessible = true }
+        val sampledAt = LinkSpeed::class.java.getDeclaredField("sampledAt").apply { isAccessible = true }
+        val seededAt = LinkSpeed::class.java.getDeclaredField("seededAt").apply { isAccessible = true }
+        var previous: List<Long> = listOf(0L, 0L, 0L, 0L)
+        f.ins.runOnMainSync { previous = listOf(sampled.getInt(link).toLong(), seeded.getInt(link).toLong(), sampledAt.getLong(link), seededAt.getLong(link)) }
+        f.app.library.set("quality", "720p")
+        val video = f.video()
+        // 旧版会把自动降档的结果写回本片偏好，之后网络再好也永远从 480p 起播。
+        f.app.library.saveWatch(Watch(video.id, video.title, video.thumb, video.url, 5, 300, quality = "480p", site = video.site))
+        try {
+            // 固定成健康链路，并让注入值被当作“刚测到”。
+            f.ins.runOnMainSync { sampled.setInt(link, 0); seeded.setInt(link, 20_000); sampledAt.setLong(link, 0); seededAt.setLong(link, 0) }
+            val activity = f.launchPlayer()
+            val field = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
+            ui.waitUntil(20000) { var ready = false; f.ins.runOnMainSync { ready = (field.get(activity) as? androidx.media3.common.Player)?.playbackState == androidx.media3.common.Player.STATE_READY }; ready }
+            ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("清晰度，当前 720p").fetchSemanticsNodes().isNotEmpty() }
+        } finally {
+            f.ins.runOnMainSync {
+                sampled.setInt(link, previous[0].toInt()); seeded.setInt(link, previous[1].toInt())
+                sampledAt.setLong(link, previous[2]); seededAt.setLong(link, previous[3])
+            }
+        }
     }
 }
