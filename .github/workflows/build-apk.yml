@@ -133,6 +133,7 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_2
+          emulator-options: ${{ matrix.api == 36 && '-no-window -gpu swiftshader -feature -Vulkan -no-snapshot -noaudio -no-boot-anim' || '-no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim' }}
           disable-animations: true
           script: python3 .github/scripts/android_regression.py
       - uses: actions/upload-artifact@v4

@@ -97,7 +97,7 @@ fun ComposeDialogs.selectVideos(videos: List<Video>, action: (List<Video>) -> Un
         val (afterRevision, key) = revealMove ?: return@LaunchedEffect
         if (revision < afterRevision) return@LaunchedEffect
         val index = entries.indexOfFirst { it.video.entryKey == key }
-        if (index >= 0) listState.scrollToItem(index)
+        if (index >= 0) listState.requestScrollToItem(index)
         revealMove = null
     }
     fun move(video: Video, delta: Int) {
@@ -106,7 +106,11 @@ fun ComposeDialogs.selectVideos(videos: List<Video>, action: (List<Video>) -> Un
     }
     var previousView by remember { mutableStateOf(shelf.id to view) }
     LaunchedEffect(shelf.id, view) {
-        if (previousView != (shelf.id to view)) { listState.scrollToItem(0); previousView = shelf.id to view }
+        if (previousView != (shelf.id to view)) {
+            // 搜索会与 IME 重排并发，滚动位置应在下一次测量生效。
+            listState.requestScrollToItem(0)
+            previousView = shelf.id to view
+        }
     }
     Column(Modifier.fillMaxSize().then(if (shortWindow) Modifier.verticalScroll(rememberScrollState()) else Modifier), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth().artworkPanel(),
