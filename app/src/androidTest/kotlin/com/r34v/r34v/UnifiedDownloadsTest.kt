@@ -5,6 +5,8 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.*
 import androidx.media3.exoplayer.offline.Download
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -407,10 +409,16 @@ class UnifiedDownloadsTest : ComposeUiCase() {
                 f.app.library.prefs.edit().putString("$site:video_cache_v1", f.app.library.gson.toJson(listOf(LocalVideo("shared-legacy-id", "$site 旧版下载", file.absolutePath, site = site)))).commit()
             }
             f.launchDownloads(); waitText("下载中心")
-            ui.onNodeWithTag("download-center").performScrollToNode(hasTestTag("download-legacy:r34v:shared-legacy-id"))
-            ui.waitUntil(15000) { ui.onAllNodesWithTag("download-legacy:r34v:shared-legacy-id").fetchSemanticsNodes().isNotEmpty() }
-            ui.onNodeWithTag("download-center").performScrollToNode(hasTestTag("download-legacy:hanime1:shared-legacy-id"))
-            ui.onNodeWithTag("download-legacy:hanime1:shared-legacy-id").assertExists()
+            val center = ui.onNodeWithTag("download-center")
+            val legacyKeys = files.keys.map { "legacy:$it:shared-legacy-id" }
+            ui.waitUntil(15000) {
+                val indexForKey = center.fetchSemanticsNode().config.getOrNull(SemanticsProperties.IndexForKey)
+                indexForKey != null && legacyKeys.all { indexForKey(it) >= 0 }
+            }
+            legacyKeys.forEach { key ->
+                center.performScrollToKey(key)
+                ui.onNodeWithTag("download-$key").assertIsDisplayed()
+            }
             assertEquals(files.getValue("r34v").absolutePath, f.app.library.localVideos("r34v").single().path)
             f.app.library.switchSite("iwara")
             f.app.library.removeLocal("shared-legacy-id", "r34v")
