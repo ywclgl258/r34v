@@ -300,6 +300,8 @@ class Network(private val context: Context, private val store: LibraryStore) {
     private val hostGates = java.util.concurrent.ConcurrentHashMap<String, HostGate>()
     private val authTokenCache = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val mediaRedirects = MediaRedirectCache()
+    private var defaultNetwork = context.getSystemService(android.net.ConnectivityManager::class.java)?.activeNetwork
+    @Volatile private var routeGeneration = 0L
     val client: OkHttpClient get() = current ?: synchronized(this) { current ?: build().also { current = it } }
 
     /**
@@ -326,17 +328,32 @@ class Network(private val context: Context, private val store: LibraryStore) {
     val imageClient: OkHttpClient get() = client.newBuilder()
         .callTimeout(0, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).cache(null)
         .build()
-    @Volatile private var routeGeneration = 0L
+    @Synchronized internal fun defaultNetworkAvailable(path: android.net.Network) {
+        if (path == defaultNetwork) return
+        defaultNetwork = path
+        invalidate()
+    }
+
+    @Synchronized internal fun defaultNetworkLost(path: android.net.Network) {
+        if (path != defaultNetwork) return
+        defaultNetwork = null
+        invalidate()
+    }
+
+    internal fun routeEpoch(): Long = routeGeneration
+
     @Synchronized fun invalidate() {
-        current?.connectionPool?.evictAll()
+        val old = current
         current = null
         routeGeneration++
+        old?.connectionPool?.evictAll()
     }
+
     fun routeDescription(url: String = SiteRegistry.current.base) = systemRoutes.describe(url.toHttpUrl().toUri())
 
     internal fun systemRouteKey(urls: List<String>): String {
         val network = context.getSystemService(android.net.ConnectivityManager::class.java)?.activeNetwork
-        return listOf(network?.networkHandle, routeGeneration, urls.map(::routeDescription)).toString()
+        return listOf(network?.networkHandle, routeEpoch(), urls.map(::routeDescription)).toString()
     }
     private fun build(): OkHttpClient {
         return OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)

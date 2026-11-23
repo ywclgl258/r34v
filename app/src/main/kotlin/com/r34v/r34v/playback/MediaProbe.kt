@@ -1,5 +1,6 @@
 package com.r34v.r34v.playback
 
+import android.os.SystemClock
 import com.r34v.r34v.data.Network
 import com.r34v.r34v.data.SiteContext
 import com.r34v.r34v.data.Stream
@@ -7,6 +8,7 @@ import com.r34v.r34v.data.readResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Request
+import okio.ByteString.Companion.encodeUtf8
 import java.io.IOException
 
 /**
@@ -17,10 +19,19 @@ import java.io.IOException
  * 连接限速。所以诊断必须读一段真实媒体字节，才能回答“我这条链路能撑哪一档”。
  */
 class MediaProbe(private val network: Network) {
-    data class Result(val kbps: Int, val bytes: Long, val ms: Long, val status: Int) {
-        val suggested: String get() = StreamSelection.recommendedLabel(kbps)
+    data class Result(val kbps: Int, val bytes: Long, val ms: Long, val status: Int, val playlist: Boolean) {
+        val trustedKbps: Int? get() = kbps.takeIf { !playlist && bytes >= MIN_TRUSTED_BYTES && it > 0 }
+        val suggested: String? get() = trustedKbps?.let(StreamSelection::recommendedLabel)
         val summary: String
-            get() = "HTTP $status · ${bytes / 1024} KB / $ms ms · 约 $kbps kbps （${"%.2f".format(kbps / 8.0 / 1024)} MB/s）"
+            get() {
+                val speed = trustedKbps
+                val read = "HTTP $status · $bytes B / $ms ms"
+                return when {
+                    playlist -> "$read · 已读取 HLS 播放列表，未测量媒体分片吞吐"
+                    speed == null -> "$read · 样本不足，未测得媒体吞吐"
+                    else -> "$read · 约 $speed kbps （${"%.2f".format(speed / 8.0 / 1024)} MB/s）"
+                }
+            }
     }
 
     /**
@@ -31,29 +42,32 @@ class MediaProbe(private val network: Network) {
      */
     suspend fun measure(site: SiteContext, stream: Stream, limitBytes: Long = SAMPLE_BYTES): Result =
         withContext(Dispatchers.IO) {
+            require(limitBytes > 0)
+            val playlistUrl = HlsDownloads.mime(stream.url) != null
             val request = Request.Builder().url(stream.url).tag(SiteContext::class.java, site)
                 .header("Referer", site.mediaReferer)
                 .header("Cache-Control", "no-store")
-                .header("Range", "bytes=0-${limitBytes - 1}")
+                .apply { if (!playlistUrl) header("Range", "bytes=0-${limitBytes - 1}") }
                 .build()
             network.mediaClient.readResponse(request) { response ->
                 if (!response.isSuccessful) throw IOException("媒体 HTTP ${response.code}")
-                val input = response.body?.byteStream() ?: throw IOException("媒体没有响应体")
-                // 在拿到响应头后再开始计时：避免把 DNS / TLS / 302 重定向和首包等待算成下载速率，
-                // 否则高延迟节点上的 1 MB 样本会被严重低估，误把 720p/1080p 压到 480p。
-                val started = System.currentTimeMillis()
+                val source = response.body?.source() ?: throw IOException("媒体没有响应体")
+                // 吞吐计时从响应头之后开始，去掉连接与重定向等待。
+                val started = SystemClock.elapsedRealtime()
+                val playlist = playlistUrl || HlsDownloads.mime(response.request.url.toString()) != null ||
+                    isPlaylistContentType(response.header("Content-Type")) ||
+                    (limitBytes >= HLS_HEADER.size && source.rangeEquals(0, HLS_HEADER))
                 var total = 0L
                 val buffer = ByteArray(64 * 1024)
-                input.use { source ->
-                    while (total < limitBytes) {
-                        val read = source.read(buffer)
-                        if (read < 0) break
-                        total += read
-                    }
+                while (total < limitBytes) {
+                    val read = source.read(buffer, 0, minOf(buffer.size.toLong(), limitBytes - total).toInt())
+                    if (read < 0) break
+                    total += read
                 }
-                if (total <= 0) throw IOException("媒体没有返回任何字节")
-                val ms = (System.currentTimeMillis() - started).coerceAtLeast(1)
-                Result(kbps = (total * 8 / ms).toInt(), bytes = total, ms = ms, status = response.code)
+                if (total == 0L) throw IOException("媒体没有返回任何字节")
+                val ms = (SystemClock.elapsedRealtime() - started).coerceAtLeast(1)
+                val kbps = (total * 8 / ms).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                Result(kbps, total, ms, response.code, playlist)
             }
         }
 
@@ -61,12 +75,14 @@ class MediaProbe(private val network: Network) {
         /** 1 MB：720p 大约半秒的量，足够暴露限速，又不至于让诊断等太久。 */
         const val SAMPLE_BYTES = 1024L * 1024
 
-        /**
-         * 只有读到这么多字节，样本才能代表吞吐。
-         *
-         * HLS 的“文件”是播放列表：1 MB Range 实际只回几百字节，算出来的是请求延迟。把这种
-         * 样本交给选档逻辑，会把整条链路误判成极慢，见 [StreamSelection.pick]。
-         */
         const val MIN_TRUSTED_BYTES = 128L * 1024
+        private val HLS_HEADER = "#EXTM3U".encodeUtf8()
+
+        internal fun isPlaylistContentType(value: String?): Boolean =
+            when (value?.substringBefore(';')?.trim()?.lowercase()) {
+                "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/mpegurl",
+                "audio/mpegurl", "audio/x-mpegurl" -> true
+                else -> false
+            }
     }
 }

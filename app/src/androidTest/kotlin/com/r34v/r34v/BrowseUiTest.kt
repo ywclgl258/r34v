@@ -1,12 +1,33 @@
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+
 package com.r34v.r34v
 
+import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+import android.content.res.Configuration.ORIENTATION_LANDSCAPE
+import android.content.res.Configuration.ORIENTATION_PORTRAIT
+import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.provider.Settings
+import android.util.Base64
+import android.view.View
+import android.view.WindowManager
 import androidx.compose.ui.test.*
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.media3.common.Player
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import com.r34v.r34v.data.*
 import com.r34v.r34v.playback.LinkSpeed
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.Closeable
 
 @RunWith(AndroidJUnit4::class)
 class BrowseUiTest : ComposeUiCase() {
@@ -36,18 +57,12 @@ class BrowseUiTest : ComposeUiCase() {
         ui.onNodeWithText("默认清晰度").performScrollTo().performClick(); clickText("1080p")
         assertEquals("1080p", f.app.library.string("quality")); f.shot("04-settings")
     }
-    @Test fun playerQualitySpeedFullScreenAndPositionSurviveRecreation() = ComposeFixture().use { f ->
+    @Test fun playerQualitySpeedFullScreenAndPositionSurviveRecreation() = fullscreenFixture { f ->
         val activity = f.launchPlayer()
+        val title = f.video().title
+        val originalOrientation = ui.runOnIdle { activity.resources.configuration.orientation }
         val field = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
-        fun engine() = field.get(activity) as? androidx.media3.exoplayer.ExoPlayer
-        fun ready() { ui.waitUntil(20000) { var ready = false; f.ins.runOnMainSync { ready = engine()?.playbackState == androidx.media3.common.Player.STATE_READY }; ready } }
-        fun showControls() {
-            if (ui.onAllNodesWithContentDescription("播放器菜单").fetchSemanticsNodes().isEmpty()) {
-                ui.onNodeWithTag("player-surface").performTouchInput { click() }
-                ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("播放器菜单").fetchSemanticsNodes().isNotEmpty() }
-            }
-        }
-        ready(); showControls()
+        waitForDecodedVideo(f); showPlayerControls()
         // Startup quality adapts to the process-wide measured link speed.
         val initialQuality = listOf("720p", "480p").first { label ->
             ui.onAllNodesWithContentDescription("清晰度，当前 $label").fetchSemanticsNodes().isNotEmpty()
@@ -56,28 +71,157 @@ class BrowseUiTest : ComposeUiCase() {
         ui.onNodeWithContentDescription("清晰度，当前 $initialQuality").performClick()
         ui.onNode(hasText(initialQuality) and SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.Role, androidx.compose.ui.semantics.Role.RadioButton))
             .assertIsSelected(); f.shot("05-player-quality")
-        ui.onNodeWithText(changedQuality).performScrollTo().performClick(); ready()
+        ui.onNodeWithText(changedQuality).performScrollTo().performClick(); waitForDecodedVideo(f)
         assertEquals(changedQuality, f.app.library.string("quality"))
-        showControls(); ui.onNodeWithContentDescription("播放速度，当前 1.0 倍").performClick()
+        showPlayerControls(); ui.onNodeWithContentDescription("播放速度，当前 1.0 倍").performClick()
         ui.onNodeWithText("2.0×").performScrollTo().assertIsDisplayed(); f.shot("05-player-speed")
         ui.onNodeWithText("取消").assertIsDisplayed()
         ui.onNodeWithText("2.0×").performClick()
-        ui.runOnIdle { assertEquals(2f, engine()!!.playbackParameters.speed, .001f); engine()!!.seekTo(2000) }
+        ui.runOnIdle {
+            val engine = field.get(activity) as Player
+            assertEquals(2f, engine.playbackParameters.speed, .001f)
+            engine.pause()
+            engine.seekTo(2000)
+        }
+        waitForDecodedVideo(f, 1900L..2100L)
         f.shot("05-player")
-        showControls()
-        ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("全屏").fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithContentDescription("全屏").performClick(); ui.waitUntil(5000) { ui.onAllNodesWithContentDescription("退出全屏").fetchSemanticsNodes().isNotEmpty() }
-        // 横屏视频进全屏必须真的旋转；SENSOR_* 在方向锁定或部分 ROM 上会留在竖屏。
-        ui.waitUntil(10000) { var landscape = false; f.ins.runOnMainSync { landscape = activity.resources.configuration.screenWidthDp > activity.resources.configuration.screenHeightDp }; landscape }
-        f.shot("06-player-fullscreen"); back(f)
-        // Reattaching the surface can buffer long enough for the existing adaptive
-        // policy to drop to 480p. The preference must still survive the transition.
-        val qualityControl = hasContentDescription("清晰度，当前 $changedQuality") or hasContentDescription("清晰度，当前 480p")
-        showControls(); ui.waitUntil(5000) { ui.onAllNodes(qualityControl).fetchSemanticsNodes().isNotEmpty() }
-        ui.onNode(qualityControl).assertExists()
-        ui.runOnIdle { activity.recreate() }; waitText("${f.video().title}")
-        ui.waitUntil(15000) { f.app.library.watch(f.video().id)?.position?.let { it >= 1 } == true }
-        assertEquals(changedQuality, f.app.library.string("quality")); assertEquals("2.0", f.app.library.string("native_speed"))
+        showPlayerControls()
+        ui.onNodeWithContentDescription("全屏").performClick()
+        waitForPlayerWindow(activity, SCREEN_ORIENTATION_LANDSCAPE, ORIENTATION_LANDSCAPE, fullscreen = true)
+        ui.onNodeWithText(title).assertDoesNotExist()
+        f.shot("06-player-fullscreen")
+
+        back(f)
+        // The quality control exists in both modes. Confirm the details and the window have returned before recreating.
+        waitForPlayerDetails(title)
+        waitForPlayerWindow(activity, SCREEN_ORIENTATION_UNSPECIFIED, originalOrientation, fullscreen = false)
+        val recreated = recreatePlayer(f, activity)
+        waitForPlayerDetails(title)
+        waitForPlayerWindow(recreated, SCREEN_ORIENTATION_UNSPECIFIED, originalOrientation, fullscreen = false)
+        waitForDecodedVideo(f, 1900L..2100L)
+        ui.runOnIdle {
+            val engine = field.get(recreated) as Player
+            assertFalse(engine.playWhenReady)
+            assertEquals(2f, engine.playbackParameters.speed, .001f)
+        }
+        assertEquals(changedQuality, f.app.library.string("quality"))
+    }
+
+    @Test fun portraitFullscreenWaitsForDimensionsAndStaysExitedAfterRecreation() =
+        fullscreenFixture(videoAsset = "test-pattern-portrait.mp4") { f ->
+            f.app.library.set("auto_fullscreen", true)
+            val details = CompletableDeferred<Unit>()
+            f.detailHook = { details.await() }
+            val activity = f.launchPlayer()
+            val title = f.video().title
+            val originalOrientation = ui.runOnIdle { activity.resources.configuration.orientation }
+            waitForPlayerDetails(title)
+
+            ui.onNodeWithContentDescription("全屏").performClick()
+            waitForPlayerWindow(activity, SCREEN_ORIENTATION_UNSPECIFIED, originalOrientation, fullscreen = true)
+            ui.onNodeWithText(title).assertDoesNotExist()
+            ui.onNodeWithContentDescription("退出全屏").performClick()
+            waitForPlayerDetails(title)
+            waitForPlayerWindow(activity, SCREEN_ORIENTATION_UNSPECIFIED, originalOrientation, fullscreen = false)
+
+            details.complete(Unit)
+            waitForDecodedVideo(f)
+            waitForPlayerDetails(title)
+            waitForPlayerWindow(activity, SCREEN_ORIENTATION_UNSPECIFIED, originalOrientation, fullscreen = false)
+            showPlayerControls()
+            ui.onNodeWithContentDescription("全屏").performClick()
+            waitForPlayerWindow(activity, SCREEN_ORIENTATION_PORTRAIT, ORIENTATION_PORTRAIT, fullscreen = true)
+            ui.onNodeWithText(title).assertDoesNotExist()
+
+            showPlayerControls()
+            ui.onNodeWithContentDescription("退出全屏").performClick()
+            waitForPlayerDetails(title)
+            waitForPlayerWindow(activity, SCREEN_ORIENTATION_UNSPECIFIED, originalOrientation, fullscreen = false)
+            val restoredDetails = CompletableDeferred<Unit>()
+            f.detailHook = { restoredDetails.await() }
+            val recreated = recreatePlayer(f, activity)
+            waitForPlayerDetails(title)
+            waitForPlayerWindow(recreated, SCREEN_ORIENTATION_UNSPECIFIED, originalOrientation, fullscreen = false)
+            restoredDetails.complete(Unit)
+            waitForDecodedVideo(f)
+            waitForPlayerDetails(title)
+            waitForPlayerWindow(recreated, SCREEN_ORIENTATION_UNSPECIFIED, originalOrientation, fullscreen = false)
+        }
+
+    private fun fullscreenFixture(videoAsset: String = "test-pattern.mp4", test: (ComposeFixture) -> Unit) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val resolver = instrumentation.targetContext.contentResolver
+        val setting = "immersive_mode_confirmations"
+        val previous = Settings.Secure.getString(resolver, setting)
+        val confirmed = "confirmed"
+
+        fun writeSetting(value: String?) {
+            val command = when {
+                value == null -> "settings --user current delete secure $setting"
+                value == confirmed -> "settings --user current put secure $setting $confirmed"
+                else -> {
+                    val escaped = value.replace("'", "'\\''")
+                    val restore = "settings --user current put secure $setting '$escaped'"
+                    // UiAutomation splits on whitespace even inside quotes. Pass the restore command as one argument.
+                    val encoded = Base64.encodeToString(restore.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                    "sh -c echo\${IFS}$encoded|base64\${IFS}-d|sh"
+                }
+            }
+            val output = ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command))
+                .bufferedReader().use { it.readText() }
+            check(Settings.Secure.getString(resolver, setting) == value) { "Could not update $setting. $output" }
+        }
+
+        // Android's first-run immersive tutorial takes focus and consumes system Back.
+        Closeable { if (previous != confirmed) writeSetting(previous) }.use {
+            if (previous != confirmed) writeSetting(confirmed)
+            ComposeFixture(videoAsset = videoAsset).use(test)
+        }
+    }
+
+    private fun showPlayerControls() {
+        val menu = ui.onNodeWithContentDescription("播放器菜单")
+        if (!menu.isDisplayed()) {
+            ui.onNodeWithTag("player-surface").performTouchInput { click() }
+            ui.waitUntil(5000) { menu.isDisplayed() }
+        }
+    }
+
+    private fun waitForPlayerDetails(title: String) {
+        val heading = ui.onNodeWithText(title)
+        ui.waitUntil(10000) { heading.isDisplayed() }
+        ui.onNodeWithContentDescription("退出全屏").assertDoesNotExist()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun waitForPlayerWindow(activity: PlayerActivity, requested: Int, orientation: Int, fullscreen: Boolean) {
+        ui.waitUntil(10000) {
+            ui.runOnIdle {
+                val window = activity.window
+                val decor = window.decorView
+                val statusBarVisible = if (Build.VERSION.SDK_INT >= 30) {
+                    ViewCompat.getRootWindowInsets(decor)?.isVisible(WindowInsetsCompat.Type.statusBars())
+                } else {
+                    decor.systemUiVisibility and View.SYSTEM_UI_FLAG_FULLSCREEN == 0 &&
+                        window.attributes.flags and WindowManager.LayoutParams.FLAG_FULLSCREEN == 0
+                }
+                activity.hasWindowFocus() && activity.requestedOrientation == requested &&
+                    activity.resources.configuration.orientation == orientation && statusBarVisible == !fullscreen
+            }
+        }
+    }
+
+    private fun recreatePlayer(f: ComposeFixture, previous: PlayerActivity): PlayerActivity {
+        ui.runOnIdle { previous.recreate() }
+        var recreated: PlayerActivity? = null
+        ui.waitUntil(10000) {
+            f.ins.runOnMainSync {
+                recreated = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                    .filterIsInstance<PlayerActivity>().firstOrNull { it !== previous }
+            }
+            recreated != null
+        }
+        return requireNotNull(recreated)
     }
 
     @Test fun aStoredAutoDowngradeDoesNotPinTheNextPlayback() = ComposeFixture().use { f ->

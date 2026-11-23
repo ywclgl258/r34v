@@ -26,8 +26,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ConcurrentHashMap
 
 /** Neutral media and real repository/cache/player paths; no production test switches. */
-class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi: () -> Unit = {},
-                    private val preservePreferences: Set<String> = emptySet()) : Closeable {
+class ComposeFixture(private val cinematic: Boolean = false, private val preservePreferences: Set<String> = emptySet(),
+                     videoAsset: String = "test-pattern.mp4", private val awaitUi: () -> Unit = {}) : Closeable {
     val ins = InstrumentationRegistry.getInstrumentation()
     val app = ins.targetContext.applicationContext as R34Application
     private val prefs = app.library.prefs.all.toMap()
@@ -64,7 +64,7 @@ class ComposeFixture(private val cinematic: Boolean = false, private val awaitUi
         Canvas(image).apply { drawColor(Color.rgb(30, 60, 85)); drawRect(60f, 100f, 540f, 350f, Paint().apply { color = Color.rgb(110, 170, 180) }); drawCircle(300f, 600f, 130f, Paint().apply { color = Color.rgb(220, 190, 130) }) }
         java.io.ByteArrayOutputStream().apply { image.compress(Bitmap.CompressFormat.PNG, 100, this) }.toByteArray().also { image.recycle() }
     }
-    private val clip = ins.context.assets.open("test-pattern.mp4").use { it.readBytes() }
+    private val clip = ins.context.assets.open(videoAsset).use { it.readBytes() }
     private val server = MockWebServer().apply {
         dispatcher = object : okhttp3.mockwebserver.Dispatcher() { override fun dispatch(request: RecordedRequest): MockResponse {
             if (videoStatus > 0) return MockResponse().setResponseCode(videoStatus)
@@ -212,7 +212,9 @@ abstract class ComposeUiCase {
     fun clickText(text: String) { waitText(text); ui.onAllNodesWithText(text).onLast().performClick() }
     fun back(fixture: ComposeFixture) {
         ui.waitForIdle()
-        fixture.ins.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+        check(fixture.ins.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)) {
+            "Android rejected the system Back action"
+        }
         fixture.ins.waitForIdleSync()
         fixture.ins.uiAutomation.waitForIdle(250, 3000)
         ui.waitForIdle()

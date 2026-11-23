@@ -193,7 +193,13 @@ class PlayerDowngradePerformanceProbe {
             val link = fixture.app.linkSpeed
             val sampled = field(link, "sampled")
             val seeded = field(link, "seeded")
-            val original = main { sampled.getInt(link) to seeded.getInt(link) }
+            val sampledAt = field(link, "sampledAt")
+            val seededAt = field(link, "seededAt")
+            val (originalRoute, original) = main {
+                synchronized(link) {
+                    link.routeEpoch() to listOf(sampled.getInt(link).toLong(), seeded.getInt(link).toLong(), sampledAt.getLong(link), seededAt.getLong(link))
+                }
+            }
             try {
                 main {
                     fixture.app.library.set("quality", "720p")
@@ -204,8 +210,11 @@ class PlayerDowngradePerformanceProbe {
                     fixture.app.library.set("seek_cache", false)
                 }
                 fixture.detailHook = { withContext(Dispatchers.Main) {
-                    sampled.setInt(link, 0)
-                    link.seed(6_000)
+                    synchronized(link) {
+                        val route = link.routeEpoch()
+                        sampled.setInt(link, 0)
+                        link.seed(6_000, route)
+                    }
                 } }
                 measure(fixture, Media(files, Fault.BRIEF_JITTER), Fault.BRIEF_JITTER, thresholds, 0, false)
                 for (round in 1..repeats) {
@@ -220,8 +229,14 @@ class PlayerDowngradePerformanceProbe {
                 }
             } finally {
                 main {
-                    sampled.setInt(link, original.first)
-                    seeded.setInt(link, original.second)
+                    synchronized(link) {
+                        if (link.routeEpoch() == originalRoute) {
+                            sampled.setInt(link, original[0].toInt())
+                            seeded.setInt(link, original[1].toInt())
+                            sampledAt.setLong(link, original[2])
+                            seededAt.setLong(link, original[3])
+                        }
+                    }
                 }
             }
         }

@@ -45,8 +45,9 @@ class SiteSessionTest {
             val store = LibraryStore(context, name, legacyName)
             val jar = SessionCookies(store)
             for (site in SiteRegistry.all) {
-                jar.saveFromResponse(site.base.toHttpUrl(), listOf(Cookie.Builder()
-                    .name("session").value("${site.id}-session").hostOnlyDomain(site.host)
+                val url = site.base.toHttpUrl()
+                jar.saveFromResponse(url, listOf(Cookie.Builder()
+                    .name("session").value("${site.id}-session").hostOnlyDomain(url.host)
                     .secure().httpOnly().expiresAt(System.currentTimeMillis() + 60000).build()))
             }
             store.switchSite(SiteRegistry.HANIME1.id)
@@ -57,6 +58,9 @@ class SiteSessionTest {
             for (site in SiteRegistry.all) {
                 assertEquals(listOf("${site.id}-session"), restored.loadForRequest(site.base.toHttpUrl()).filter { it.name == "session" }.map { it.value })
             }
+            // Iwara's www host issues the cookie, and its registered bare domain must not receive it.
+            val iwaraBare = SiteRegistry.IWARA.base.toHttpUrl().newBuilder().host(SiteRegistry.IWARA.host).build()
+            assertTrue(restored.loadForRequest(iwaraBare).isEmpty())
             assertTrue(restored.loadForRequest("https://cdn.invalid/video.mp4".toHttpUrl()).isEmpty())
             restored.clear(SiteRegistry.HANIME1)
             val afterLogout = SessionCookies(LibraryStore(context, name, legacyName))

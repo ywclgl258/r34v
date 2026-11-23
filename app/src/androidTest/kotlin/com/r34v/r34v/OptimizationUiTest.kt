@@ -1,6 +1,8 @@
 @file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 package com.r34v.r34v
 
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.*
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -55,18 +57,30 @@ class OptimizationUiTest : ComposeUiCase() {
     }
     @Test fun loadedPagesAndTheirScrollAnchorSurviveNavigationAndRecreation() = ComposeFixture().use { f ->
         val activity = f.launchFeed(); waitText("刷新")
-        ui.onNodeWithContentDescription("内容列表").performScrollToIndex(14)
-        ui.waitUntil(10000) { f.requests.any { it.second.page == 2 } }
-        ui.onNodeWithContentDescription("内容列表").performScrollToIndex(31)
-        ui.waitUntil(10000) { f.requests.any { it.second.page == 3 } }
-        ui.onNodeWithContentDescription("内容列表").performScrollToIndex(37)
+        val feed = ui.onNodeWithContentDescription("内容列表")
+        fun work(page: Int, index: Int): Video {
+            val video = f.video("ehentai", page, index)
+            return video.copy(id = "sample-${video.id}")
+        }
+        fun scrollToLoadedWork(video: Video) {
+            // The request log records dispatch before the returned page reaches the lazy grid.
+            ui.waitUntil(10000) {
+                val indexForKey = feed.fetchSemanticsNode().config.getOrNull(SemanticsProperties.IndexForKey)
+                indexForKey != null && indexForKey(video.entryKey) >= 0
+            }
+            feed.performScrollToKey(video.entryKey)
+        }
+        scrollToLoadedWork(work(1, 13))
+        scrollToLoadedWork(work(2, 14))
+        val anchor = work(3, 4)
+        scrollToLoadedWork(anchor)
+        val anchorNode = ui.onNodeWithTag("media-${anchor.site}-${anchor.id}").assertIsDisplayed()
         val firstPages = f.requests.count { it.second.page == 1 }
         ui.onNodeWithContentDescription("设置").performClick(); back(f)
-        ui.waitUntil(10000) { ui.onAllNodesWithContentDescription("内容列表").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10000) { anchorNode.isDisplayed() }
         assertEquals(firstPages, f.requests.count { it.second.page == 1 })
-        ui.onNodeWithTag("media-ehentai-sample-${f.video("ehentai", 3, 4).id}").assertIsDisplayed()
         ui.runOnIdle { activity.recreate() }
-        ui.waitUntil(10000) { ui.onAllNodesWithTag("media-ehentai-sample-${f.video("ehentai", 3, 4).id}").fetchSemanticsNodes().isNotEmpty() }
+        ui.waitUntil(10000) { anchorNode.isDisplayed() }
         assertEquals(firstPages, f.requests.count { it.second.page == 1 })
     }
     @Test fun aNewBlockRuleInvalidatesTheCachedPage() = ComposeFixture().use { f ->

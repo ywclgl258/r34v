@@ -127,8 +127,10 @@ class ModernUiTest : ComposeUiCase() {
         clear(f)
         (0..3).forEach { f.app.library.personal.add(f.video(index = it)) }
         f.launch(); openPersonalHome()
-        ui.onNodeWithTag("personal-home").performScrollToNode(hasText("查看片单"))
-        clickText("查看片单"); waitText("按顺序观看 / 阅读")
+        val watchLater = hasText("稍后看 · 4") and hasClickAction()
+        ui.onNodeWithTag("personal-home").performScrollToNode(watchLater)
+        ui.onNode(watchLater).assertIsDisplayed().performClick()
+        waitText("按顺序观看 / 阅读")
         val first = f.video()
         val moved = f.video(index = 1)
         ui.onNodeWithTag("catalog-list").performScrollToNode(hasText(moved.title))

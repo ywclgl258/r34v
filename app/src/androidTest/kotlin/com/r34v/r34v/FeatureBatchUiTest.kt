@@ -30,23 +30,38 @@ class FeatureBatchUiTest : ComposeUiCase() {
     private inline fun <reified T : Activity> resumed(): T = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).filterIsInstance<T>().single()
     private fun ready(f: ComposeFixture, activity: PlayerActivity) { ui.waitUntil(20000) { var value = false; f.ins.runOnMainSync { value = engine(activity)?.playbackState == Player.STATE_READY }; value } }
     @Test fun videoLoopRepeatsSurvivesRecreationAndClearsWhenSeekingOutside(): Unit = ComposeFixture().use { f ->
+        val video = f.video()
+        val site = SiteRegistry.byIdOrDefault(video.site)
+        // Repeated seeks can trigger a quality downgrade and replace the observed engine.
+        val stream = runBlocking { AdapterRegistry.adapter(site, f.app.network).detail(video.url).streams.first() }
+        f.detailStreams = listOf(stream)
+        f.app.library.personal.setPlayback(video.site, PlaybackPreferences(defaultRate = 1f))
         var activity = f.launchPlayer(); ready(f, activity)
+        val startMs = 1000L
+        val endMs = 3000L
         fun menu() { ui.onNodeWithContentDescription("更多播放操作").performScrollTo().performClick(); clickText("A–B 区间循环") }
-        ui.runOnIdle { engine(activity)!!.apply { pause(); seekTo(1000) } }
+        ui.runOnIdle { engine(activity)!!.apply { pause(); seekTo(startMs) } }
+        waitForDecodedVideo(f, startMs..startMs)
         menu(); clickText("将当前位置设为 A 点")
-        ui.runOnIdle { engine(activity)!!.seekTo(3000) }
+        ui.runOnIdle { engine(activity)!!.seekTo(endMs) }
+        waitForDecodedVideo(f, endMs..endMs)
         menu(); clickText("将当前位置设为 B 点并循环")
         ui.onNodeWithTag("video-loop-range", useUnmergedTree = true).assertTextContains("循环 0:01 – 0:03")
+        waitForDecodedVideo(f, startMs..startMs)
         val repeats = AtomicInteger()
-        ui.runOnIdle {
-            engine(activity)!!.addListener(object : Player.Listener {
-                override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-                    if (oldPosition.positionMs >= 2900 && newPosition.positionMs == 1000L) repeats.incrementAndGet()
-                }
-            }); engine(activity)!!.play()
+        val durationMs = ui.runOnIdle { engine(activity)!!.duration }
+        val listener = object : Player.Listener {
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK && oldPosition.positionMs in (endMs - 100)..<durationMs &&
+                    newPosition.positionMs == startMs) repeats.incrementAndGet()
+            }
         }
+        ui.runOnIdle { engine(activity)!!.apply { addListener(listener); play() } }
         ui.waitUntil(15000) { repeats.get() >= 2 }
-        ui.runOnIdle { engine(activity)!!.pause(); activity.recreate() }
+        ui.runOnIdle {
+            engine(activity)!!.apply { removeListener(listener); pause() }
+            activity.recreate()
+        }
         ui.waitUntil(10000) { var found = false; f.ins.runOnMainSync { runCatching { resumed<PlayerActivity>() }.getOrNull()?.let { if (it !== activity) { activity = it; found = true } } }; found }
         ready(f, activity)
         ui.onNodeWithTag("video-loop-range", useUnmergedTree = true).assertTextContains("循环 0:01 – 0:03")

@@ -15,14 +15,18 @@ import kotlinx.coroutines.CancellationException
 class PlaybackDiagnostics(private val network: Network, private val probe: MediaProbe) {
 
     suspend fun report(site: SiteContext, preferred: String = "720p"): String = buildString {
-        val page = runCatching { network.diagnose(site) }.getOrElse { "首页诊断失败：${it.message}" }
-        appendLine(page)
+        appendLine(network.diagnose(site))
         appendLine()
-        val entry = runCatching {
-            AdapterRegistry.adapter(site, network).feed(AdapterRegistry.adapter(site, network).homeRequest()).videos.firstOrNull { it.type != "站外视频" }
-        }.getOrNull()
+        val adapter = AdapterRegistry.adapter(site, network)
+        val entry = try {
+            adapter.feed(adapter.homeRequest()).videos.firstOrNull { it.type != "站外视频" }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        }
         if (entry == null) { append("没有可以测速的影片，媒体链路未验证。"); return@buildString }
-        val detail = try { AdapterRegistry.adapter(site, network).detail(entry.url) } catch (error: CancellationException) {
+        val detail = try { adapter.detail(entry.url) } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
             append("详情页取不到播放地址：${error.message}\n媒体链路未验证。")
@@ -33,15 +37,22 @@ class PlaybackDiagnostics(private val network: Network, private val probe: Media
             return@buildString
         }
         appendLine("测速样本：${target.label}")
+        val epoch = network.routeEpoch()
         val result = try { probe.measure(site, target) } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
             append("媒体请求失败：${error.message}\n建议换网络或稍后重试。")
             return@buildString
         }
+        if (epoch != network.routeEpoch()) {
+            append("测速期间网络路径已切换，请重新诊断。")
+            return@buildString
+        }
         appendLine(result.summary)
-        appendLine("该档约需 ${StreamSelection.requiredKbps(target)} kbps")
-        append("这条链路适合：${result.suggested}（播放中卡顿会自动降档）")
+        result.suggested?.let {
+            appendLine("该档约需 ${StreamSelection.requiredKbps(target)} kbps")
+            append("这条链路适合：$it（播放中卡顿会自动降档）")
+        }
     }
 
     /**

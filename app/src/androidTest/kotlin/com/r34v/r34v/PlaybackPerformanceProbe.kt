@@ -297,9 +297,8 @@ class PlaybackPerformanceProbe {
                         }
                     }).build()
                 clientField.set(app.network, client)
-                // The bandwidth meter posts an initial network type update on the main looper.
-                // Drain that update before resetting the estimate for the first trial.
-                main { app.linkSpeed }
+                val link = main { app.linkSpeed }
+                // Historical APKs may have queued bandwidth callbacks to the main looper.
                 fixture.ins.waitForIdleSync()
                 val profiles = if (policyComparison) {
                     val links = if (shortRanges) listOf(false) else listOf(false, true)
@@ -335,6 +334,19 @@ class PlaybackPerformanceProbe {
                         Profile(false, true, seekCache = false), Profile(true, true, streamCache = true))
                 }
                 val defaultSession = if (policyComparison) main { app.playback.hlsSeekSessionFactory } else null
+                val sampled = field(link, "sampled")
+                val seeded = field(link, "seeded")
+                val sampledAt = runCatching { field(link, "sampledAt") }.getOrNull()
+                val seededAt = runCatching { field(link, "seededAt") }.getOrNull()
+                val routeGeneration = field(app.network, "routeGeneration")
+                val (originalRoute, originalSpeed) = main {
+                    synchronized(link) {
+                        val route = routeGeneration.getLong(app.network)
+                        link.estimateKbps()
+                        route to listOf(sampled.getInt(link).toLong(), seeded.getInt(link).toLong(),
+                            sampledAt?.getLong(link) ?: 0L, seededAt?.getLong(link) ?: 0L)
+                    }
+                }
                 val experiments = if (policyComparison) policies.filter { it != CdnSeekPolicy.CURRENT }
                     .associateWith { CdnSeekExperiment(app, it) } else emptyMap()
                 fun runTrial(round: Int, profile: Profile) {
@@ -357,7 +369,8 @@ class PlaybackPerformanceProbe {
                         measure(fixture, profile, id, segments, {
                             requests.filter { it.path.startsWith(path) }
                         }, { name -> completions.firstOrNull { it.first == if (name.startsWith('/')) name else path + name }?.second },
-                            expectProbe = !profile.knownSpeed && (profile.multipleQualities || expectSingleProbe), report = round > 0,
+                            expectProbe = !profile.knownSpeed && (expectSingleProbe || (profile.multipleQualities && !profile.hls)),
+                            report = round > 0,
                             experiment = experiment, firstCdnByteAt = { firstCdnBytes.firstOrNull { it.first == id }?.second },
                             playlist = playlist, backPosition = profile.rewindTarget ?: if (cdnLater || shortRanges) 11_200 else 1_200)
                     } finally { activeCdnTrial.set(null) }
@@ -389,7 +402,18 @@ class PlaybackPerformanceProbe {
                         runTrial(1, Profile(false, true, exercise = Exercise.STARTUP, multipleQualities = true))
                     }
                 } finally {
-                    if (defaultSession != null) main { app.playback.hlsSeekSessionFactory = defaultSession }
+                    main {
+                        synchronized(link) {
+                            link.estimateKbps()
+                            if (routeGeneration.getLong(app.network) == originalRoute) {
+                                sampled.setInt(link, originalSpeed[0].toInt())
+                                seeded.setInt(link, originalSpeed[1].toInt())
+                                sampledAt?.setLong(link, originalSpeed[2])
+                                seededAt?.setLong(link, originalSpeed[3])
+                            }
+                        }
+                        if (defaultSession != null) app.playback.hlsSeekSessionFactory = defaultSession
+                    }
                     experiments.values.forEach(CdnSeekExperiment::close)
                     client.connectionPool.evictAll()
                 }
@@ -444,11 +468,15 @@ class PlaybackPerformanceProbe {
             app.library.set("auto_download", false)
             app.library.set("seek_cache", profile.seekCache)
             app.library.set("stream_cache", profile.streamCache)
-            field(app.linkSpeed, "sampled").setInt(app.linkSpeed, 0)
-            field(app.linkSpeed, "seeded").setInt(app.linkSpeed, if (profile.knownSpeed) 1600 else 0)
-            // 注入的估值没有时间戳，必须当作“刚测到”，否则长轮次里会被有效期判成过期。
-            field(app.linkSpeed, "sampledAt").setLong(app.linkSpeed, 0)
-            field(app.linkSpeed, "seededAt").setLong(app.linkSpeed, 0)
+            val link = app.linkSpeed
+            synchronized(link) {
+                link.estimateKbps()
+                field(link, "sampled").setInt(link, 0)
+                field(link, "seeded").setInt(link, if (profile.knownSpeed) 1600 else 0)
+                // 较早的历史 APK 没有时间戳。新版本把无时间戳的测试值视为未过期。
+                runCatching { field(link, "sampledAt") }.getOrNull()?.setLong(link, 0)
+                runCatching { field(link, "seededAt") }.getOrNull()?.setLong(link, 0)
+            }
         }
         val intent = Intent(app, PlayerActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)

@@ -85,11 +85,10 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     private fun httpFor(url: String, owner: SiteContext? = null): DataSource.Factory {
         val host = runCatching { url.toUri().host.orEmpty() }.getOrDefault("")
         val site = owner ?: SiteRegistry.forMediaHost(host)
-        val transport = network.mediaClient.newBuilder().apply {
-            if (site != null) interceptors().add(0, okhttp3.Interceptor { chain ->
-                chain.proceed(chain.request().newBuilder().tag(SiteContext::class.java, site).build())
-            })
-        }.build()
+        val transport = okhttp3.Call.Factory { request ->
+            val tagged = if (site == null) request else request.newBuilder().tag(SiteContext::class.java, site).build()
+            network.mediaClient.newCall(tagged)
+        }
         return OkHttpDataSource.Factory(transport)
             .setUserAgent(site?.userAgent?.takeIf { it.isNotBlank() } ?: SiteContext.DEFAULT_UA)
             .setDefaultRequestProperties(mapOf("Referer" to (site?.mediaReferer ?: "https://$host/")))
@@ -99,13 +98,16 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     private fun httpFactory(owner: SiteContext? = null) = DataSource.Factory {
         object : DataSource {
             private var impl: DataSource? = null
+            private val listeners = mutableListOf<TransferListener>()
             override fun addTransferListener(transferListener: TransferListener) {
+                listeners += transferListener
                 impl?.addTransferListener(transferListener)
             }
             override fun open(dataSpec: DataSpec): Long {
                 val keyOwner = dataSpec.key?.substringBefore(':')?.let(SiteRegistry::byId)
                 val created = httpFor(dataSpec.uri.toString(), owner ?: keyOwner).createDataSource()
                 created.addTransferListener(NoOpTransferListener)
+                listeners.forEach(created::addTransferListener)
                 impl = created
                 return created.open(dataSpec)
             }

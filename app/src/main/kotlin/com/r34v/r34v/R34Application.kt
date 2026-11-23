@@ -32,7 +32,7 @@ class R34Application : Application() {
     val galleryDownloads by lazy { com.r34v.r34v.downloads.GalleryDownloadStore(this, galleries, network, index) { downloadPolicy.allowed } }
     val playback by lazy { PlaybackStore(this, network, library, storage, index) }
     /** 进程内共享的链路速度估计；播放实测与起播前探测都写到这里。 */
-    val linkSpeed by lazy { com.r34v.r34v.playback.LinkSpeed(this) }
+    val linkSpeed by lazy { com.r34v.r34v.playback.LinkSpeed(this, network::routeEpoch) }
     val mediaProbe by lazy { com.r34v.r34v.playback.MediaProbe(network) }
     val playbackDiagnostics by lazy { com.r34v.r34v.playback.PlaybackDiagnostics(network, mediaProbe) }
     val downloadPolicy by lazy { com.r34v.r34v.downloads.DownloadPolicy(this) }
@@ -58,8 +58,14 @@ class R34Application : Application() {
         // Media3's manager is owned by the application main looper, including after service restarts.
         playback.manager
         downloadPolicy.start()
+        getSystemService(android.net.ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
+            object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(path: android.net.Network) = network.defaultNetworkAvailable(path)
+                override fun onLost(path: android.net.Network) = network.defaultNetworkLost(path)
+            }
+        )
         androidx.core.content.ContextCompat.registerReceiver(this, object : android.content.BroadcastReceiver() {
-            override fun onReceive(context: android.content.Context, intent: android.content.Intent) { network.invalidate(); linkSpeed.reset() }
+            override fun onReceive(context: android.content.Context, intent: android.content.Intent) { network.invalidate() }
         }, android.content.IntentFilter(android.net.Proxy.PROXY_CHANGE_ACTION), androidx.core.content.ContextCompat.RECEIVER_EXPORTED)
     }
 

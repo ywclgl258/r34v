@@ -177,7 +177,7 @@ class OptimizationIoTest : ComposeUiCase() {
             val expectedPage = (2..8).single { ui.onAllNodesWithText("$it / 8").fetchSemanticsNodes().isNotEmpty() }
             val offset = GalleryActivity::class.java.getDeclaredField("stripOffset").apply { isAccessible = true }
             val expectedOffset = ui.runOnIdle { offset.getInt(activity) }
-            assertTrue(f.ins.uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK))
+            back(f)
             ui.waitUntil(5000) { ui.onAllNodesWithTag("comic-strip").fetchSemanticsNodes().isEmpty() }
             val saved = checkNotNull(f.app.library.reading(f.video("ehentai").id, "ehentai"))
             assertEquals(expectedPage, saved.page)

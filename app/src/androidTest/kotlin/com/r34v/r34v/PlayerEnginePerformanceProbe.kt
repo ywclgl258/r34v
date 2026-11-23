@@ -202,21 +202,32 @@ class PlayerEnginePerformanceProbe : ComposeUiCase() {
         val seeded = field(link, "seeded")
         val sampledAt = field(link, "sampledAt")
         val seededAt = field(link, "seededAt")
-        val original = main { listOf(sampled.getInt(link), seeded.getInt(link), sampledAt.getLong(link), seededAt.getLong(link)) }
+        val (originalRoute, original) = main {
+            synchronized(link) {
+                link.routeEpoch() to listOf(sampled.getInt(link), seeded.getInt(link), sampledAt.getLong(link), seededAt.getLong(link))
+            }
+        }
         try {
             run { kbps ->
-                sampled.setInt(link, 0)
-                seeded.setInt(link, kbps)
-                // 注入值没有时间戳，按“刚测到”处理，避免长轮次被判成过期。
-                sampledAt.setLong(link, 0)
-                seededAt.setLong(link, 0)
+                synchronized(link) {
+                    link.routeEpoch()
+                    sampled.setInt(link, 0)
+                    seeded.setInt(link, kbps)
+                    // 注入值没有时间戳，按“刚测到”处理，避免长轮次被判成过期。
+                    sampledAt.setLong(link, 0)
+                    seededAt.setLong(link, 0)
+                }
             }
         } finally {
             main {
-                sampled.setInt(link, original[0] as Int)
-                seeded.setInt(link, original[1] as Int)
-                sampledAt.setLong(link, original[2] as Long)
-                seededAt.setLong(link, original[3] as Long)
+                synchronized(link) {
+                    if (link.routeEpoch() == originalRoute) {
+                        sampled.setInt(link, original[0] as Int)
+                        seeded.setInt(link, original[1] as Int)
+                        sampledAt.setLong(link, original[2] as Long)
+                        seededAt.setLong(link, original[3] as Long)
+                    }
+                }
             }
         }
     }

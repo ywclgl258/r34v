@@ -200,19 +200,23 @@ class PlayerActivity : ComponentActivity() {
     private suspend fun chosenStream(streams: List<Stream>, preferred: String): Stream {
         if (streams.isEmpty()) error("详情页没有播放地址，可能需要登录或站点已改版")
         streams.singleOrNull()?.let { return it }
-        val local = app.linkSpeed.estimateKbps()
+        val link = app.linkSpeed
+        val local = link.estimateKbps()
         if (local > 0) return noteChoice(StreamSelection.pick(streams, preferred, local), preferred, local, measured = false)
         val sample = StreamSelection.preferred(streams, preferred) ?: streams.first()
-        // HLS 地址的“文件”是播放列表：1 MB Range 只会读到几百字节的 .m3u8，算出来的是
-        // 请求延迟而不是吞吐。拿它选档会把所有多档站点压到最低档，所以这类片源不对
-        // 播放列表测速：按用户设置起播，主清单交给 Media3 自适应，单档靠卡顿策略降档。
-        if (HlsDownloads.mime(sample.url) != null) return noteChoice(StreamSelection.pick(streams, preferred, 0), preferred, 0, measured = false)
+        if (HlsDownloads.mime(sample.url) != null) return StreamSelection.pick(streams, preferred, 0)
         phase = "正在测试链路速度"
-        val result = runCatching { app.mediaProbe.measure(SiteRegistry.byIdOrDefault(video.site), sample) }.getOrNull()
-        // 服务器只回几百字节时同样只代表延迟，不能作为吞吐证据。
-        val measured = result?.takeIf { it.bytes >= MediaProbe.MIN_TRUSTED_BYTES }?.kbps ?: 0
-        if (measured > 0) app.linkSpeed.seed(measured)
-        return noteChoice(StreamSelection.pick(streams, preferred, measured), preferred, measured, measured = true)
+        val epoch = link.routeEpoch()
+        val result: MediaProbe.Result? = try {
+            app.mediaProbe.measure(SiteRegistry.byIdOrDefault(video.site), sample)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+        val measured = result?.trustedKbps?.takeIf { link.seed(it, epoch) }
+        val estimate = link.estimateKbps()
+        return noteChoice(StreamSelection.pick(streams, preferred, estimate), preferred, estimate, measured = measured == estimate)
     }
 
     /** 选了比用户设置更低的档位时说明原因，避免用户以为设置没生效。 */
@@ -262,7 +266,7 @@ class PlayerActivity : ComponentActivity() {
                     }
                     Player.STATE_READY -> { phase = null; presented = true; bufferingSince = 0
                         if (created.duration > 0 && !loop.validFor(created.duration)) { loop = VideoLoopRange(); gestureHint("片源时长已变更，循环区间已清除") }
-                        if (!showingCover && !autoFullscreenApplied && store.bool("auto_fullscreen")) { autoFullscreenApplied = true; fullscreen = true }
+                        if (!showingCover && !autoFullscreenApplied && store.bool("auto_fullscreen")) changeFullscreen(true)
                         startPendingAutoDownload() }
                     Player.STATE_ENDED -> { phase = null; bufferingSince = 0
                         if (loop.active && created.playWhenReady) { created.seekTo(loop.startMs); created.play() }
@@ -270,7 +274,9 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
             override fun onIsPlayingChanged(playing: Boolean) { playerView?.keepScreenOn = playing; revision++; if (created.playbackState == Player.STATE_READY) status = "${stream?.label} · ${if (playing) { if (offline) "离线播放" else "正在播放" } else "已暂停"}" }
-            override fun onVideoSizeChanged(videoSize: VideoSize) { if (fullscreen) applyFullscreen() }
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (created === player) updateFullscreenOrientation(videoSize)
+            }
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                 if (reason == Player.DISCONTINUITY_REASON_SEEK && !loop.contains(newPosition.positionMs)) {
                     loop = VideoLoopRange(); gestureHint("已跳出循环区间，循环已清除")
@@ -356,10 +362,9 @@ class PlayerActivity : ComponentActivity() {
         open(lower, engine.currentPosition, engine.playWhenReady)
     }
     @Composable private fun Content() {
-        BackHandler { if (locked) { locked = false; controls = true } else if (fullscreen) fullscreen = false else finish() }
-        // 只在进入/退出全屏时应用一次。用 SideEffect 会在每次重组（进度、状态、提示语都在
-        // 触发重组）重新请求方向和隐藏系统栏，既浪费又会在旋转过程中反复打断窗口动画。
-        LaunchedEffect(fullscreen) { applyFullscreen() }
+        // 普通详情交给系统返回，保留跨 Activity 的预测性返回动画。
+        BackHandler(enabled = fullscreen || locked, onBack = ::leavePlayerLayer)
+        LaunchedEffect(Unit) { applyFullscreen() }
         val engine = remember(engineRevision) { player }
         @Suppress("UNUSED_VARIABLE") val changed = revision
         val palette = rememberArtworkPalette(SiteRegistry.byIdOrDefault(video.site), video.thumb, SiteCategory.VIDEO,
@@ -443,8 +448,7 @@ class PlayerActivity : ComponentActivity() {
         showingCover = false
         resumePlay = true
         if (player?.playbackState == Player.STATE_READY && !autoFullscreenApplied && store.bool("auto_fullscreen")) {
-            autoFullscreenApplied = true
-            fullscreen = true
+            changeFullscreen(true)
         }
         if (failureVisible) restart()
         else player?.play()
@@ -477,7 +481,7 @@ class PlayerActivity : ComponentActivity() {
         Box(Modifier.fillMaxSize().padding(8.dp).artworkReveal(Unit).onFocusChanged { focused = it.hasFocus }.focusGroup()
             .testTag("artwork-player-controls")) {
             Row(Modifier.align(Alignment.TopStart).then(plate)) {
-                IconAction(R.drawable.ic_back, "返回") { if (fullscreen) fullscreen = false else finish() }
+                IconAction(R.drawable.ic_back, "返回", click = ::leavePlayerLayer)
             }
             Row(Modifier.align(Alignment.TopEnd).then(plate), verticalAlignment = Alignment.CenterVertically) {
                 if (windowSizeDp().width >= 340 && LocalConfiguration.current.fontScale <= 1.3f) {
@@ -486,7 +490,7 @@ class PlayerActivity : ComponentActivity() {
                     PlaybackSetting("${userRate}×", "播放速度，当前 ${userRate} 倍", true, ::speed)
                 }
                 IconAction(R.drawable.ic_more, "播放器菜单", click = ::playbackOptions)
-                IconAction(R.drawable.ic_fullscreen, if (fullscreen) "退出全屏" else "全屏") { fullscreen = !fullscreen }
+                IconAction(R.drawable.ic_fullscreen, if (fullscreen) "退出全屏" else "全屏") { changeFullscreen(!fullscreen) }
             }
             if (failureVisible) ArtworkAction("重试", modifier = Modifier.align(Alignment.Center), click = ::restart)
             Column(Modifier.align(Alignment.BottomCenter).widthIn(max = 760.dp).fillMaxWidth()) {
@@ -761,23 +765,42 @@ class PlayerActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 40)
         runCatching { app.playback.add(video, options[it]) }.onSuccess { toast("已加入下载，可在统一下载中心查看") }.onFailure(::showError)
     } }
+    private fun leavePlayerLayer() {
+        when {
+            locked -> { locked = false; controls = true }
+            fullscreen -> changeFullscreen(false)
+            else -> finish()
+        }
+    }
+
+    private fun changeFullscreen(value: Boolean) {
+        fullscreen = value
+        // 用户在片源就绪前进出全屏后，迟到的 READY 回调也不会再次进入全屏。
+        if (value) autoFullscreenApplied = true
+        applyFullscreen()
+    }
+
     private fun applyFullscreen() {
         if (pipMode || enteringPip) return
         val bars = WindowCompat.getInsetsController(window, window.decorView)
         if (fullscreen) {
-            // 全屏必须真的转过去。SENSOR_* 在部分机型/ROM（以及方向锁定开启时）会停在竖屏，
-            // 用户看到的就是“进了全屏，画面还是竖的”。LANDSCAPE / PORTRAIT 是强制方向，
-            // 不受方向锁定影响；代价是全屏内不能靠翻转手机换 180°，这是全屏按钮的标准取舍。
-            val size = player?.videoSize
-            val portrait = size != null && size.height > size.width
-            requestedOrientation = if (portrait) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             bars.hide(WindowInsetsCompat.Type.systemBars())
+            player?.videoSize?.let(::updateFullscreenOrientation)
         } else {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             bars.show(WindowInsetsCompat.Type.systemBars())
+            if (requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
         }
+    }
+
+    private fun updateFullscreenOrientation(size: VideoSize) {
+        if (!fullscreen || pipMode || enteringPip || size.width <= 0 || size.height <= 0) return
+        // 有效尺寸到达前保留当前方向，避免竖片在起播或重建时先转成横屏。
+        val orientation = if (size.width * size.pixelWidthHeightRatio < size.height) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        if (requestedOrientation != orientation) requestedOrientation = orientation
     }
     private fun savePosition() { val exo = player ?: return; position = exo.currentPosition.coerceAtLeast(0); val duration = exo.duration.takeIf { it > 0 } ?: durationSeconds(video.duration) * 1000
         store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000, quality = stream?.label.orEmpty(), site = video.site))
@@ -812,7 +835,7 @@ class PlayerActivity : ComponentActivity() {
         val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean { x = e.x; y = e.y; start = player?.currentPosition ?: 0; mode = 0; hold = false; brightness = window.attributes.screenBrightness.takeIf { it >= 0 } ?: .5f; volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC); return true }
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean { controls = !controls; return true }
-            override fun onDoubleTap(e: MotionEvent): Boolean { when { e.x < view.width * .4f -> { player?.seekTo((start - playbackPreferences.seekStepMs).coerceAtLeast(0)); gestureHint("后退 ${playbackPreferences.seekStepMs / 1000} 秒") }; e.x > view.width * .6f -> { player?.seekTo((start + playbackPreferences.seekStepMs).coerceAtMost(player?.duration?.takeIf { it > 0 } ?: Long.MAX_VALUE)); gestureHint("前进 ${playbackPreferences.seekStepMs / 1000} 秒") }; else -> fullscreen = !fullscreen }; return true }
+            override fun onDoubleTap(e: MotionEvent): Boolean { when { e.x < view.width * .4f -> { player?.seekTo((start - playbackPreferences.seekStepMs).coerceAtLeast(0)); gestureHint("后退 ${playbackPreferences.seekStepMs / 1000} 秒") }; e.x > view.width * .6f -> { player?.seekTo((start + playbackPreferences.seekStepMs).coerceAtMost(player?.duration?.takeIf { it > 0 } ?: Long.MAX_VALUE)); gestureHint("前进 ${playbackPreferences.seekStepMs / 1000} 秒") }; else -> changeFullscreen(!fullscreen) }; return true }
             override fun onLongPress(e: MotionEvent) { hold = true; player?.setPlaybackSpeed(playbackPreferences.holdRate); gestureHint("${playbackPreferences.holdRate}× 临时倍速") }
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
                 val dx = e2.x - x; val dy = e2.y - y
