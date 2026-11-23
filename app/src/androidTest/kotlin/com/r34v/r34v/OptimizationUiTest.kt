@@ -84,12 +84,18 @@ class OptimizationUiTest : ComposeUiCase() {
         assertEquals(firstPages, f.requests.count { it.second.page == 1 })
     }
     @Test fun aNewBlockRuleInvalidatesTheCachedPage() = ComposeFixture().use { f ->
-        f.launchFeed(); waitText("刷新")
+        f.launchFeed()
+        val cachedWork = "media-ehentai-sample-${f.video("ehentai").id}"
+        ui.waitUntil(15000) { ui.onNodeWithTag(cachedWork).isDisplayed() }
         ui.onNodeWithContentDescription("设置").performClick()
-        f.app.library.toggleBlocked("sample")
-        back(f)
+        ui.onNodeWithText("屏蔽词").performScrollTo().performClick()
+        clickText("添加屏蔽词")
+        ui.onNode(hasSetTextAction()).performTextReplacement("sample")
+        clickText("确定")
+        assertTrue("sample" in f.app.library.blockedTags("ehentai"))
+        ui.onNodeWithContentDescription("返回").performClick()
         waitText("当前条件下暂无漫画，可调整筛选或修改搜索条件")
-        ui.onAllNodesWithTag("media-ehentai-sample-${f.video("ehentai").id}").assertCountEquals(0)
+        ui.onAllNodesWithTag(cachedWork).assertCountEquals(0)
         Unit
     }
     private fun player(f: ComposeFixture): Pair<PlayerActivity?, ExoPlayer?> {
