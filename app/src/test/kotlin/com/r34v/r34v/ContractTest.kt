@@ -40,8 +40,35 @@ class ContractTest {
     @Test fun completionAndResumeBoundaries() {
         val watch = Watch("42", "Example", "", "/video/42/example/", 15, 600)
         assertTrue(watch.resumable); assertFalse(watch.copy(position = 14).resumable)
+        assertTrue(watch.copy(position = 579).resumable)
         assertTrue(watch.copy(position = 580).finished); assertFalse(watch.copy(position = 580).resumable)
         assertFalse(watch.copy(duration = 0).finished)
+    }
+    @Test fun shortClipsResumeFromPositiveProgressAndPreserveLegacyJson() {
+        val gson = Gson()
+        val empty = gson.fromJson("""{"id":"short","pos":0,"dur":20}""", Watch::class.java)
+        assertFalse(empty.started)
+        assertFalse(empty.finished)
+        assertFalse(empty.resumable)
+        assertNull(empty.ended)
+        assertTrue(empty.copy(position = 1).resumable)
+
+        val partial = gson.fromJson("""{"id":"partial","pos":10,"dur":30}""", Watch::class.java)
+        assertTrue(partial.started)
+        assertFalse(partial.finished)
+        assertTrue(partial.resumable)
+        assertTrue(partial.copy(position = 30).finished)
+        assertFalse(partial.copy(position = 20, duration = 40).finished)
+        assertTrue(partial.copy(position = 21, duration = 41).finished)
+        // Stored seconds can coincide before playback has reached the end on fractional durations.
+        val rounded = gson.fromJson(gson.toJson(partial.copy(position = 30, ended = false)), Watch::class.java)
+        assertTrue(rounded.resumable)
+
+        val ended = partial.copy(position = 0, duration = 0, ended = true)
+        val restored = gson.fromJson(gson.toJson(ended), Watch::class.java)
+        assertTrue(restored.started)
+        assertTrue(restored.finished)
+        assertFalse(restored.resumable)
     }
     @Test fun durationFormatting() { assertEquals(3723L, durationSeconds("1:02:03")); assertEquals(0L, durationSeconds("bad")); assertEquals("1:02:03", timeText(3723000)) }
     @Test fun updateVersionsCompareNumerically() {

@@ -130,15 +130,25 @@ fun ComposeDialogs.selectVideos(videos: List<Video>, action: (List<Video>) -> Un
                 TextAction({ filtering = true }) { Text("筛选") }
                 if (!queryEditing && entries.isNotEmpty()) TextAction({ preparing = true }) { Text("准备离线片单") }
             }
-        val unfinished = entries.filterNot { it.completed }.map { it.video }
-        // 防重入必须在创建队列之前：两次点击会先各写一份队列，后一份覆盖前一份，
-        // 而 open() 里的拦截又让第二次不打开，最终页面拿到的是已被覆盖的令牌，“下一项”消失。
-        var starting by remember(shelf.id) { mutableStateOf(false) }
-        if (!queryEditing && unfinished.isNotEmpty()) Action("按顺序观看 / 阅读", primary = true, modifier = Modifier.fillMaxWidth()) {
-            if (starting) return@Action
+        var starting by remember { mutableStateOf(false) }
+        fun startFailed(error: Throwable) {
+            starting = false
+            dialogs.message("无法开始片单", error.message.orEmpty())
+        }
+        fun startQueue(offlineOnly: Boolean) {
+            if (starting) return
             starting = true
-            runCatching { val queue = app.queue.start(shelf.name, shelf.id, unfinished); MediaRouter.open(context, unfinished.first(), queue.id, opened = { starting = false }, failed = { starting = false }) }
-                .onFailure { starting = false; dialogs.message("无法开始片单", it.message.orEmpty()) }
+            runCatching {
+                MediaRouter.startShelf(context, shelf.name, shelf.id, entries, offlineOnly, opened = { skipped ->
+                    starting = false
+                    if (skipped > 0) android.widget.Toast.makeText(context, "已跳过 $skipped 项未完整离线的作品",
+                        android.widget.Toast.LENGTH_SHORT).show()
+                }, failed = ::startFailed, cancelled = { starting = false })
+            }.onSuccess { accepted -> if (!accepted) starting = false }.onFailure(::startFailed)
+        }
+        if (!queryEditing && entries.any { !it.completed }) {
+            Action("按顺序观看 / 阅读", primary = true, modifier = Modifier.fillMaxWidth(), enabled = !starting) { startQueue(false) }
+            Action("仅离线顺序打开", modifier = Modifier.fillMaxWidth(), enabled = !starting) { startQueue(true) }
         }
         if (entries.isEmpty()) {
             if (view.filtered) LibraryNotice("没有匹配的作品", "搜索与筛选只作用于当前片单。") {

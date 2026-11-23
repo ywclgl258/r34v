@@ -24,7 +24,7 @@ class GalleryDownloadStore(private val context: Context, private val repository:
     private val active = ConcurrentHashMap<String, Job>()
     private val retryJobs = ConcurrentHashMap<String, Job>()
     private val maintenance = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val removalLock = Mutex()
+    private val maintenanceLock = Mutex()
     val changes = MutableStateFlow(0L)
 
     fun key(entry: Video): String = MessageDigest.getInstance("SHA-256").digest("${entry.site}:${entry.id}".toByteArray()).joinToString("") { "%02x".format(it) }
@@ -56,8 +56,9 @@ class GalleryDownloadStore(private val context: Context, private val repository:
         val selection = pages?.map { require(it > 0) { "页码必须大于零" }; it }?.distinct()?.sorted()
         require(selection == null || selection.isNotEmpty()) { "请至少选择一页" }
         val id = key(entry)
-        retryJobs.remove(id)?.cancel()
         val value = synchronized(this@GalleryDownloadStore) {
+            repository.checkDownloadsAllowed()
+            retryJobs.remove(id)?.cancel()
             val previous = task(id)
             check(previous?.state != GalleryDownloadState.REMOVING) { "图集正在删除，请稍后再下载" }
             if (previous?.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING)) previous!!
@@ -71,7 +72,7 @@ class GalleryDownloadStore(private val context: Context, private val repository:
                 selectedPages = selection, group = group?.trim()?.takeIf { it.isNotEmpty() } ?: previous?.group,
             ).also(::write)
         }
-        if (value.state != GalleryDownloadState.COMPLETED && networkAllowed()) startService()
+        if (value.state != GalleryDownloadState.COMPLETED && canRun) startService()
         value
     }
 
@@ -80,14 +81,19 @@ class GalleryDownloadStore(private val context: Context, private val repository:
         val queued = updateIf(id, { it.state == GalleryDownloadState.FAILED && !it.failedRemoval }) {
             it.copy(state = GalleryDownloadState.QUEUED, error = "", failure = null, retryAt = 0)
         }
-        if (queued && networkAllowed()) startService()
+        if (queued && canRun) startService()
         queued
     }
 
     private fun startService(keepQueued: Boolean = false) {
         try { ContextCompat.startForegroundService(context, Intent(context, GalleryDownloadService::class.java)) }
         catch (e: Exception) {
-            tasks().filter { it.state == GalleryDownloadState.QUEUED }.forEach { update(it.id) { task -> task.copy(state = if (keepQueued) GalleryDownloadState.QUEUED else GalleryDownloadState.PAUSED, error = "系统暂时限制后台下载，请回到下载中心点击继续") } }
+            tasks().filter { it.state == GalleryDownloadState.QUEUED }.forEach { record ->
+                updateIf(record.id, { it.state == GalleryDownloadState.QUEUED }) { task ->
+                    val state = if (keepQueued || !repository.downloadsAllowed) GalleryDownloadState.QUEUED else GalleryDownloadState.PAUSED
+                    task.copy(state = state, error = "系统暂时限制后台下载，请回到下载中心点击继续")
+                }
+            }
             throw e
         }
     }
@@ -126,8 +132,18 @@ class GalleryDownloadStore(private val context: Context, private val repository:
         update(id) { if (it.state in listOf(GalleryDownloadState.QUEUED, GalleryDownloadState.DOWNLOADING, GalleryDownloadState.RETRY_WAIT)) it.copy(state = GalleryDownloadState.PAUSED, error = "", failure = null, retryAt = 0) else it }
         active[id]?.cancelAndJoin()
     }
+    /** The storage gate is already closed. Drain writers without changing user pause or selection. */
+    internal suspend fun <T> withWritersStopped(block: suspend () -> T): T = maintenanceLock.withLock {
+        val writers = synchronized(this) { active.toMap() }
+        for ((id, job) in writers) {
+            job.cancelAndJoin()
+            updateIf(id, { it.state == GalleryDownloadState.DOWNLOADING }) { it.copy(state = GalleryDownloadState.QUEUED) }
+        }
+        block()
+    }
+
     suspend fun remove(id: String) = withContext(Dispatchers.IO + NonCancellable) {
-        removalLock.withLock {
+        maintenanceLock.withLock {
             val record = task(id) ?: return@withLock
             retryJobs.remove(id)?.cancel()
             update(id) { it.copy(state = GalleryDownloadState.REMOVING, retryAt = 0) }
@@ -174,19 +190,21 @@ class GalleryDownloadStore(private val context: Context, private val repository:
         repository.auditDownload(record.entry)
     }
     suspend fun repair(id: String): GalleryDownload = withContext(Dispatchers.IO) {
-        val record = task(id) ?: error("下载任务不存在")
-        check(record.state != GalleryDownloadState.REMOVING && active[id]?.isActive != true) { "请先暂停任务再修复" }
-        val audit = repository.auditDownload(record.entry)
-        val damaged = audit.missingPages + audit.corruptPages
-        if (audit.complete || damaged.isEmpty()) {
-            require(audit.total > 0 && audit.validPages.size == audit.total) { "没有需要修复的图页，但下载仍不完整，请重新下载" }
-            repository.finishDownload(record.entry, audit.total)
-            index.putComic(record.entry, audit.bytes)
+        maintenanceLock.withLock {
+            repository.checkDownloadsAllowed()
+            val record = task(id) ?: error("下载任务不存在")
+            check(record.state != GalleryDownloadState.REMOVING && active[id]?.isActive != true) { "请先暂停任务再修复" }
+            val layout = repository.downloadLayout()
+            val audit = repository.auditWriteTarget(record.entry, layout) ?: return@withLock add(record.entry)
+            val damaged = audit.missingPages + audit.corruptPages
+            if (!audit.complete) return@withLock add(record.entry, damaged)
+
+            repository.commitDownload(record.entry, layout, audit.validPages.toSet())
+            index.putComic(record.entry, audit.bytes, layout = layout)
             update(id) { it.copy(state = GalleryDownloadState.COMPLETED, pages = audit.total, total = audit.total, completedPages = audit.validPages,
                 selectedPages = null, bytes = audit.bytes, error = "", failure = null) }
-            return@withContext task(id)!!
+            task(id)!!
         }
-        add(record.entry, damaged)
     }
 
     @Synchronized fun next(scope: CoroutineScope): Job? {
@@ -208,7 +226,8 @@ class GalleryDownloadStore(private val context: Context, private val repository:
     private suspend fun download(record: GalleryDownload) {
         var stage = GalleryDownloadStage.PREPARING
         try {
-            val gallery = retryIo(record.id, stage) { repository.prepareDownload(record.entry) }
+            val layout = repository.downloadLayout()
+            val gallery = retryIo(record.id, stage) { repository.prepareDownload(record.entry, layout) }
             val requested = record.selectedPages?.toSet() ?: (1..gallery.pageCount).toSet()
             check(requested.isNotEmpty() && requested.all { it in 1..gallery.pageCount }) { "所选页码超出本图集范围" }
             val site = SiteRegistry.byIdOrDefault(record.entry.site)
@@ -216,15 +235,17 @@ class GalleryDownloadStore(private val context: Context, private val repository:
             var previous: GalleryImage? = null
             var bytes = 0L
             val already = task(record.id)?.savedPages.orEmpty().filter { it in requested }.toSet()
-            update(record.id) { it.copy(pages = already.size, completedPages = already.sorted(), total = gallery.pageCount, bytes = 0, selectedPages = requested.sorted()) }
+            updateIf(record.id, { it.state == GalleryDownloadState.DOWNLOADING }) {
+                it.copy(pages = already.size, completedPages = already.sorted(), total = gallery.pageCount, bytes = 0)
+            }
             for (index in requested.sorted()) {
                 currentCoroutineContext().ensureActive()
                 stage = GalleryDownloadStage.RESOLVING_PAGE
                 update(record.id) { if (it.state == GalleryDownloadState.DOWNLOADING) it.copy(stage = stage) else it }
-                val url = repository.cachedPageUrl(record.entry, index) ?: previous?.nextUrl?.takeIf { image -> previous?.index == index - 1 && image.isNotBlank() }
+                val url = repository.cachedPageUrl(record.entry, index, layout) ?: previous?.nextUrl?.takeIf { image -> previous?.index == index - 1 && image.isNotBlank() }
                     ?: retryIo(record.id, stage) { adapter.galleryPageLink(gallery, index) }
                 stage = GalleryDownloadStage.DOWNLOADING_PAGE
-                val (image, size) = retryIo(record.id, stage) { repository.downloadPage(record.entry, index, url) }
+                val (image, size) = retryIo(record.id, stage) { repository.downloadPage(record.entry, index, url, layout) }
                 previous = image
                 bytes += size
                 val saved = (task(record.id)?.savedPages.orEmpty() + index).sorted()
@@ -233,11 +254,9 @@ class GalleryDownloadStore(private val context: Context, private val repository:
             currentCoroutineContext().ensureActive()
             stage = GalleryDownloadStage.COMMITTING
             update(record.id) { if (it.state == GalleryDownloadState.DOWNLOADING) it.copy(stage = stage) else it }
-            val audit = repository.auditDownload(record.entry)
-            if (audit.complete) {
-                repository.finishDownload(record.entry, gallery.pageCount)
-                runCatching { index.putComic(record.entry, audit.bytes) }
-            } else repository.finishPartialDownload(record.entry, requested)
+            val audit = repository.commitDownload(record.entry, layout, requested)
+            if (audit.complete) runCatching { index.putComic(record.entry, audit.bytes, layout = layout) }
+            index.invalidate()
             val saved = audit.validPages
             update(record.id) { if (it.state == GalleryDownloadState.DOWNLOADING) it.copy(state = GalleryDownloadState.COMPLETED, pages = saved.size,
                 completedPages = saved, bytes = audit.bytes, selectedPages = if (audit.complete) null else requested.sorted(), error = "", failure = null, retryAt = 0) else it }

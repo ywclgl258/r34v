@@ -192,18 +192,18 @@ class NewFeaturesUiTest : ComposeUiCase() {
     }
 
     @Test fun libraryAndInboxExposeSubscriptionManagement() = ComposeFixture().use { f ->
-        f.app.library.clearSubscriptions("r34v")
+        SiteRegistry.all.forEach { f.app.library.clearSubscriptions(it.id) }
         f.app.library.toggleSubscription(Subscription("sample", "示例标签", site = "r34v"), "r34v")
         f.launch(); waitHome(); clickText("片库"); waitText("我的片库"); f.shot("library-tag-subscriptions"); clickText("标签订阅")
-        waitText("管理标签"); clickText("管理标签"); waitText("示例标签")
-        ui.onNodeWithContentDescription("取消订阅 示例标签").performClick(); clickText("完成")
+        waitText("示例标签")
+        ui.onNodeWithContentDescription("管理 示例标签 · Rule34Video").performClick()
+        clickText("取消订阅"); clickText("取消订阅")
         assertFalse(f.app.library.isSubscribed("sample", "r34v"))
         f.launch(); waitHome(); openPersonalHome()
         val inbox = hasText("订阅更新 · ", substring = true) and hasClickAction()
-        ui.waitUntil(15000) { ui.onAllNodes(inbox).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("personal-home").performScrollToNode(inbox)
         ui.onNode(inbox).performClick(); clickText("标签订阅")
-        waitText("还没有订阅任何标签")
+        waitText("这个范围还没有订阅。可在标签页点“订阅”。")
     }
 
     @Test fun subscriptionInboxTracksNewWorksAndPersistsReadState() = ComposeFixture().use { f ->
@@ -213,8 +213,8 @@ class NewFeaturesUiTest : ComposeUiCase() {
         f.feedOverride = { owner, request -> if (request.kind != FeedKind.TAG) null else FeedPage(
             listOf(f.video(owner).copy(id = "old", title = "原有订阅作品")) + if (updated.get()) listOf(f.video(owner).copy(id = "new", title = "新到订阅作品")) else emptyList(), 1, 1, "subscriptions") }
         f.launch(); waitHome(); clickText("片库"); ui.onNodeWithContentDescription("订阅").performClick()
-        waitText("原有订阅作品"); clickText("更新收件箱"); waitText("未读 0")
-        updated.set(true); clickText("刷新"); waitText("新到订阅作品"); waitText("未读 1")
+        clickText("订阅内容"); waitText("原有订阅作品"); clickText("更新收件箱"); waitText("未读 0")
+        updated.set(true); clickText("检查更新"); waitText("新到订阅作品"); waitText("未读 1")
         ui.onNodeWithContentDescription("新到订阅作品 的更多操作").performClick(); clickText("标记已读")
         waitText("未读 0"); assertTrue(f.app.library.personal.inbox("r34v").entries.first { it.video.id == "new" }.read)
         f.shot("features-inbox")

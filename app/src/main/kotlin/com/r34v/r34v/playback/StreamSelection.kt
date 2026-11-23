@@ -98,6 +98,14 @@ object StreamSelection {
             ?: streams.minByOrNull { it.height }!!
     }
 
+    /** 刷新播放地址时保留当前档位，旧档消失时才按当前链路重新选档。 */
+    fun afterRefresh(streams: List<Stream>, previous: Stream, bandwidthKbps: Int): Stream {
+        streams.firstOrNull { it.label == previous.label }?.let { return it }
+        // 有明确分辨率可比较时，不把“原画”等未知档位误当作最低档。
+        val comparable = streams.filter { it.height > 0 }.ifEmpty { streams }
+        return pick(comparable, previous.label, bandwidthKbps)
+    }
+
     /** 下一档更低的清晰度；已经是最低档时返回 null。 */
     fun lower(streams: List<Stream>, current: Stream): Stream? =
         streams.sortedByDescending { it.height }.dropWhile { it.label != current.label }.drop(1).firstOrNull()

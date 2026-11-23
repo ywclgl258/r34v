@@ -53,6 +53,10 @@ import java.util.concurrent.atomic.AtomicReference
 /** Opt-in controlled comparison. Sample preparation and execution are in docs/dev/playback-performance.md. */
 class PlaybackPerformanceProbe {
     private enum class Exercise { SEEK, STARTUP, REBUFFER, HLS_CACHE, CDN, SHORT_RANGES }
+    private enum class Mp4Link { WEAK, JITTER }
+    private enum class Mp4Policy(val range: String) {
+        BASELINE("bytes=0-1048575"), BUDGETED("bytes=0-131071"),
+    }
 
     private data class Profile(
         val hls: Boolean,
@@ -64,13 +68,17 @@ class PlaybackPerformanceProbe {
         val weakCdn: Boolean = false,
         val cdnPolicy: CdnSeekPolicy? = null,
         val rewindTarget: Long? = null,
+        val mp4Link: Mp4Link? = null,
+        val mp4Policy: Mp4Policy? = null,
     ) {
         val media = when {
             exercise == Exercise.SHORT_RANGES -> "ranges.m3u8"
             hls -> "index.m3u8"
             else -> "source.mp4"
         }
-        val name = if (exercise == Exercise.CDN) {
+        val name = if (mp4Link != null) {
+            "mp4-probe-${mp4Link.name.lowercase()}-${checkNotNull(mp4Policy).name.lowercase()}"
+        } else if (exercise == Exercise.CDN) {
             "cdn-${if (weakCdn) "weak" else "natural"}-${cdnPolicy?.label ?: if (seekCache) "on" else "off"}" +
                 (rewindTarget?.let { "-back-$it" } ?: "")
         } else if (exercise == Exercise.SHORT_RANGES) "hls-range-${checkNotNull(cdnPolicy).label}"
@@ -86,8 +94,7 @@ class PlaybackPerformanceProbe {
         val hlsSession get() = hls && seekCache && !streamCache
     }
 
-    private data class Request(val path: String, val range: String?, val start: Long, val length: Int) {
-        val probe get() = range == "bytes=0-1048575"
+    private data class Request(val path: String, val range: String?, val start: Long, val length: Int, val probe: Boolean = false) {
         val detail get() = path.endsWith("/detail")
 
         fun reads(segment: ProbeSegment): Boolean {
@@ -99,6 +106,7 @@ class PlaybackPerformanceProbe {
     }
 
     private data class Frame(val at: Long, val position: Long)
+    private data class ProbeEnd(val path: String, val at: Long, val outcome: String)
     private data class CacheEvent(val span: CacheSpan, val at: Long)
     private data class CdnTrial(val id: String, val weak: Boolean)
 
@@ -186,8 +194,10 @@ class PlaybackPerformanceProbe {
     @Test fun compareProgressiveAndHls() {
         val args = InstrumentationRegistry.getArguments()
         assumeTrue(args.getString("playbackPerf") == "true")
-        val repeats = args.getString("playbackPerfRepeats")?.toInt() ?: 3
+        val mp4ProbeComparison = args.getString("playbackPerfScenario") == "mp4-probe"
+        val repeats = args.getString("playbackPerfRepeats")?.toInt() ?: if (mp4ProbeComparison) 10 else 3
         require(repeats > 0)
+        require(!mp4ProbeComparison || repeats >= 5) { "MP4 startup comparison requires at least five pairs per condition" }
         val startupComparison = args.getString("playbackPerfScenario") == "startup"
         val hlsCacheComparison = args.getString("playbackPerfScenario") == "hls-cache"
         val scenario = args.getString("playbackPerfScenario")
@@ -206,7 +216,8 @@ class PlaybackPerformanceProbe {
             val directory = File(fixture.app.filesDir, "playback_probe")
             val media = if (cdnComparison) emptyMap() else directory.listFiles().orEmpty().filter(File::isFile).associate { it.name to it.readBytes() }
             val names = media.keys.filter { it.matches(Regex("segment\\d+\\.ts")) }.sorted()
-            if (shortRanges) check(media.keys.containsAll(listOf("ranges.m3u8", "ranges.mp4"))) { "Missing short byte-range fixtures" }
+            if (mp4ProbeComparison) check(media.keys.containsAll(listOf("source.mp4", "source-720.mp4"))) { "Missing 360p/720p MP4 fixtures" }
+            else if (shortRanges) check(media.keys.containsAll(listOf("ranges.m3u8", "ranges.mp4"))) { "Missing short byte-range fixtures" }
             else if (!cdnComparison) check(media.keys.containsAll(listOf("source.mp4", "index.m3u8")) && names.isNotEmpty()) { "Missing playback_probe fixtures" }
             val cdnClient = fixture.app.network.client.newBuilder().cache(null).followRedirects(false).build()
             val cdn = if (cdnComparison) cdnClip(cdnClient) else null
@@ -214,6 +225,7 @@ class PlaybackPerformanceProbe {
             val cdnPaths = cdn?.let { it.segments.map { segment -> segment.uri }.toSet() + it.uri }.orEmpty()
             val requests = ConcurrentLinkedQueue<Request>()
             val completions = ConcurrentLinkedQueue<Pair<String, Long>>()
+            val probeEnds = ConcurrentLinkedQueue<ProbeEnd>()
             val firstCdnBytes = ConcurrentLinkedQueue<Pair<String, Long>>()
             MockWebServer().use { server ->
                 server.dispatcher = object : Dispatcher() {
@@ -227,9 +239,13 @@ class PlaybackPerformanceProbe {
                                 id.contains("-hls-") -> "index.m3u8"
                                 else -> "source.mp4"
                             }
-                            val url = cdn?.uri ?: server.url("/playback-probe/$id/$mediaName")
+                            val url = server.url("/playback-probe/$id/source.mp4").toString()
                             val label = if (cdn != null) "1080p" else "360p"
-                            val alternate = if (id.endsWith("-multiple")) ",video_alt_url:'$url?quality=720',video_alt_url_text:'720p'" else ""
+                            val alternate = when {
+                                id.contains("-mp4-probe-") -> server.url("/playback-probe/$id/source-720.mp4").toString()
+                                id.endsWith("-multiple") -> "$url?quality=720"
+                                else -> null
+                            }?.let { ",video_alt_url:'$it',video_alt_url_text:'720p'" }.orEmpty()
                             "<h1>Playback probe</h1><script>var flashvars={video_id:'$id',video_url:'$url',video_url_text:'$label'$alternate}</script>".toByteArray()
                         } else media[name] ?: return MockResponse().setResponseCode(404)
                         val range = request.getHeader("Range")
@@ -237,17 +253,22 @@ class PlaybackPerformanceProbe {
                         val end = (range?.substringAfter('-')?.toIntOrNull() ?: bytes.lastIndex).coerceAtMost(bytes.lastIndex)
                         if (start !in 0..end) return MockResponse().setResponseCode(416).setHeader("Content-Range", "bytes */${bytes.size}")
                         val length = end - start + 1
-                        requests.add(Request(path, range, now(), length))
+                        val received = Request(path, range, now(), length, isProbe(range, request.getHeader("Cache-Control")))
+                        requests.add(received)
+                        val jitter = id.contains("-mp4-probe-jitter-")
                         val throttlePeriod = when {
+                            jitter -> 64L
                             id.contains("-hls-range-") -> 25L
                             id.endsWith("-rebuffer") -> 200L
                             else -> 80L
                         }
-                        return MockResponse().setHeadersDelay(120, MILLISECONDS).throttleBody(16384, throttlePeriod, MILLISECONDS)
+                        val headersDelay = if (jitter && received.probe) 2_420L else 120L
+                        return MockResponse().setHeadersDelay(headersDelay, MILLISECONDS)
+                            .throttleBody(if (jitter) 32_768 else 16_384, throttlePeriod, MILLISECONDS)
                             .setHeader("Content-Type", when (name) {
                                 "detail" -> "text/html; charset=utf-8"
                                 "index.m3u8", "ranges.m3u8" -> "application/vnd.apple.mpegurl"
-                                "source.mp4", "ranges.mp4" -> "video/mp4"
+                                "source.mp4", "source-720.mp4", "ranges.mp4" -> "video/mp4"
                                 else -> "video/mp2t"
                             }).setHeader("Accept-Ranges", "bytes")
                             .setBody(Buffer().write(bytes, start, length)).apply {
@@ -287,7 +308,20 @@ class PlaybackPerformanceProbe {
                         chain.proceed(request.newBuilder().url(server.url(path)).build())
                     }
                     .eventListener(object : EventListener() {
+                        private fun endProbe(call: Call, outcome: String) {
+                            val request = call.request()
+                            val path = request.url.encodedPath
+                            if (mp4ProbeComparison && isProbe(request.header("Range"), request.header("Cache-Control"))) {
+                                probeEnds.add(ProbeEnd(path, now(), outcome))
+                            }
+                        }
+
+                        override fun callFailed(call: Call, ioe: IOException) {
+                            endProbe(call, if (call.isCanceled()) "cancelled" else "failed")
+                        }
+
                         override fun callEnd(call: Call) {
+                            endProbe(call, "completed")
                             val url = call.request().url
                             val path = if (url in cdnPaths) {
                                 val trial = activeCdnTrial.get() ?: return
@@ -300,7 +334,14 @@ class PlaybackPerformanceProbe {
                 val link = main { app.linkSpeed }
                 // Historical APKs may have queued bandwidth callbacks to the main looper.
                 fixture.ins.waitForIdleSync()
-                val profiles = if (policyComparison) {
+                val profiles = if (mp4ProbeComparison) {
+                    Mp4Link.entries.flatMap { condition ->
+                        Mp4Policy.entries.map { policy ->
+                            Profile(false, false, seekCache = false, multipleQualities = true,
+                                mp4Link = condition, mp4Policy = policy)
+                        }
+                    }
+                } else if (policyComparison) {
                     val links = if (shortRanges) listOf(false) else listOf(false, true)
                     links.flatMap { weak ->
                         val targets = if (nearSegment && !shortRanges) {
@@ -334,6 +375,9 @@ class PlaybackPerformanceProbe {
                         Profile(false, true, seekCache = false), Profile(true, true, streamCache = true))
                 }
                 val defaultSession = if (policyComparison) main { app.playback.hlsSeekSessionFactory } else null
+                // Resolve the injection only for this scenario so historical APKs still run the other profiles.
+                val probePolicyField = if (mp4ProbeComparison) field(app.mediaProbe, "startupPolicy") else null
+                val originalProbePolicy = probePolicyField?.get(app.mediaProbe)
                 val sampled = field(link, "sampled")
                 val seeded = field(link, "seeded")
                 val sampledAt = runCatching { field(link, "sampledAt") }.getOrNull()
@@ -352,6 +396,16 @@ class PlaybackPerformanceProbe {
                 fun runTrial(round: Int, profile: Profile) {
                     val id = "${fixture.nonce}-$round-${profile.name}"
                     val path = "/playback-probe/$id/"
+                    val trialRequests = { requests.filter { it.path.startsWith(path) } }
+                    val mp4Policy = profile.mp4Policy
+                    if (mp4Policy != null) {
+                        val injection = checkNotNull(probePolicyField)
+                        injection.set(app.mediaProbe, checkNotNull(injection.type.enumConstants).single { (it as Enum<*>).name == mp4Policy.name })
+                        measureMp4Startup(fixture, id, round, checkNotNull(profile.mp4Link), mp4Policy, trialRequests) { probe ->
+                            probeEnds.firstOrNull { it.path == probe.path }
+                        }
+                        return
+                    }
                     val playlist = cdn ?: if (shortRanges) {
                         checkNotNull(media[profile.media]).inputStream().use { parsePlaylist(server.url(path + profile.media), it) }.also {
                             check(it.segments.size > 10 && it.segments.all { s -> s.uri == it.segments.first().uri && s.length > 0 })
@@ -366,9 +420,8 @@ class PlaybackPerformanceProbe {
                     }
                     if (cdn != null) activeCdnTrial.set(CdnTrial(id, profile.weakCdn))
                     try {
-                        measure(fixture, profile, id, segments, {
-                            requests.filter { it.path.startsWith(path) }
-                        }, { name -> completions.firstOrNull { it.first == if (name.startsWith('/')) name else path + name }?.second },
+                        measure(fixture, profile, id, segments, trialRequests,
+                            { name -> completions.firstOrNull { it.first == if (name.startsWith('/')) name else path + name }?.second },
                             expectProbe = !profile.knownSpeed && (expectSingleProbe || (profile.multipleQualities && !profile.hls)),
                             report = round > 0,
                             experiment = experiment, firstCdnByteAt = { firstCdnBytes.firstOrNull { it.first == id }?.second },
@@ -384,6 +437,9 @@ class PlaybackPerformanceProbe {
                         profiles.take(2).forEach { runTrial(0, it) }
                     } else if (hlsCacheComparison) {
                         profiles.forEach { runTrial(0, it) }
+                    } else if (mp4ProbeComparison) {
+                        // Both codecs and both startup policies are warmed by the stable-link pair.
+                        profiles.take(2).forEach { runTrial(0, it) }
                     } else {
                         val warmup = if (startupComparison) Exercise.STARTUP else Exercise.SEEK
                         runTrial(0, Profile(false, true, exercise = warmup))
@@ -402,6 +458,7 @@ class PlaybackPerformanceProbe {
                         runTrial(1, Profile(false, true, exercise = Exercise.STARTUP, multipleQualities = true))
                     }
                 } finally {
+                    if (probePolicyField != null) probePolicyField.set(app.mediaProbe, originalProbePolicy)
                     main {
                         synchronized(link) {
                             link.estimateKbps()
@@ -418,6 +475,93 @@ class PlaybackPerformanceProbe {
                     client.connectionPool.evictAll()
                 }
             }
+        }
+    }
+
+    private fun measureMp4Startup(
+        fixture: ComposeFixture, id: String, round: Int, condition: Mp4Link, policy: Mp4Policy,
+        requests: () -> List<Request>, probeEnd: (Request) -> ProbeEnd?,
+    ) {
+        val app = fixture.app
+        val site = SiteRegistry.R34V
+        val video = Video(id, "Playback probe", "${site.base}/playback-probe/$id/detail", site = site.id)
+        val frames = ConcurrentLinkedQueue<Frame>()
+        val firstFrame = object : AnalyticsListener {
+            override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
+                frames.add(Frame(renderTimeMs, eventTime.currentPlaybackPositionMs))
+            }
+        }
+        val rebuffer = RebufferObserver()
+        preparePlayback(app, "720p", knownSpeed = false, seekCache = false, streamCache = false)
+        val (launched, activity) = launchPlayback(app, video)
+        val playerField = field(activity, "player")
+        val selections = mutableListOf<String>()
+        var attached: ExoPlayer? = null
+        fun record(uri: Uri?) {
+            val quality = when (uri?.lastPathSegment) {
+                "source.mp4" -> "360p"
+                "source-720.mp4" -> "720p"
+                null -> return
+                else -> error("Unexpected MP4 rendition for $id: $uri")
+            }
+            if (selections.lastOrNull() != quality) selections.add(quality)
+        }
+        val rendition = object : AnalyticsListener {
+            override fun onMediaItemTransition(eventTime: AnalyticsListener.EventTime, mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                record(mediaItem?.localConfiguration?.uri)
+            }
+        }
+        fun observe(): ExoPlayer? {
+            val current = playerField.get(activity) as ExoPlayer? ?: return null
+            check(current.playerError == null) { "Playback failed for $id: ${current.playerError}" }
+            record(current.currentMediaItem?.localConfiguration?.uri)
+            if (current !== attached) {
+                attached = current
+                current.addAnalyticsListener(firstFrame)
+                current.addAnalyticsListener(rendition)
+                current.addListener(rebuffer)
+                rebuffer.onPlaybackStateChanged(current.playbackState)
+                rebuffer.onIsPlayingChanged(current.isPlaying)
+            }
+            return current
+        }
+        try {
+            val startup = await("first MP4 frame for $id", timeoutMs = 35_000) {
+                main { observe() }
+                frames.peek()
+            }
+            val (through, stallStats) = await("16 seconds of MP4 playback for $id", timeoutMs = 60_000) {
+                main {
+                    val player = observe()
+                    if (player != null && player.currentPosition >= 16_000 && player.isPlaying) now() to rebuffer.result() else null
+                }
+            }
+            val observed = requests()
+            val probe = observed.single { it.probe }
+            check(probe.path.endsWith("/source-720.mp4") && probe.range == policy.range) {
+                "Unexpected $policy startup request for $id: $probe"
+            }
+            val terminal = checkNotNull(probeEnd(probe)) { "Missing probe completion for $id" }
+            val firstMedia = observed.first { !it.detail && !it.probe }
+            check(probe.start <= firstMedia.start && firstMedia.start <= startup.at)
+            val (initial, final, switches) = main {
+                check(selections.isNotEmpty()) {
+                    "Missing rendition for $id: media=${playerField.get(activity)?.let { (it as ExoPlayer).currentMediaItem }}"
+                }
+                Triple(selections.first(), selections.last(), selections.size - 1)
+            }
+            if (round > 0) Log.i("R34VMp4Probe", "round=$round condition=${condition.name} policy=${policy.name} " +
+                "preferred=720p initialQuality=$initial finalQuality=$final switches=$switches " +
+                "firstFrameMs=${startup.at - launched} $stallStats probeRange=${probe.range} " +
+                "probeMs=${terminal.at - probe.start} probeOutcome=${terminal.outcome} " +
+                "httpAtFirstFrame=${observed.count { it.start <= startup.at }} httpThrough16=${observed.count { it.start <= through }} " +
+                "mediaHttpThrough16=${observed.count { !it.detail && !it.probe && it.start <= through }}")
+        } catch (failure: Throwable) {
+            Log.e("R34VMp4Probe", "Failed $id selections=$selections requests=${requests()}", failure)
+            throw failure
+        } finally {
+            main { activity.finish() }
+            await("close for $id") { main { true.takeIf { activity.isDestroyed && playerField.get(activity) == null } } }
         }
     }
 
@@ -462,32 +606,8 @@ class PlaybackPerformanceProbe {
                 frames.add(Frame(renderTimeMs, eventTime.currentPlaybackPositionMs))
             }
         }
-        main {
-            app.library.set("quality", label)
-            app.library.set("native_speed", "1.0")
-            app.library.set("auto_download", false)
-            app.library.set("seek_cache", profile.seekCache)
-            app.library.set("stream_cache", profile.streamCache)
-            val link = app.linkSpeed
-            synchronized(link) {
-                link.estimateKbps()
-                field(link, "sampled").setInt(link, 0)
-                field(link, "seeded").setInt(link, if (profile.knownSpeed) 1600 else 0)
-                // 较早的历史 APK 没有时间戳。新版本把无时间戳的测试值视为未过期。
-                runCatching { field(link, "sampledAt") }.getOrNull()?.setLong(link, 0)
-                runCatching { field(link, "seededAt") }.getOrNull()?.setLong(link, 0)
-            }
-        }
-        val intent = Intent(app, PlayerActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            .putExtra("video", app.library.gson.toJson(video))
-        val launched = main { now().also { app.startActivity(intent) } }
-        val activity = await("activity for $id") {
-            main {
-                ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
-                    .filterIsInstance<PlayerActivity>().singleOrNull()
-            }
-        }
+        preparePlayback(app, label, profile.knownSpeed, profile.seekCache, profile.streamCache)
+        val (launched, activity) = launchPlayback(app, video)
         val playerField = field(activity, "player")
         var writeReport: String? = null
         var observation: Closeable? = null
@@ -648,6 +768,40 @@ class PlaybackPerformanceProbe {
             }
         }
     }
+
+    private fun preparePlayback(app: R34Application, label: String, knownSpeed: Boolean, seekCache: Boolean, streamCache: Boolean) = main {
+        app.library.set("quality", label)
+        app.library.set("native_speed", "1.0")
+        app.library.set("auto_download", false)
+        app.library.set("seek_cache", seekCache)
+        app.library.set("stream_cache", streamCache)
+        val link = app.linkSpeed
+        synchronized(link) {
+            link.estimateKbps()
+            field(link, "sampled").setInt(link, 0)
+            field(link, "seeded").setInt(link, if (knownSpeed) 1600 else 0)
+            // 较早的历史 APK 没有时间戳。新版本把无时间戳的测试值视为未过期。
+            runCatching { field(link, "sampledAt") }.getOrNull()?.setLong(link, 0)
+            runCatching { field(link, "seededAt") }.getOrNull()?.setLong(link, 0)
+        }
+    }
+
+    private fun launchPlayback(app: R34Application, video: Video): Pair<Long, PlayerActivity> {
+        val intent = Intent(app, PlayerActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            .putExtra("video", app.library.gson.toJson(video))
+        val launched = main { now().also { app.startActivity(intent) } }
+        val activity = await("activity for ${video.id}") {
+            main {
+                ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                    .filterIsInstance<PlayerActivity>().singleOrNull()
+            }
+        }
+        return launched to activity
+    }
+
+    private fun isProbe(range: String?, cacheControl: String?) =
+        range == Mp4Policy.BASELINE.range || (range == Mp4Policy.BUDGETED.range && cacheControl == "no-store")
 
     private fun now() = SystemClock.elapsedRealtime()
     private fun field(owner: Any, name: String) = owner.javaClass.getDeclaredField(name).apply { isAccessible = true }

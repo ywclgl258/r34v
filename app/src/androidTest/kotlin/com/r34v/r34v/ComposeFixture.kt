@@ -113,7 +113,8 @@ class ComposeFixture(private val cinematic: Boolean = false, private val preserv
     private val cinemaArt = listOf("stranger.jpg", "glory.jpg", "robots.jpg", "dark.jpg", "wednesday.jpg", "queen.jpg")
     private inner class FixtureAdapter(override val site: SiteContext) : SiteAdapter {
         override val capabilities = setOf(Capability.FEED, Capability.SEARCH, Capability.TAG, Capability.MODEL, Capability.CATEGORY, Capability.RANKING) + if (site.id in listOf("ehentai", "exhentai")) setOf(Capability.SESSION_IMPORT) else emptySet()
-        override val sections = listOf(Section("latest", "最新更新", feed = FeedRequest()), Section("popular", "热门榜", feed = FeedRequest(FeedKind.POPULAR)), Section("categories", "分类", feed = FeedRequest(FeedKind.CATEGORY, "sample")))
+        override val sections = listOf(Section("latest", "最新更新", feed = FeedRequest()), Section("popular", "热门榜", feed = FeedRequest(FeedKind.POPULAR)), Section("categories", "分类", feed = FeedRequest(FeedKind.CATEGORY, "sample"))) +
+            if (site == SiteRegistry.R34V) listOf(Section("tags", "标签索引")) else emptyList()
         override val sorts = listOf(Sort.NEWEST, Sort.VIEWS, Sort.RELEVANCE)
         override fun resolve(request: FeedRequest) = "${site.base}/compose-$nonce/${request.id}"
         override fun homeUrl() = "${site.base}/compose-$nonce/"
@@ -135,7 +136,7 @@ class ComposeFixture(private val cinematic: Boolean = false, private val preserv
             detailHook?.invoke()
             val identity = Regex("content-(\\d+)-(\\d+)$").find(url.trimEnd('/'))
             val entry = video(site.id, identity?.groupValues?.get(1)?.toIntOrNull() ?: 1, identity?.groupValues?.get(2)?.toIntOrNull() ?: 0)
-            val streams = detailStreams ?: listOf(Stream("720p", server.url("/clip.mp4?quality=720").toString()), Stream("480p", server.url("/clip.mp4?quality=480").toString()))
+            val streams = detailStreams ?: listOf(mediaStream("720p"), mediaStream("480p"))
             return Detail(entry, streams, mapOf("标签" to listOf(Link("sample", "示例标签", "${site.base}/tags/sample/"))), "用于验证原生播放的中性测试片段。", listOf(video(site.id, 1, 1)), listOf(Comment("测试作者", "中性测试评论", "2026")), emptyList())
         }
         override suspend fun index(section: String) = listOf(Link("sample", "示例索引", "${site.base}/tags/sample/"))
@@ -157,6 +158,7 @@ class ComposeFixture(private val cinematic: Boolean = false, private val preserv
     fun launch(): MainActivity = ins.startActivitySync(Intent(ins.targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
     fun launchGallery(read: Boolean = false, site: String = "ehentai", offline: Boolean = false): GalleryActivity = ins.startActivitySync(Intent(ins.targetContext, GalleryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK).putExtra("gallery", app.library.gson.toJson(video(site))).putExtra("read", read).putExtra("offline", offline)) as GalleryActivity
     fun launchDownloads(): MainActivity = ins.startActivitySync(Intent(ins.targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK).putExtra("downloads", true)) as MainActivity
+    fun mediaStream(label: String) = Stream(label, server.url("/clip.mp4").newBuilder().addQueryParameter("quality", label.removeSuffix("p")).build().toString())
     fun launchPlayer(): PlayerActivity = ins.startActivitySync(Intent(ins.targetContext, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK).putExtra("video", app.library.gson.toJson(video()))) as PlayerActivity
     fun launchFeed(): MainActivity = ins.startActivitySync(Intent(ins.targetContext, MainActivity::class.java)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)

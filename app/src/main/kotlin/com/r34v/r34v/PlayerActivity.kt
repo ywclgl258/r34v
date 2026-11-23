@@ -21,6 +21,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.*
 import androidx.compose.material3.*
@@ -31,6 +33,10 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -48,6 +54,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.*
 import androidx.media3.exoplayer.*
 import androidx.media3.exoplayer.hls.HlsDataSourceFactory
@@ -58,11 +65,15 @@ import com.r34v.r34v.data.*
 import com.r34v.r34v.playback.BufferPlan
 import com.r34v.r34v.playback.HlsDownloads
 import com.r34v.r34v.playback.HlsSeekSession
+import com.r34v.r34v.playback.LocalSeekPreview
 import com.r34v.r34v.playback.MediaProbe
 import com.r34v.r34v.playback.StallPolicy
 import com.r34v.r34v.playback.StreamSelection
 import com.r34v.r34v.ui.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.buffer
+import java.io.File
 
 class PlayerActivity : ComponentActivity() {
     private val app get() = application as R34Application
@@ -85,11 +96,13 @@ class PlayerActivity : ComponentActivity() {
     private var revision by mutableIntStateOf(0)
     private var position = 0L
     private var local: String? = null
+    private var seekPreviewFile by mutableStateOf<File?>(null)
     private var offlineId: String? = null
     private var cachedKey: String? = null
     private var sourceRoot = ""
     private val offline get() = local != null || offlineId != null || cachedKey != null
     private var refreshed = false
+    private var refreshJob: Job? = null
     private var opening = false
     private var presented = false
     private var autoFullscreenApplied = false
@@ -120,7 +133,9 @@ class PlayerActivity : ComponentActivity() {
         video = runCatching { store.gson.fromJson(intent.getStringExtra("video"), Video::class.java) }.getOrNull()?.takeIf { it.id.isNotBlank() } ?: run { finish(); return }
         local = intent.getStringExtra("local"); offlineId = intent.getStringExtra("download"); cachedKey = intent.getStringExtra("cached")
         sourceRoot = intent.getStringExtra("root").orEmpty()
-        position = savedInstanceState?.getLong("position") ?: store.watch(video.id, video.site)?.takeUnless { it.finished }?.position?.times(1000) ?: 0
+        position = savedInstanceState?.getLong("position")
+            ?: store.watch(video.id, video.site)?.takeIf { it.started && !it.finished }?.position?.times(1000)
+            ?: 0
         val globalRate = store.string("native_speed", "1.0").toFloatOrNull()?.coerceIn(.25f, 3f) ?: 1f
         playbackPreferences = store.personal.playback(video.site).let { prefs ->
             if (store.personal.snapshot().playbackPreferences.containsKey(video.site)) prefs else prefs.copy(defaultRate = globalRate)
@@ -156,7 +171,14 @@ class PlayerActivity : ComponentActivity() {
         autoDowngrades = 0; stallsInWindow = 0; stallWindowStart = 0; bufferingSince = 0; lastDowngradeAt = 0
         lifecycleScope.launch { try {
             stream = when {
-                local != null -> { check(store.localVideos(video.site).any { it.id == video.id && it.path == local }) { "离线文件不存在" }; Stream("本地", Uri.fromFile(java.io.File(local!!)).toString()) }
+                local != null -> {
+                    val record = checkNotNull(store.localVideos(video.site).firstOrNull { it.id == video.id && it.path == local }) {
+                        "离线文件不存在"
+                    }
+                    val file = File(record.path)
+                    if (video.site == SiteRegistry.LOCAL.id && offlineId == null && cachedKey == null) seekPreviewFile = file
+                    Stream("本地", Uri.fromFile(file).toString())
+                }
                 offlineId != null -> {
                     val download = withContext(Dispatchers.IO) { app.playback.manager.downloadIndex.getDownload(offlineId!!) } ?: error("下载记录不存在")
                     check(download.state == androidx.media3.exoplayer.offline.Download.STATE_COMPLETED) { "下载尚未完成" }
@@ -208,7 +230,7 @@ class PlayerActivity : ComponentActivity() {
         phase = "正在测试链路速度"
         val epoch = link.routeEpoch()
         val result: MediaProbe.Result? = try {
-            app.mediaProbe.measure(SiteRegistry.byIdOrDefault(video.site), sample)
+            app.mediaProbe.measureStartup(SiteRegistry.byIdOrDefault(video.site), sample)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -256,6 +278,7 @@ class PlayerActivity : ComponentActivity() {
         created.setHandleAudioBecomingNoisy(true)
         created.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
+                if (created !== player) return
                 status = when (state) { Player.STATE_BUFFERING -> "正在缓冲…"; Player.STATE_READY -> "${stream?.label} · ${if (offline) "离线播放" else if (created.isPlaying) "正在播放" else "已暂停"}"; Player.STATE_ENDED -> "播放完毕"; else -> "准备播放" }
                 playerView?.keepScreenOn = created.isPlaying || state == Player.STATE_BUFFERING
                 when (state) {
@@ -283,20 +306,40 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
+                if (created !== player) return
                 savePosition()
-                if (!offline && local == null && !refreshed) { refreshed = true; phase = "正在刷新播放地址"; lifecycleScope.launch { try {
-                    val fresh = app.repository.detail(video.url); detail = fresh
-                    open(fresh.streams.firstOrNull { it.label == stream?.label } ?: fresh.streams.last(), position,
-                        player?.playWhenReady ?: resumePlay)
-                } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } } } else playbackError(error)
+                val failed = stream
+                if (offline || refreshed || failed == null) {
+                    playbackError(error)
+                    return
+                }
+                refreshed = true
+                phase = "正在刷新播放地址"
+                refreshJob = lifecycleScope.launch {
+                    try {
+                        val fresh = app.repository.detail(video.url)
+                        val recovered = StreamSelection.afterRefresh(fresh.streams, failed, app.linkSpeed.estimateKbps())
+                        detail = fresh
+                        if (pendingAutoDownload != null) pendingAutoDownload = recovered
+                        if (recovered.label != failed.label) gestureHint("原清晰度已不可用，已切换到 ${recovered.label}")
+                        val autoplay = if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                            player?.playWhenReady ?: resumePlay
+                        } else resumePlay
+                        open(recovered, position, autoplay)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        playbackError(e)
+                    }
+                }
             }
         })
         return created
     }
 
     private fun open(value: Stream, start: Long, autoplay: Boolean = true) {
+        if (isFinishing || isDestroyed || !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         stream = value; position = start
-        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         pendingError = null; failureVisible = false; phase = if (presented) "正在缓冲" else "正在校准画面"
         bufferingSince = 0
         val engine = ensureEngine(bufferPlanFor(value))
@@ -317,8 +360,16 @@ class PlayerActivity : ComponentActivity() {
         } else DefaultMediaSourceFactory(sources).createMediaSource(item)
         engine.setMediaSource(mediaSource, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
     }
-    private fun playbackError(error: Throwable) { pendingError = error; phase = null; status = "播放失败：${error.message}"; failureVisible = true; controls = true; locked = false }
-    private fun restart() { refreshed = false; autoDowngrades = 0; stallsInWindow = 0; if (stream != null) open(stream!!, if (pendingError != null) position else 0) else load() }
+    private fun playbackError(error: Throwable) {
+        bufferingSince = 0
+        pendingError = error; phase = null; status = "播放失败：${error.message}"; failureVisible = true; controls = true; locked = false
+    }
+    private fun restart() {
+        refreshJob?.cancel()
+        refreshed = false; autoDowngrades = 0; stallsInWindow = 0
+        val current = stream
+        if (current != null) open(current, if (pendingError != null) position else 0) else load()
+    }
 
     /**
      * 首帧就绪后才真正入队自动下载。
@@ -348,7 +399,7 @@ class PlayerActivity : ComponentActivity() {
      * 下一档，并保留播放位置和播放状态；用户手动选的档位也照降，只是会明说“网络跟不上，已降到 xxx”。
      */
     private fun maybeDowngrade() {
-        if (offline || player == null || bufferingSince == 0L) return
+        if (offline || player == null || bufferingSince == 0L || refreshJob?.isActive == true) return
         if (autoDowngrades >= MAX_AUTO_DOWNGRADES) return
         val now = SystemClock.elapsedRealtime()
         if (lastDowngradeAt != 0L && now - lastDowngradeAt < DOWNGRADE_COOLDOWN_MS) return
@@ -464,7 +515,36 @@ class PlayerActivity : ComponentActivity() {
         revision++
     }
     @Composable private fun BoxScope.VideoControls(engine: ExoPlayer?, palette: ArtworkPalette) {
-        var current by remember(engine) { mutableLongStateOf(position) }; var duration by remember(engine) { mutableLongStateOf(0) }; var scrubbing by remember { mutableStateOf(false) }
+        var current by remember(engine) { mutableLongStateOf(position) }
+        var duration by remember(engine) { mutableLongStateOf(0) }
+        var scrubbing by remember(engine) { mutableStateOf(false) }
+        var touch by remember(engine) { mutableStateOf(SeekTouch.IDLE) }
+        val previewFile = seekPreviewFile?.takeIf { engine != null }
+        val previewTarget by remember(engine, previewFile) {
+            derivedStateOf {
+                if (previewFile != null && scrubbing && touch == SeekTouch.DOWN && duration > 0) {
+                    LocalSeekPreview.framePosition(current, duration)
+                } else null
+            }
+        }
+        var previewFrame by remember(engine, previewFile) { mutableStateOf<Pair<Long, android.graphics.Bitmap>?>(null) }
+        if (previewFile != null) LaunchedEffect(engine, previewFile) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                val preview = LocalSeekPreview(previewFile)
+                try {
+                    // One native decode at a time. Keep only the latest request while that call finishes.
+                    snapshotFlow { previewTarget }.buffer(Channel.CONFLATED).collect { requested ->
+                        if (requested == previewTarget) {
+                            val frame = requested?.let { preview.frameAt(it) }
+                            if (requested == previewTarget) previewFrame = if (frame != null && requested != null) requested to frame else null
+                        }
+                    }
+                } finally {
+                    previewFrame = null
+                    preview.close()
+                }
+            }
+        }
         LaunchedEffect(engine) { while (isActive) { if (!scrubbing) current = engine?.currentPosition?.coerceAtLeast(0) ?: position; duration = engine?.duration?.coerceAtLeast(0) ?: 0; delay(500) } }
         var focused by remember { mutableStateOf(false) }
         val menuOpen = dialogs.content != null
@@ -494,6 +574,20 @@ class PlayerActivity : ComponentActivity() {
             }
             if (failureVisible) ArtworkAction("重试", modifier = Modifier.align(Alignment.Center), click = ::restart)
             Column(Modifier.align(Alignment.BottomCenter).widthIn(max = 760.dp).fillMaxWidth()) {
+                previewTarget?.let { target ->
+                    Column(
+                        Modifier.align(Alignment.CenterHorizontally).padding(bottom = 4.dp)
+                            .clip(RoundedCornerShape(8.dp)).background(palette.bottom).padding(4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        previewFrame?.takeIf { it.first == target }?.let { (_, frame) ->
+                            Image(frame.asImageBitmap(), contentDescription = null,
+                                modifier = Modifier.size(160.dp, 90.dp).testTag("local-seek-preview-frame"))
+                        }
+                        Text(timeText(current), Modifier.testTag("local-seek-preview-time"),
+                            color = palette.ink, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                    }
+                }
                 if (loop.startMs >= 0) TextAction(::loopOptions, Modifier.align(Alignment.End).padding(horizontal = 8.dp)) {
                     Text(loopLabel(), Modifier.testTag("video-loop-range"))
                 }
@@ -511,10 +605,40 @@ class PlayerActivity : ComponentActivity() {
                         }
                     }
                     Text(timeText(current), color = palette.ink, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-                    Slider(current.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)), { scrubbing = true; current = it.toLong() }, Modifier.weight(1f).heightIn(min = 48.dp).semantics { contentDescription = "播放进度" },
-                        valueRange = 0f..duration.toFloat().coerceAtLeast(1f), enabled = duration > 0, onValueChangeFinished = { engine?.seekTo(current); scrubbing = false },
-                        thumb = { ArtworkSeekThumb(duration > 0) },
-                        track = { state -> ArtworkSeekTrack(if (duration > 0) state.value / duration else 0f) })
+                    val canSeek = duration > 0
+                    Slider(
+                        value = current.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)),
+                        onValueChange = {
+                            if (touch == SeekTouch.CANCELLED) touch = SeekTouch.IDLE
+                            scrubbing = true
+                            current = it.toLong()
+                        },
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                            .semantics { contentDescription = "播放进度" }
+                            .then(if (canSeek) Modifier.pointerInput(engine) {
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                    touch = SeekTouch.DOWN
+                                    var event = awaitPointerEvent(PointerEventPass.Initial)
+                                    while (event.changes.any { it.pressed }) {
+                                        event = awaitPointerEvent(PointerEventPass.Initial)
+                                    }
+                                    // Compose delivers cancellation as a consumed up. Slider also reports that as finished.
+                                    touch = if (event.changes.any { it.changedToUp() }) SeekTouch.RELEASED else SeekTouch.CANCELLED
+                                    if (touch == SeekTouch.CANCELLED) scrubbing = false
+                                }
+                            } else Modifier),
+                        valueRange = 0f..duration.toFloat().coerceAtLeast(1f), enabled = canSeek,
+                        onValueChangeFinished = {
+                            if (scrubbing && (touch == SeekTouch.IDLE || touch == SeekTouch.RELEASED) && engine === player) {
+                                engine?.seekTo(current)
+                            }
+                            if (touch == SeekTouch.RELEASED) touch = SeekTouch.IDLE
+                            scrubbing = false
+                        },
+                        thumb = { ArtworkSeekThumb(canSeek) },
+                        track = { state -> ArtworkSeekTrack(if (canSeek) state.value / duration else 0f) },
+                    )
                     Text(timeText(duration), color = palette.muted, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
                 }
             }
@@ -554,6 +678,7 @@ class PlayerActivity : ComponentActivity() {
     @Composable private fun Details(showTitle: Boolean) {
         @Suppress("UNUSED_VARIABLE") val changed = revision
         val personalRevision by app.library.personal.changes.collectAsState()
+        val blockedRevision by store.blockedTagChanges.collectAsState()
         val waiting = remember(personalRevision, video.entryKey) { app.library.personal.contains(video) }
         val colors = MaterialTheme.colorScheme
         Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 28.dp),
@@ -616,7 +741,9 @@ class PlayerActivity : ComponentActivity() {
                         TimestampText(comment.text, mediaDuration, ::seekTimestamp)
                     }
                 }
-                val relatedVideos = data.related.filter(store::allowed).take(24)
+                val relatedVideos = remember(data.related, blockedRevision) {
+                    store.filterAllowed(data.related) { it }.take(24)
+                }
                 if (relatedVideos.isNotEmpty()) { Title("相关推荐"); relatedVideos.chunked(2).forEach { pair -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     pair.forEach { related -> MediaCard(related, Modifier.weight(1f)) {
                         startActivity(Intent(this@PlayerActivity, PlayerActivity::class.java)
@@ -632,6 +759,7 @@ class PlayerActivity : ComponentActivity() {
             val selected = options[index]
             val engine = player
             store.set("quality", selected.label)
+            refreshJob?.cancel()
             refreshed = false
             if (selected == stream && engine?.isPlaying == true && pendingError == null) return@choose
             open(selected, engine?.currentPosition ?: position, engine?.playWhenReady ?: true)
@@ -802,14 +930,20 @@ class PlayerActivity : ComponentActivity() {
             else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         if (requestedOrientation != orientation) requestedOrientation = orientation
     }
-    private fun savePosition() { val exo = player ?: return; position = exo.currentPosition.coerceAtLeast(0); val duration = exo.duration.takeIf { it > 0 } ?: durationSeconds(video.duration) * 1000
-        store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000, quality = stream?.label.orEmpty(), site = video.site))
+    private fun savePosition() {
+        val engine = player ?: return
+        val ended = engine.playbackState == Player.STATE_ENDED
+        val duration = engine.duration.takeIf { it > 0 } ?: durationSeconds(video.duration) * 1000
+        position = if (ended && duration > 0) duration else engine.currentPosition.coerceAtLeast(0)
+        store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000,
+            quality = stream?.label.orEmpty(), site = video.site, ended = ended))
     }
     override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); outState.putBoolean("fullscreen", fullscreen); outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied); outState.putBoolean("resumePlay", player?.playWhenReady ?: resumePlay); outState.putBoolean("showingCover", showingCover); outState.putBoolean("locked", locked); outState.putLong("pauseAt", pauseAt); outState.putLong("loopA", loop.startMs); outState.putLong("loopB", loop.endMs); super.onSaveInstanceState(outState) }
     override fun onResume() {
         super.onResume()
         window.decorView.post {
-            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || stream == null) return@post
+            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || stream == null ||
+                refreshJob?.isActive == true || pendingError != null) return@post
             val engine = player
             // 引擎存在说明只经历了暂停/恢复（例如上面盖了半透明界面而未 onStop）：
             // 此时 onPause 已经把播放停掉了，必须显式续播，否则画面一直停着。
@@ -852,6 +986,8 @@ class PlayerActivity : ComponentActivity() {
             detector.onTouchEvent(event); if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) { if (mode == 1 && event.actionMasked == MotionEvent.ACTION_UP) player?.seekTo(seek); if (hold) { player?.setPlaybackSpeed(userRate); hold = false } }; true
         }
     }
+
+    private enum class SeekTouch { IDLE, DOWN, RELEASED, CANCELLED }
 
     private companion object {
         /** 一部片子最多自动降两档：降到最低档还卡就是链路问题，再降只会更糊。 */

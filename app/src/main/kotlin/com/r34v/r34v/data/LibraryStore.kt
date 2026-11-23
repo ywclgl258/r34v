@@ -11,6 +11,9 @@ import java.io.ByteArrayInputStream
 import java.io.ObjectInputStream
 import java.io.ObjectStreamClass
 import android.util.Base64
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * Local storage.
@@ -29,6 +32,11 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     val gson = Gson()
     val personal by lazy { PersonalStore(this) }
     private val dataDir = File(context.applicationInfo.dataDir).canonicalFile
+    private val blockedTagRevision = MutableStateFlow(0)
+    internal val blockedTagChanges = blockedTagRevision.asStateFlow()
+    private val blockedTagListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == null || key.endsWith(":blocked_tags")) blockedTagRevision.update { it + 1 }
+    }
 
     /** The site whose data [history], [favorites] and friends currently resolve to. */
     @Volatile var siteId: String = SiteRegistry.R34V.id
@@ -43,6 +51,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         siteId = SiteRegistry.byIdOrDefault(prefs.getString("active_site", null) ?: SiteRegistry.R34V.id).id
         migrateToSiteNamespaced()
         retireNetworkOverrides()
+        prefs.registerOnSharedPreferenceChangeListener(blockedTagListener)
     }
 
     val needsSiteSwitchTutorial get() = !prefs.getBoolean(SITE_SWITCH_TUTORIAL_SEEN, true)
@@ -188,6 +197,10 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         write("$siteId:favorites_v1", if (exists) all.filter { it.key != normalized.key } else listOf(normalized) + all)
         return !exists
     }
+    @Synchronized fun removeFavorite(entry: Favorite) {
+        val all = favorites(entry.site)
+        if (all.any { it.key == entry.key }) write("${entry.site}:favorites_v1", all.filterNot { it.key == entry.key })
+    }
 
     /**
      * 阅读历史。
@@ -224,14 +237,31 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     fun clearSearches() = prefs.edit { remove(k("native_search_history")) }
 
     fun blockedTags(siteId: String = this.siteId) = list("$siteId:blocked_tags", String::class.java)
-    fun toggleBlocked(slug: String, siteId: String = this.siteId) {
+    @Synchronized fun toggleBlocked(slug: String, siteId: String = this.siteId) {
         val tags = blockedTags(siteId)
         write("$siteId:blocked_tags", if (slug in tags) tags - slug else tags + slug)
     }
-    fun allowed(video: Video) = allowed(video, siteId)
-    fun allowed(video: Video, siteId: String) = blockedTags(siteId).none { slug ->
-        val needle = slug.replace('-', ' ')
-        video.title.contains(needle, ignoreCase = true) || video.url.contains(slug, ignoreCase = true)
+
+    fun allowed(video: Video) = allowed(video, video.site)
+    fun allowed(video: Video, siteId: String) = allowed(video, blockedTags(siteId))
+
+    private fun allowed(video: Video, blocked: List<String>) = blocked.none { slug ->
+        video.tagSlugs.orEmpty().any { it.equals(slug, ignoreCase = true) } ||
+            video.title.contains(slug.replace('-', ' '), ignoreCase = true) ||
+            video.url.contains(slug, ignoreCase = true)
+    }
+
+    internal fun <T> filterAllowed(entries: List<T>, videoOf: (T) -> Video): List<T> {
+        val bySite = mutableMapOf<String, List<String>>()
+        return entries.filter { entry ->
+            val video = videoOf(entry)
+            allowed(video, bySite.getOrPut(video.site) { blockedTags(video.site) })
+        }
+    }
+
+    internal fun subscriptionPage(feeds: List<TagFeed>, order: SubscriptionOrder): SubscriptionPage {
+        val visible = feeds.map { it.copy(videos = filterAllowed(it.videos) { video -> video }) }
+        return SubscriptionPage(visible, SubscriptionMerge.sort(visible, order), order, visible.filter { it.error != null })
     }
 
     /**

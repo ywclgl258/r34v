@@ -18,6 +18,7 @@ enum class ReaderMode(val title: String) {
 }
 data class InboxEntry(val video: Video, val read: Boolean = false, val at: Long = System.currentTimeMillis())
 data class SubscriptionInbox(val known: Map<String, List<String>> = emptyMap(), val entries: List<InboxEntry> = emptyList())
+internal data class SubscriptionTagRefresh(val baselineCreated: Boolean, val newUnread: Int)
 data class SavedSearch(val id: String = UUID.randomUUID().toString(), val name: String = "", val query: String = "",
     val sources: List<String> = emptyList(), val category: String = "", val languages: Map<String, String> = emptyMap(),
     val includeTags: List<String> = emptyList(), val excludeTags: List<String> = emptyList(), val filter: AdvancedFilter = AdvancedFilter()) {
@@ -53,10 +54,17 @@ fun SubscriptionInbox.refreshed(feeds: List<TagFeed>, now: Long = System.current
         val slug = feed.subscription.slug
         val previous = known[slug]
         feed.videos.forEach { video ->
-            if (video.entryKey !in existing) {
+            val key = video.entryKey
+            if (key in existing) {
+                val saved = nextEntries.getValue(key)
+                if (video.tagSlugs != null && video.tagSlugs != saved.video.tagSlugs) {
+                    nextEntries[key] = saved.copy(video = saved.video.copy(tagSlugs = video.tagSlugs))
+                }
+            } else {
+                val earlier = nextEntries[key]
                 val baseline = previous == null || video.id in previous
-                val earlier = nextEntries[video.entryKey]
-                nextEntries[video.entryKey] = InboxEntry(video, read = baseline && (earlier?.read ?: true), at = now)
+                val latest = video.copy(tagSlugs = video.tagSlugs ?: earlier?.video?.tagSlugs)
+                nextEntries[key] = InboxEntry(latest, read = baseline && (earlier?.read ?: true), at = now)
             }
         }
         nextKnown[slug] = (feed.videos.map { it.id } + previous.orEmpty()).distinct().take(1000)
@@ -157,6 +165,20 @@ class PersonalStore(private val library: LibraryStore) {
             else value.copy(entries = value.entries + ShelfEntry(video))
         }) }
     }
+    fun addToExistingShelf(videos: List<Video>, shelf: String): Int {
+        require(videos.all { it.id.isNotBlank() && SiteRegistry.byId(it.site) != null }) { "有作品的来源已不可用" }
+        var added = 0
+        change { data ->
+            val target = data.shelves.firstOrNull { it.id == shelf } ?: error("该片单已移除")
+            val known = target.entries.mapTo(mutableSetOf()) { it.video.entryKey }
+            val additions = videos.filter { known.add(it.entryKey) }.map { ShelfEntry(it) }
+            added = additions.size
+            if (additions.isEmpty()) data else data.copy(shelves = data.shelves.map {
+                if (it.id == shelf) it.copy(entries = it.entries + additions) else it
+            })
+        }
+        return added
+    }
     fun remove(video: Video, shelf: String = PersonalLibrary.WATCH_LATER) = change { data ->
         data.copy(shelves = data.shelves.map { value -> if (value.id == shelf) {
             val next = if (value.coverKey == video.entryKey) value.edited(coverKey = "") else value
@@ -192,7 +214,26 @@ class PersonalStore(private val library: LibraryStore) {
         ?: ReaderMode.STRIP
     fun setReaderMode(site: String, mode: ReaderMode) = change { it.copy(readerModes = it.readerModes + (site to mode.name)) }
     fun inbox(site: String) = snapshot().inboxes[site] ?: SubscriptionInbox()
+
+    internal fun visibleSubscriptionEntries(site: String? = null, data: PersonalLibrary = snapshot()): List<InboxEntry> {
+        val entries = if (site == null) data.inboxes.values.flatMap { it.entries } else data.inboxes[site]?.entries.orEmpty()
+        return library.filterAllowed(entries, InboxEntry::video).distinctBy { it.video.entryKey }.sortedByDescending { it.at }
+    }
+
     fun refreshInbox(site: String, feeds: List<TagFeed>) = change { it.copy(inboxes = it.inboxes + (site to inbox(site).refreshed(feeds))) }
+
+    internal fun refreshSubscriptionTag(feed: TagFeed): SubscriptionTagRefresh? = synchronized(library) {
+        val tag = feed.subscription
+        if (feed.error != null || feed.cached || feed.videos.any { it.site != tag.site } ||
+            library.subscriptions(tag.site).none { it.slug == tag.slug && it.at == tag.at }) return@synchronized null
+        val before = inbox(tag.site)
+        val after = before.refreshed(listOf(feed))
+        change { it.copy(inboxes = it.inboxes + (tag.site to after)) }
+        val knownWorks = before.entries.mapTo(mutableSetOf()) { it.video.entryKey }
+        val newEntries = after.entries.filter { !it.read && it.video.entryKey !in knownWorks }
+        SubscriptionTagRefresh(tag.slug !in before.known, library.filterAllowed(newEntries, InboxEntry::video).size)
+    }
+
     fun markRead(site: String, keys: Set<String>) = change { data ->
         val box = data.inboxes[site]
         data.copy(inboxes = if (box == null) data.inboxes else data.inboxes + (site to box.copy(entries = box.entries.map { if (it.video.entryKey in keys) it.copy(read = true) else it })),

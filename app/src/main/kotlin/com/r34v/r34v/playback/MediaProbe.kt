@@ -7,6 +7,7 @@ import com.r34v.r34v.data.Stream
 import com.r34v.r34v.data.readResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Request
 import okio.ByteString.Companion.encodeUtf8
 import java.io.IOException
@@ -19,6 +20,26 @@ import java.io.IOException
  * 连接限速。所以诊断必须读一段真实媒体字节，才能回答“我这条链路能撑哪一档”。
  */
 class MediaProbe(private val network: Network) {
+    enum class StartupPolicy { BASELINE, BUDGETED }
+
+    @Volatile internal var startupPolicy = StartupPolicy.BASELINE
+
+    /** 首次选档只测一次偏好片源。诊断继续使用 [measure] 的完整样本。 */
+    suspend fun measureStartup(site: SiteContext, stream: Stream, policy: StartupPolicy = startupPolicy): Result? {
+        if (HlsDownloads.mime(stream.url) != null) return null
+        return try {
+            when (policy) {
+                StartupPolicy.BASELINE -> measure(site, stream)
+                StartupPolicy.BUDGETED -> withTimeoutOrNull(STARTUP_TIMEOUT_MS) {
+                    // 包括排队、重定向、响应头和完整样本的时间。超时会取消在途 OkHttp Call。
+                    measure(site, stream, STARTUP_SAMPLE_BYTES)
+                }
+            }
+        } catch (_: IOException) {
+            null
+        }
+    }
+
     data class Result(val kbps: Int, val bytes: Long, val ms: Long, val status: Int, val playlist: Boolean) {
         val trustedKbps: Int? get() = kbps.takeIf { !playlist && bytes >= MIN_TRUSTED_BYTES && it > 0 }
         val suggested: String? get() = trustedKbps?.let(StreamSelection::recommendedLabel)
@@ -76,6 +97,8 @@ class MediaProbe(private val network: Network) {
         const val SAMPLE_BYTES = 1024L * 1024
 
         const val MIN_TRUSTED_BYTES = 128L * 1024
+        internal const val STARTUP_SAMPLE_BYTES = MIN_TRUSTED_BYTES
+        internal const val STARTUP_TIMEOUT_MS = 2_000L
         private val HLS_HEADER = "#EXTM3U".encodeUtf8()
 
         internal fun isPlaylistContentType(value: String?): Boolean =

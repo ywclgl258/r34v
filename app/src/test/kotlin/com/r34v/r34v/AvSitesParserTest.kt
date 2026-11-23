@@ -274,6 +274,14 @@ class AvSitesParserTest {
             PornhubProtocol.resolve(pornhub, FeedRequest(FeedKind.MODEL, "Sweetie Fox")))
     }
 
+    @Test fun pornhubCategoryDirectoryKeepsTheNativeLinkWhenPaging() {
+        val category = requireNotNull(PornhubProtocol.linkRequest(pornhub, "${pornhub.base}/categories/example-topic"))
+        assertEquals(FeedKind.CATEGORY, category.kind)
+        assertEquals("${pornhub.base}/categories/example-topic?page=2", PornhubProtocol.resolve(pornhub, category.copy(page = 2)))
+        val legacy = requireNotNull(PornhubProtocol.linkRequest(pornhub, "${pornhub.base}/video?c=12"))
+        assertEquals("${pornhub.base}/video?c=12&page=2", PornhubProtocol.resolve(pornhub, legacy.copy(page = 2)))
+    }
+
     @Test fun pornhubViewKeyAcceptsBothHosts() {
         assertEquals("690fd4afd7adb", PornhubProtocol.viewKey(pornhub, "https://www.pornhub.com/view_video.php?viewkey=690fd4afd7adb"))
         assertEquals("690fd4afd7adb", PornhubProtocol.viewKey(pornhub, "https://pornhub.com/view_video.php?viewkey=690fd4afd7adb"))

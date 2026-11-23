@@ -75,6 +75,49 @@ class ModernUiTest : ComposeUiCase() {
         f.shot("modern-favorite-identity")
     }
 
+    @Test fun favoritesFindMixedWorksAcrossSourcesAndRemoveTheExactEntry() = ComposeFixture().use { f ->
+        f.app.library.prefs.edit().apply {
+            (SiteRegistry.librarySources.map { it.id } + SiteRegistry.retiredVideoHosts.keys).forEach { remove("$it:favorites_v1") }
+        }.commit()
+        val iwara = f.video(SiteRegistry.IWARA.id)
+        val book = Favorite("gallery", iwara.id, "测试图库收藏", iwara.url, iwara.thumb, site = iwara.site)
+        val clip = Favorite("video", iwara.id, "测试视频收藏", iwara.url, iwara.thumb, site = iwara.site)
+        val comic = f.video(SiteRegistry.EHENTAI.id)
+        val other = Favorite("gallery", comic.id, "测试漫画收藏", comic.url, comic.thumb, site = comic.site)
+        listOf(book, clip, other).forEach { f.app.library.toggleFavorite(it, it.site) }
+        f.app.library.personal.add(iwara.copy(title = clip.title))
+
+        f.launch(); waitHome(); clickText("片库"); clickText("收藏")
+        waitText("3 项收藏")
+        ui.onNodeWithText(book.title).assertIsDisplayed()
+        ui.onNodeWithText(clip.title).assertIsDisplayed()
+        ui.onNodeWithText(other.title).assertIsDisplayed()
+        f.shot("library-management-favorites")
+        clickText("全部来源"); clickText("Iwara"); waitText("2 项收藏")
+        ui.onNodeWithText(other.title).assertDoesNotExist()
+        val search = ui.onNodeWithTag("favorites-search")
+        search.performTextReplacement("图库"); search.performImeAction()
+        waitText("1 项收藏")
+        ui.onNodeWithText(clip.title).assertDoesNotExist()
+        ui.onNodeWithTag("favorite-${book.key}").performClick()
+        ui.waitUntil(15000) {
+            var opened = false
+            f.ins.runOnMainSync {
+                opened = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED).any { it is GalleryActivity }
+            }
+            opened
+        }
+        ui.onNodeWithContentDescription("返回").performClick()
+        waitText(book.title)
+        ui.onNodeWithContentDescription("${book.title} 的更多操作").performClick()
+        clickText("取消收藏"); waitText("没有符合条件的收藏")
+        org.junit.Assert.assertFalse(f.app.library.isFavorite("gallery", book.target, book.site))
+        org.junit.Assert.assertTrue(f.app.library.isFavorite("video", clip.target, clip.site))
+        org.junit.Assert.assertTrue(f.app.library.personal.contains(iwara))
+        clickText("清空筛选"); waitText("2 项收藏")
+    }
+
     @Test fun finishedWatchIsNotPromotedAsContinueWatching(): Unit = ComposeFixture(cinematic = true, awaitUi = { ui.waitForIdle() }).use { f ->
         clear(f)
         val video = f.video()

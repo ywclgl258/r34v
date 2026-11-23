@@ -1,6 +1,7 @@
 package com.r34v.r34v.data
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.DocumentsContract
@@ -76,17 +77,29 @@ class LocalLibrary(private val context: Context) {
         val book = book(video.id) ?: error("本地文件不存在，请重新导入同一文件或目录")
         return GalleryDetail(video(book), book.files.size, emptyList(), book.files.size, description = "本地导入 · ${book.files.size} 页", cached = true)
     }
-    suspend fun page(id: String, index: Int): GalleryRepository.RenderedPage = withContext(Dispatchers.IO) {
+    internal suspend fun thumbnail(id: String, index: Int, sizePx: Int,
+        onSampled: ((Bitmap) -> Unit)? = null): GalleryRepository.RenderedPage = withContext(Dispatchers.IO) {
+        val file = imageFile(id, index)
+        val bitmap = decodeGalleryThumbnail(file, sizePx, onSampled) ?: error("图片无法解码")
+        renderedPage(id, index, file, bitmap)
+    }
+    private fun imageFile(id: String, index: Int): File {
         val book = book(id) ?: error("本地文件不存在，请重新导入")
         require(index in 1..book.files.size)
-        val file = File(folder(id), book.files[index - 1])
+        return File(folder(id), book.files[index - 1])
+    }
+    suspend fun page(id: String, index: Int): GalleryRepository.RenderedPage = withContext(Dispatchers.IO) {
+        val file = imageFile(id, index)
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(file.path, bounds)
         check(bounds.outWidth > 0 && bounds.outHeight > 0) { "图片无法解码" }
         var sample = 1
         while (bounds.outWidth.toLong() / sample * (bounds.outHeight / sample) > 4_000_000) sample *= 2
         val bitmap = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("图片无法解码")
-        GalleryRepository.RenderedPage(GalleryImage(index, "r34local://$id/$index", Uri.fromFile(file).toString(), null, null), bitmap, true)
+        renderedPage(id, index, file, bitmap)
     }
+    private fun renderedPage(id: String, index: Int, file: File, bitmap: Bitmap) =
+        GalleryRepository.RenderedPage(GalleryImage(index, "r34local://$id/$index", Uri.fromFile(file).toString(), null, null), bitmap, true)
+
     private fun safeDelete(dir: File) {
         check(dir.canonicalPath.startsWith(root.canonicalPath + File.separator))
         check(!dir.exists() || dir.deleteRecursively()) { "本地文件无法移除，请重试" }

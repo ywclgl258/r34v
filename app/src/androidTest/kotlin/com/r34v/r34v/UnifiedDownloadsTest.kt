@@ -186,7 +186,7 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         f.offline = true
         try {
             repeat(3) {
-                ui.onNode(hasAnyAncestor(clipTag) and hasText("离线打开")).assertDoesNotExist()
+                ui.onNode(hasAnyAncestor(clipTag) and hasText("离线打开")).assertIsDisplayed()
                 ui.onNode(clipTag).performClick()
                 waitForDecodedVideo(f)
                 back(f)
@@ -209,7 +209,7 @@ class UnifiedDownloadsTest : ComposeUiCase() {
             clickText("筛选 · 1")
             ui.onNode(clipTag).assertDoesNotExist()
             center.performScrollToNode(bookTag)
-            ui.onNode(hasAnyAncestor(bookTag) and hasText("离线打开")).assertDoesNotExist()
+            ui.onNode(hasAnyAncestor(bookTag) and hasText("离线打开")).assertIsDisplayed()
             ui.onNode(bookTag).performClick()
             ui.waitUntil(15000) { ui.onAllNodesWithTag("reader-page-1").fetchSemanticsNodes().isNotEmpty() }
             assertEquals(galleryCalls, f.galleryCalls.size)
@@ -217,6 +217,83 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         } finally {
             f.ins.runOnMainSync { f.app.playback.remove(clipId) }
         }
+    }
+
+    @Test fun statusCountsFollowContentAndSiteFilters(): Unit = ComposeFixture().use { f ->
+        notifications(f); f.launch(); waitHome()
+        val title = "下载筛选 ${f.nonce}"
+        val comic = f.video("ehentai").copy(title = "$title 漫画")
+        val photo = f.video("iwara").copy(title = "$title 写真", mediaKind = MediaKind.GALLERY)
+        val paused = f.video("nhentai").copy(title = "$title 暂停")
+        val completed = runBlocking { f.app.galleryDownloads.add(comic) }
+        done(f)
+        // A rate-limit wait stays active while the test switches tabs.
+        val waiting = GalleryDownload(f.app.galleryDownloads.key(photo), photo, GalleryDownloadState.RETRY_WAIT,
+            retryAt = System.currentTimeMillis() + 600_000L)
+        val stopped = GalleryDownload(f.app.galleryDownloads.key(paused), paused, GalleryDownloadState.PAUSED)
+        assertTrue(f.ins.targetContext.getSharedPreferences("gallery_downloads_v1", Context.MODE_PRIVATE).edit().apply {
+            for (record in listOf(waiting, stopped)) putString(record.id, f.app.library.gson.toJson(record))
+        }.commit())
+
+        f.launchDownloads(); waitText("下载中心")
+        val center = ui.onNodeWithTag("download-center")
+        fun search(term: String) {
+            ui.onNode(hasSetTextAction()).performTextReplacement(term)
+            closeKeyboard(f)
+        }
+        fun tab(label: String, count: Int) = hasText(label) and hasText(count.toString()) and hasClickAction()
+        fun assertOnly(record: GalleryDownload) {
+            val indexForKey = checkNotNull(center.fetchSemanticsNode().config.getOrNull(SemanticsProperties.IndexForKey))
+            for (candidate in listOf(completed, waiting, stopped)) {
+                assertEquals(candidate.id == record.id, indexForKey("gallery:${candidate.id}") >= 0)
+            }
+        }
+        search(title)
+        ui.waitUntil(15000) { ui.onAllNodes(tab("全部状态", 3)).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNode(tab("进行中", 1)).assertIsDisplayed().performClick()
+        assertOnly(waiting)
+        ui.onNode(tab("需处理", 1)).assertIsDisplayed().performClick()
+        assertOnly(stopped)
+        ui.onNode(tab("已完成", 1)).assertIsDisplayed().performClick()
+        assertOnly(completed)
+        assertFalse(comic.title.contains(SiteRegistry.EHENTAI.name, ignoreCase = true))
+        search(" ${SiteRegistry.EHENTAI.name} ")
+        assertOnly(completed)
+
+        search(title)
+        ui.onNode(tab("全部状态", 3)).performClick()
+        clickText("筛选"); clickText("全部内容"); waitText("下载类型"); clickText("写真")
+        ui.onNode(tab("全部状态", 1)).assertIsDisplayed()
+        assertOnly(waiting)
+        clickText("全部站点"); waitText("下载来源"); clickText(SiteRegistry.NHENTAI.name)
+        ui.onNode(tab("进行中", 0)).assertIsDisplayed()
+        ui.onNode(tab("全部状态", 0)).assertIsDisplayed()
+    }
+
+    @Test fun titleSortOrdersTheWholeDownloadListAcrossRecordTypes() = ComposeFixture().use { f ->
+        val prefix = "排序 ${f.nonce}"
+        val gallery = f.video("ehentai").copy(title = "$prefix Z 图集")
+        val book = GalleryDownload(f.app.galleryDownloads.key(gallery), gallery, GalleryDownloadState.PAUSED)
+        val file = File(f.app.filesDir, "legacy-order-${f.nonce}.mp4").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val local = LocalVideo("legacy-order-${f.nonce}", "$prefix A 视频", file.absolutePath, site = "r34v")
+        try {
+            f.app.library.addLocalVideo(local, local.site)
+            assertTrue(f.ins.targetContext.getSharedPreferences("gallery_downloads_v1", Context.MODE_PRIVATE).edit()
+                .putString(book.id, f.app.library.gson.toJson(book)).commit())
+            f.launchDownloads(); waitText("下载中心")
+            ui.onNode(hasSetTextAction()).performTextReplacement(prefix)
+            closeKeyboard(f)
+            val center = ui.onNodeWithTag("download-center")
+            fun indices(): Pair<Int, Int> {
+                val index = center.fetchSemanticsNode().config.getOrNull(SemanticsProperties.IndexForKey) ?: return -1 to -1
+                return index("gallery:${book.id}") to index("legacy:${local.site}:${local.id}")
+            }
+            ui.waitUntil(15000) { indices().let { it.first >= 0 && it.second > it.first } }
+            clickText("筛选"); clickText("排序 · 队列优先"); clickText("标题")
+            ui.waitUntil(15000) { indices().let { it.second >= 0 && it.first > it.second } }
+            clickText("筛选 · 1")
+            f.shot("library-management-downloads")
+        } finally { file.delete() }
     }
 
     @Test fun backgroundDownloadAndTimeoutKeepSavedPages() = ComposeFixture().use { f ->

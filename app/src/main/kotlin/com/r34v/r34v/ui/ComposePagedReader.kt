@@ -23,17 +23,21 @@ import androidx.compose.ui.unit.dp
 import com.r34v.r34v.data.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 
-@Composable fun PagedComicReader(count: Int, jump: ReaderJump, mode: ReaderMode,
+@Composable fun PagedComicReader(numbers: List<Int>, jump: ReaderJump, mode: ReaderMode,
     load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage, toggle: () -> Unit,
     position: (Int, GalleryImage?, Int) -> Unit, attachSave: ((() -> Unit)?) -> Unit,
     fit: ReaderFit = ReaderFit.WIDTH, cropPercent: Int = 0, combineCover: Boolean = true, currentPage: Int = jump.page) {
 
     val readingPage by rememberUpdatedState(currentPage)
     val spread = if (mode == ReaderMode.SPREAD && windowSizeDp().width > windowSizeDp().height) 2 else 1
-    key(spread, mode, combineCover) {
+    val loader by rememberUpdatedState(load)
+    key(numbers, spread, mode, combineCover) {
         val scope = rememberCoroutineScope()
-        val buffer = remember { ReaderBuffer(count, scope, load) }
-        val sheets = remember(count, spread, combineCover) { readerSheets(count, spread, combineCover) }
+        val buffer = remember { ReaderBuffer(numbers, scope) { number, force -> loader(number, force) } }
+        val sheets = remember(numbers, spread, combineCover) {
+            readerSheets(numbers.size, spread, combineCover || numbers.first() != 1)
+                .map { sheet -> sheet.map { numbers[it - 1] } }
+        }
         val initial = sheets.indexOfFirst { readingPage in it }.coerceAtLeast(0)
         val pager = rememberPagerState(initialPage = initial) { sheets.size }
         var pending by remember { mutableStateOf<ReaderJump?>(jump) }

@@ -78,6 +78,8 @@ data class Video(
     val mediaKind: MediaKind = MediaKind.VIDEO,
     val thumbWidth: Int = 0,
     val thumbHeight: Int = 0,
+    /** Exact tag identifiers supplied on this record, when the source includes them. */
+    val tagSlugs: List<String>? = null,
 ) {
     val hasThumbDimensions get() = thumbWidth > 0 && thumbHeight > 0
     val thumbAspectRatio get() = if (hasThumbDimensions) (thumbWidth.toFloat() / thumbHeight).coerceIn(.45f, 1.8f) else 2f / 3f
@@ -127,9 +129,18 @@ data class Watch(
     @SerializedName("at") val at: Long = System.currentTimeMillis(),
     @SerializedName("q") val quality: String = "",
     @SerializedName("site") val site: String = SiteRegistry.current.id,
+    // 旧记录没有结束状态，只能按保存的秒数推断。
+    @SerializedName("ended") val ended: Boolean? = null,
 ) {
-    val finished get() = duration > 0 && position >= duration - 20
-    val resumable get() = position >= 15 && !finished
+    // 20 秒已经占到半部片时，使用实际结束状态；长片保留片尾宽限。
+    private val shortClip get() = duration in 1L..40L
+    val started get() = position > 0 || ended == true
+    val finished get() = ended == true || when {
+        duration <= 0 || position <= 0 -> false
+        shortClip -> ended == null && position >= duration
+        else -> position >= duration - 20
+    }
+    val resumable get() = !finished && position >= (if (shortClip) 1 else 15)
 
     fun video(): Video {
         val site = SiteRegistry.byId(this.site) ?: SiteRegistry.current

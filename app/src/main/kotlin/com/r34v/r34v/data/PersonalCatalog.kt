@@ -34,8 +34,8 @@ suspend fun personalCatalog(app: R34Application, scanned: List<LibraryRecord> = 
             val duration = watch.duration.takeIf { it > 0 }
             values[video.entryKey] = old.copy(at = watch.at,
                 progress = if (duration != null) "进度 · $position / ${timeText(duration * 1000)}" else "进度 · $position",
-                fraction = duration?.let { (watch.position.toFloat() / it).coerceIn(0f, 1f) },
-                started = watch.position > 0, completed = watch.finished)
+                fraction = if (watch.ended == true) 1f else duration?.let { (watch.position.toFloat() / it).coerceIn(0f, 1f) },
+                started = watch.started, completed = watch.finished)
         }
         store.readings(source.id).forEach { reading ->
             add(reading.entry); val old = values.getValue(reading.entry.entryKey)

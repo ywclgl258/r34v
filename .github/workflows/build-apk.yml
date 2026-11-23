@@ -105,6 +105,10 @@ jobs:
             com.r34v.r34v.OptimizationUiTest
             com.r34v.r34v.OptimizationIoTest
             com.r34v.r34v.SiteSessionTest
+            com.r34v.r34v.SiteFunctionsUiTest
+            com.r34v.r34v.FavoriteCollectionUiTest
+            com.r34v.r34v.GalleryOfflineReadingUiTest
+            com.r34v.r34v.LocalSeekPreviewTest
             com.r34v.r34v.VideoRemovalTest
             com.r34v.r34v.SubscriptionUiTest
             com.r34v.r34v.StorageLifecycleTest
@@ -117,6 +121,7 @@ jobs:
             com.r34v.r34v.UnifiedDownloadsTest
             com.r34v.r34v.FeatureBatchUiTest
             com.r34v.r34v.ModernUiTest
+            com.r34v.r34v.FeedPositionUiTest#discoverOpensAndSearchesTheCurrentSiteCategoryDirectory
             com.r34v.r34v.NextResponsiveUiTest
             com.r34v.r34v.NewFeaturesUiTest#pictureInPictureKeepsPlayingAndReturnsToTheSameEngine
             com.r34v.r34v.GalleryExportTest
@@ -126,6 +131,7 @@ jobs:
             com.r34v.r34v.BrowseUiTest#playerQualitySpeedFullScreenAndPositionSurviveRecreation
             com.r34v.r34v.BrowseUiTest#portraitFullscreenWaitsForDimensionsAndStaysExitedAfterRecreation
             com.r34v.r34v.BrowseUiTest#aStoredAutoDowngradeDoesNotPinTheNextPlayback
+            com.r34v.r34v.BrowseUiTest#refreshAfterExpiredStreamPlaysTheAvailableLowerQuality
             com.r34v.r34v.MediaProbeTest
             com.r34v.r34v.LinkSpeedTest
         with:

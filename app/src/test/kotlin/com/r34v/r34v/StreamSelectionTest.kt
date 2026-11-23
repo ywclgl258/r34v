@@ -62,6 +62,20 @@ class StreamSelectionTest {
         assertEquals("720p", StreamSelection.preferred(standard, "原始文件")?.label)
     }
 
+    @Test fun refreshingKeepsTheWorkingQualityWhenItsAddressChanges() {
+        val previous = Stream("720p", "https://cdn.invalid/expired.mp4")
+        val fresh = streams("1080p", "360p", "720p")
+        assertEquals(fresh.last(), StreamSelection.afterRefresh(fresh, previous, 1000))
+    }
+
+    @Test fun refreshingAMissingQualityUsesTheLinkWithoutJumpingToOriginal() {
+        val previous = Stream("720p", "https://cdn.invalid/expired.mp4")
+        val fresh = streams("360p", "480p", "1080p", "原画")
+        assertEquals("360p", StreamSelection.afterRefresh(fresh, previous, 1500).label)
+        assertEquals("480p", StreamSelection.afterRefresh(fresh, previous, 0).label)
+        assertEquals("1080p", StreamSelection.afterRefresh(streams("原画", "1080p"), previous, 0).label)
+    }
+
     @Test fun lowerWalksDownOneStepAndStopsAtTheBottom() {
         val current = standard.first { it.label == "720p" }
         assertEquals("480p", StreamSelection.lower(standard, current)?.label)

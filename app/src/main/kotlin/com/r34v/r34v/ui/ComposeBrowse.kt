@@ -3,14 +3,18 @@ package com.r34v.r34v.ui
 
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.staggeredgrid.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
@@ -273,10 +277,23 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     }
 }
 
+// These routes already load native category lists through SiteAdapter.index.
+private val categoryDirectorySegments = listOf("categories", "category", "genres")
+
+internal fun categoryDirectoryTitle(adapter: SiteAdapter, segment: String): String? =
+    if (segment in categoryDirectorySegments && adapter.sectionUrl(segment) != null) {
+        adapter.sections.firstOrNull { it.key == segment }?.title ?: adapter.catalogueTitle
+    } else null
+
 @Composable private fun ExploreToolbar(adapter: SiteAdapter, request: FeedRequest, dialogs: ComposeDialogs,
     changeFeed: (FeedRequest) -> Unit, changeLanguage: (GalleryLanguage) -> Unit, browse: (String) -> Unit,
     refresh: () -> Unit) {
-    val sections = remember(adapter) { adapter.sections.filter { it.feed != null || adapter.sectionUrl(it.key) != null } }
+    val categoryDirectory = remember(adapter) {
+        categoryDirectorySegments.firstOrNull { categoryDirectoryTitle(adapter, it) != null }
+    }
+    val sections = remember(adapter, categoryDirectory) {
+        adapter.sections.filter { it.key != categoryDirectory && (it.feed != null || adapter.sectionUrl(it.key) != null) }
+    }
     val active = sections.indexOfFirst { it.feed?.copy(language = request.language) == request }.takeIf { it >= 0 }
         ?: sections.indexOfFirst { it.feed?.sort == Sort.NEWEST && it.feed.copy(sort = request.sort, language = request.language) == request }
     val title = sections.getOrNull(active)?.title ?: adapter.feedTitle(request)
@@ -314,6 +331,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                     }
                 }
             }
+            if (categoryDirectory != null) {
+                BrowseSelector("分类", Modifier, icon = R.drawable.ic_chevron_right) { browse(categoryDirectory) }
+            }
             TextAction(refresh) { Text("刷新", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
         if (hasFeedSelection || selectedLanguage != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
@@ -335,7 +355,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     }
 }
 
-@Composable private fun BrowseSelector(title: String, modifier: Modifier, click: () -> Unit) {
+@Composable private fun BrowseSelector(title: String, modifier: Modifier, icon: Int = R.drawable.ic_chevron_down, click: () -> Unit) {
     val palette = LocalArtworkPalette.current
     val shape = if (palette == null) RentalShape else ArtworkPill
     TextButton(onClick = click, modifier = modifier.heightIn(min = 48.dp).widthIn(min = 48.dp), shape = shape,
@@ -345,7 +365,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             Text(title, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Glyph(R.drawable.ic_chevron_down, null, Modifier.size(13.dp))
+            Glyph(icon, null, Modifier.size(13.dp))
         }
     }
 }
@@ -353,46 +373,97 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 @Composable fun IndexScreen(app: R34Application, site: SiteContext, segment: String, dialogs: ComposeDialogs, feed: (FeedRequest) -> Unit, browse: (String) -> Unit,
     subscribe: (Subscription) -> Unit = {}) {
     val adapter = remember(site) { AdapterRegistry.adapter(site, app.network) }
-    var links by remember { mutableStateOf<List<Link>?>(null) }; var error by remember { mutableStateOf<String?>(null) }; var retry by remember { mutableIntStateOf(0) }
+    val isCategory = categoryDirectoryTitle(adapter, segment) != null
+    val isTag = segment == "tags" || segment.startsWith("work:")
+    var links by remember(site, segment) { mutableStateOf<List<Link>?>(null) }
+    var error by remember(site, segment) { mutableStateOf<String?>(null) }
+    var retry by remember(site, segment) { mutableIntStateOf(0) }
+    var query by rememberSaveable(site.id, segment) { mutableStateOf("") }
     var followedSlugs by remember(site.id) { mutableStateOf(app.library.subscriptions(site.id).map { it.slug }.toSet()) }
-    LaunchedEffect(site, segment, retry) { try { links = app.repository.index(segment) } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "索引加载失败" } }
-    if (links == null && error == null) Loading()
-    else if (error != null) EmptyState("索引加载失败", error.orEmpty()) { error = null; retry++ }
-    else androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = LocalUiDensity.current.pagePadding, end = LocalUiDensity.current.pagePadding, top = 8.dp, bottom = 24.dp)) {
-        val entries = links.orEmpty()
-        item {
-            Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Title(when (segment) {
-                    "works" -> "选择作品"
-                    "artists" -> "作者排行"
-                    else -> adapter.sections.firstOrNull { it.key == segment }?.title ?: "浏览索引"
-                }, large = true)
-                if (segment == "tags" || segment.startsWith("work:")) Copy("订阅内容只在当前站点内汇总")
-                if (entries.isEmpty()) Copy("没有找到条目")
-            }
+    LaunchedEffect(adapter, segment, retry) {
+        try {
+            links = withContext(Dispatchers.IO) { adapter.index(segment) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = e.message ?: "索引加载失败"
         }
-        items(entries.size, key = { "${entries[it].slug}:$it" }) { i ->
-            val link = entries[i]
-            val isTag = segment == "tags" || segment.startsWith("work:")
-            val followed = isTag && link.slug in followedSlugs
-            Column {
-                if (i > 0) HorizontalDivider(color = RaisedColor)
-                Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).clickable(role = Role.Button) {
-                    if (segment == "works") browse("work:${link.slug}") else feed(adapter.linkRequest(link.url)
-                        ?: FeedRequest(when { segment == "categories" -> FeedKind.CATEGORY; segment == "models" || segment == "artists" -> FeedKind.MODEL; else -> FeedKind.TAG }, link.slug))
-                }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (link.thumb.isNotBlank()) SiteImage(link.thumb, site, Modifier.size(54.dp).clip(RoundedCornerShape(8.dp)))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(if (segment == "artists" || segment.startsWith("work:")) "${i + 1}. ${link.label}" else link.label,
-                            style = MaterialTheme.typography.titleMedium)
-                        if (link.subtitle.isNotBlank()) Copy(link.subtitle)
+    }
+    val allEntries = links
+    if (error != null) {
+        EmptyState("索引加载失败", error.orEmpty()) { error = null; retry++ }
+        return
+    }
+    if (allEntries == null) {
+        Loading()
+        return
+    }
+
+    val search = query.trim()
+    val entries = remember(allEntries, search) {
+        if (search.isEmpty()) allEntries else allEntries.filter {
+            it.label.contains(search, ignoreCase = true) || it.slug.contains(search, ignoreCase = true)
+        }
+    }
+    val listState = rememberLazyListState()
+    val focus = LocalFocusManager.current
+    val pagePadding = LocalUiDensity.current.pagePadding
+    Column(Modifier.fillMaxSize()) {
+        if (isCategory) {
+            fun updateQuery(value: String) {
+                query = value
+                listState.requestScrollToItem(0)
+            }
+            TextField(query, ::updateQuery, Modifier.fillMaxWidth().padding(horizontal = pagePadding, vertical = 8.dp),
+                label = { Text("搜索分类") }, singleLine = true, shape = ArtworkShape,
+                colors = rentalSearchFieldColors(), leadingIcon = { Glyph(R.drawable.ic_search, null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) IconAction(R.drawable.ic_close, "清除分类搜索") { updateQuery("") }
+                })
+        }
+        LazyColumn(Modifier.fillMaxWidth().weight(1f), state = listState,
+            contentPadding = PaddingValues(start = pagePadding, end = pagePadding, top = 8.dp, bottom = 24.dp)) {
+            if (isCategory && entries.isEmpty()) item {
+                Copy(if (allEntries.isEmpty()) "当前站点的分类目录为空" else "没有匹配的分类")
+            }
+            if (!isCategory) item {
+                Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Title(when (segment) {
+                        "works" -> "选择作品"
+                        "artists" -> "作者排行"
+                        else -> adapter.sections.firstOrNull { it.key == segment }?.title ?: "浏览索引"
+                    }, large = true)
+                    if (isTag) Copy("订阅内容只在当前站点内汇总")
+                    if (entries.isEmpty()) Copy("没有找到条目")
+                }
+            }
+            items(entries.size, key = { "${entries[it].slug}:$it" }) { index ->
+                val link = entries[index]
+                val followed = isTag && link.slug in followedSlugs
+                Column {
+                    if (index > 0) HorizontalDivider(color = RaisedColor)
+                    Row(Modifier.fillMaxWidth().heightIn(min = if (isCategory) 48.dp else 58.dp).clickable(role = Role.Button) {
+                        if (isCategory) focus.clearFocus()
+                        if (segment == "works") browse("work:${link.slug}") else feed(adapter.linkRequest(link.url)
+                            ?: FeedRequest(when {
+                                isCategory || segment == "categories" -> FeedKind.CATEGORY
+                                segment == "models" || segment == "artists" -> FeedKind.MODEL
+                                else -> FeedKind.TAG
+                            }, link.slug))
+                    }.padding(vertical = if (isCategory) 4.dp else 8.dp), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (link.thumb.isNotBlank()) SiteImage(link.thumb, site,
+                            Modifier.size(if (isCategory) 40.dp else 54.dp).clip(RoundedCornerShape(8.dp)))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(if (segment == "artists" || segment.startsWith("work:")) "${index + 1}. ${link.label}" else link.label,
+                                style = MaterialTheme.typography.titleMedium)
+                            if (link.subtitle.isNotBlank()) Copy(link.subtitle)
+                        }
+                        if (isTag) SubscribeAction(if (followed) "已订阅" else "订阅", followed) {
+                            subscribe(Subscription(link.slug, link.label, link.url, site.id))
+                            followedSlugs = app.library.subscriptions(site.id).map { it.slug }.toSet()
+                        } else CompositionLocalProvider(LocalContentColor provides MutedColor) { Glyph(R.drawable.ic_chevron_right, null) }
                     }
-                    if (isTag) SubscribeAction(if (followed) "已订阅" else "订阅", followed) {
-                        subscribe(Subscription(link.slug, link.label, link.url, site.id))
-                        followedSlugs = app.library.subscriptions(site.id).map { it.slug }.toSet()
-                    } else CompositionLocalProvider(LocalContentColor provides MutedColor) { Glyph(R.drawable.ic_chevron_right, null) }
                 }
             }
         }

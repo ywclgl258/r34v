@@ -233,6 +233,27 @@ class BrowseUiTest : ComposeUiCase() {
         return requireNotNull(recreated)
     }
 
+    @Test fun refreshAfterExpiredStreamPlaysTheAvailableLowerQuality(): Unit = ComposeFixture().use { f ->
+        val details = java.util.concurrent.atomic.AtomicInteger()
+        f.app.library.set("quality", "720p")
+        f.app.library.set("auto_download", false)
+        f.detailStreams = listOf(f.mediaStream("720p"))
+        f.videoStatus = 403
+        f.detailHook = {
+            if (details.incrementAndGet() > 1) {
+                f.detailStreams = listOf(f.mediaStream("480p"), f.mediaStream("1080p"), f.mediaStream("原画"))
+                f.videoStatus = 0
+            }
+        }
+
+        f.launchPlayer()
+        waitForDecodedVideo(f)
+        openPlaybackOption("清晰度")
+        ui.onNode(hasAnyQualityOption() and hasText("480p")).assertIsSelected()
+        assertEquals(2, details.get())
+        assertEquals("720p", f.app.library.string("quality"))
+    }
+
     @Test fun aStoredAutoDowngradeDoesNotPinTheNextPlayback(): Unit = ComposeFixture().use { f ->
         val link = f.app.linkSpeed
         val sampled = LinkSpeed::class.java.getDeclaredField("sampled").apply { isAccessible = true }

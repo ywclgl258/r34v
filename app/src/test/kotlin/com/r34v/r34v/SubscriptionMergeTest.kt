@@ -62,6 +62,18 @@ class SubscriptionMergeTest {
         assertTrue(page.videos.isEmpty())
     }
 
+    @Test fun refreshingAnExistingEntryUpdatesExplicitTagsAndPreservesItsReadState() {
+        val legacy = video("one")
+        val original = InboxEntry(legacy, read = true, at = 1)
+        val inbox = SubscriptionInbox(entries = listOf(original))
+        val incoming = TagFeed(Subscription("followed", site = "r34v"), listOf(legacy.copy(tagSlugs = listOf("exact_tag"))))
+        val cache = inbox.refreshed(listOf(incoming.copy(cached = true)), now = 2)
+        assertEquals(original, cache.entries.single())
+        val refreshed = cache.refreshed(listOf(incoming), now = 3)
+        assertEquals(original.copy(video = incoming.videos.single()), refreshed.entries.single())
+        assertEquals(refreshed, refreshed.refreshed(listOf(incoming.copy(videos = listOf(legacy))), now = 4))
+    }
+
     @Test fun subscriptionsAreIsolatedPerSite() {
         val store = FakeStore()
         store.toggle("r34v", "sample")

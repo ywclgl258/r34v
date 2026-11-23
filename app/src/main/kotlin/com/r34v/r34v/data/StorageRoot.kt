@@ -160,8 +160,7 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         adoptIfPresent()
         return when {
             applied != Mode.SHARED -> Mode.PRIVATE
-            !granted() -> Mode.PRIVATE
-            !writable() -> Mode.PRIVATE
+            !sharedWritable() -> Mode.PRIVATE
             else -> Mode.SHARED
         }.also { boundMode = it }
     }
@@ -188,9 +187,17 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         readableLayouts().firstOrNull { it.root.canonicalPath == File(path).canonicalPath }
             ?: error("下载来源目录不可用，请检查存储权限")
 
-    /** Call before anything binds a cache to a directory. */
-    fun applyPendingOnStart() {
-        if (pendingRestart && (requested == Mode.PRIVATE || (granted() && writable()))) markApplied(requested)
+    /** Call before anything binds a cache to a directory. Returns a notice when the switch rolls back. */
+    fun applyPendingOnStart(): String? {
+        if (!pendingRestart) return null
+        val target = requested
+        if (target == Mode.PRIVATE || sharedWritable(createDirectories = false)) {
+            markApplied(target)
+            return null
+        }
+        // The migration copied files. Keep both copies and allow downloads on the private root.
+        markApplied(Mode.PRIVATE, switchFailed = true)
+        return SWITCH_FAILED_NOTICE
     }
 
     /** Creates the folders for [mode] and drops a `.nomedia` so art never lands in the gallery. */
@@ -208,15 +215,19 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         return layout
     }
 
-    private fun writable(): Boolean = runCatching {
-        val root = sharedRoot?.takeIf { it.isDirectory || it.mkdirs() } ?: return false
-        val probe = File(root, ".write-probe")
-        probe.writeText("1"); probe.delete()
+    private fun sharedWritable(createDirectories: Boolean = true): Boolean = runCatching {
+        if (!granted()) return false
+        val layout = if (createDirectories) ensure(Mode.SHARED) else layoutOf(Mode.SHARED)
+        for (directory in listOf(layout.root, layout.videoCache, layout.videoMeta, layout.comics)) {
+            val probe = File.createTempFile(".write-probe-", null, directory)
+            try { probe.writeText("1") } finally { probe.delete() }
+        }
         true
     }.getOrDefault(false)
 
     fun describe(): String = when {
         pendingRestart -> "${if (requested == Mode.SHARED) "公共目录" else "应用内存储"}（重启后生效）"
+        read("switch_failed") == "1" -> "应用内存储（公共目录切换失败）"
         applied == Mode.SHARED && !granted() -> "公共目录权限已撤销，请重新授权或重启应用"
         applied == Mode.SHARED && effective() == Mode.SHARED -> "公共目录 ${sharedRoot?.path}"
         applied == Mode.SHARED -> "公共目录不可用，暂存应用内"
@@ -224,15 +235,18 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         else -> "应用内存储（卸载会删除）"
     }
 
-    fun status(): Status = Status(
-        applied = applied, requested = requested, granted = granted(), writable = writable(),
-        path = layout().root.path, pendingRestart = pendingRestart,
-        note = when {
-            sharedRoot == null -> "未检测到可写的外部存储卷"
-            applied == Mode.SHARED && !granted() -> "所有文件访问权限已被撤销，请重新授权或重启后使用应用内存储"
-            applied == Mode.SHARED && !writable() -> "公共目录不可写，可能已被删除或被安全软件拦截"
-            else -> ""
-        })
+    fun status(): Status {
+        val granted = granted()
+        val writable = granted && sharedWritable()
+        return Status(applied, requested, granted, writable, layout().root.path, pendingRestart,
+            note = when {
+                read("switch_failed") == "1" -> SWITCH_FAILED_NOTICE
+                sharedRoot == null -> "未检测到可写的外部存储卷"
+                applied == Mode.SHARED && !granted -> "所有文件访问权限已被撤销，请重新授权或重启后使用应用内存储"
+                applied == Mode.SHARED && !writable -> "公共目录不可写，可能已被删除或被安全软件拦截"
+                else -> ""
+            })
+    }
 
     /** The system screen that unlocks `<shared>/R34V`. Null before Android 11: use a runtime prompt. */
     fun permissionIntent(): Intent? = if (Build.VERSION.SDK_INT >= 30) {
@@ -250,13 +264,15 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
             .putString(key("pending"), "1").commit()) { "无法保存下载位置设置" }
     }
 
-    fun markApplied(mode: Mode) {
-        // Synchronous on purpose: this decides where downloads are written, so a read right after
-        // the switch must never observe the previous location.
-        check(store.prefs.edit()
-            .putString(key("applied"), if (mode == Mode.SHARED) SHARED_ID else PRIVATE_ID)
-            .remove(key("pending"))
-            .commit()) { "无法保存下载位置设置" }
+    fun markApplied(mode: Mode) = markApplied(mode, switchFailed = false)
+
+    @android.annotation.SuppressLint("UseKtx") // KTX edit returns Unit, so it cannot report a failed commit.
+    private fun markApplied(mode: Mode, switchFailed: Boolean) {
+        val id = if (mode == Mode.SHARED) SHARED_ID else PRIVATE_ID
+        val edit = store.prefs.edit().putString(key("applied"), id).remove(key("pending"))
+        if (switchFailed) edit.putString(key("requested"), id).putString(key("switch_failed"), "1")
+        else edit.remove(key("switch_failed"))
+        check(edit.commit()) { "无法保存下载位置设置" }
     }
 
     private fun write(name: String, value: String) = check(store.prefs.edit().putString(name, value).commit()) { "无法保存下载位置设置" }
@@ -396,5 +412,6 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         const val FOLDER = "R34V"
         private const val PRIVATE_ID = "private"
         private const val SHARED_ID = "shared"
+        private const val SWITCH_FAILED_NOTICE = "公共目录不可用，已继续使用应用内存储。现有文件保留，可在下载位置中重试。"
     }
 }

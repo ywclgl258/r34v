@@ -54,7 +54,9 @@ class R34Application : Application() {
         SiteRegistry.current = SiteRegistry.byIdOrDefault(library.siteId)
         // A pending storage move is applied on the next start: the cache index is bound to one
         // absolute path and cannot be relocated while the download manager holds it open.
-        storage.applyPendingOnStart()
+        storage.applyPendingOnStart()?.let { notice ->
+            android.widget.Toast.makeText(this, notice, android.widget.Toast.LENGTH_LONG).show()
+        }
         // Media3's manager is owned by the application main looper, including after service restarts.
         playback.manager
         downloadPolicy.start()
@@ -73,27 +75,31 @@ class R34Application : Application() {
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     suspend fun changeDownloadLocation(mode: StorageRoot.Mode, progress: (String) -> Unit): String {
         val manager = withContext(Dispatchers.Main) { playback.manager }
-        val wasPaused = withContext(Dispatchers.Main) { manager.downloadsPaused }
         storage.beginChange()
-        var committed = false
-        val pausedBooks = mutableListOf<com.r34v.r34v.data.Video>()
+        var resumeVideos = false
         try {
-            withContext(Dispatchers.Main) { manager.pauseDownloads() }
-            val books = galleryDownloads.tasks().filter { it.state in listOf(com.r34v.r34v.data.GalleryDownloadState.QUEUED, com.r34v.r34v.data.GalleryDownloadState.DOWNLOADING) }
-            for (book in books) { pausedBooks += book.entry; galleryDownloads.pause(book.id) }
-            withTimeout(30_000) {
-                while (withContext(Dispatchers.IO) { playback.downloads().any { it.state == Download.STATE_DOWNLOADING || it.state == Download.STATE_REMOVING } }) delay(50)
+            withContext(Dispatchers.Main) {
+                resumeVideos = !manager.downloadsPaused
+                manager.pauseDownloads()
             }
-            val result = if (mode == StorageRoot.Mode.SHARED) storage.migrate(
-                copyVideos = { playback.copyDownloadsToShared() }, report = { _, _, name -> progress("正在复制 $name") })
-            else { storage.requestOnRestart(mode); "已准备改回应用内；公共目录文件保留，重启后生效" }
-            committed = true
-            return result
+            return galleryDownloads.withWritersStopped {
+                withTimeout(30_000) {
+                    while (withContext(Dispatchers.IO) { playback.downloads().any { it.state == Download.STATE_DOWNLOADING || it.state == Download.STATE_REMOVING } }) delay(50)
+                }
+                if (mode == StorageRoot.Mode.SHARED) storage.migrate(
+                    copyVideos = { playback.copyDownloadsToShared() }, report = { _, _, name -> progress("正在复制 $name") })
+                else {
+                    storage.requestOnRestart(mode)
+                    "已准备改回应用内；公共目录文件保留，重启后生效"
+                }
+            }
         } finally {
-            storage.endChange()
-            if (!committed && !storage.pendingRestart) withContext(NonCancellable) {
-                if (!wasPaused) withContext(Dispatchers.Main) { manager.resumeDownloads() }
-                pausedBooks.forEach { runCatching { galleryDownloads.add(it) } }
+            withContext(NonCancellable + Dispatchers.Main) {
+                storage.endChange()
+                if (!storage.pendingRestart) {
+                    if (resumeVideos) manager.resumeDownloads()
+                    galleryDownloads.resumePending()
+                }
             }
         }
     }

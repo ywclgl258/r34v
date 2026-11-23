@@ -12,16 +12,20 @@ import kotlinx.coroutines.*
 
 @Composable fun GlobalInboxScreen(app: R34Application, play: (Video) -> Unit, dialogs: ComposeDialogs, manageSubscriptions: () -> Unit, initialSearch: Boolean = false) {
     var searchUpdates by rememberSaveable(initialSearch) { mutableStateOf(initialSearch) }
-    val personal by app.library.personal.changes.collectAsState()
+    val store = app.library
+    val personal by store.personal.changes.collectAsState()
+    val blocked by store.blockedTagChanges.collectAsState()
     var unread by rememberSaveable { mutableStateOf(true) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    val entries = remember(personal, unread) { app.library.personal.snapshot().inboxes.values.flatMap { it.entries }.filter { !unread || !it.read }.distinctBy { it.video.entryKey }.sortedByDescending { it.at } }
+    val visible = remember(personal, blocked) { store.personal.visibleSubscriptionEntries() }
+    val entries = if (unread) visible.filterNot { it.read } else visible
     Column(Modifier.fillMaxSize().padding(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Title("订阅更新", large = true)
         Choices(listOf("标签更新", "保存搜索"), if (searchUpdates) 1 else 0) { searchUpdates = it == 1 }
         if (searchUpdates) { SavedSearchUpdatesScreen(app, play, dialogs, Modifier.weight(1f)); return@Column }
+        Copy("查看各来源已订阅标签的新作品。")
         Choices(listOf("未读", "全部"), if (unread) 0 else 1) { unread = it == 0 }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Action(if (busy) "正在检查订阅…" else "检查全部来源", enabled = !busy, modifier = Modifier.weight(1f)) {
@@ -30,8 +34,13 @@ import kotlinx.coroutines.*
                 var failed = 0; var checked = 0
                 // Each site's existing repository bounds requests to three; sites run sequentially.
                 SiteRegistry.all.forEach { site ->
-                    val tags = app.library.subscriptions(site.id)
-                    if (tags.isNotEmpty()) { val result = app.repository.subscriptions(site, app.library.subscriptionOrder(site.id), tags); app.library.personal.refreshInbox(site.id, result.tags); failed += result.failed.size; checked += tags.size }
+                    val tags = store.subscriptions(site.id)
+                    if (tags.isNotEmpty()) {
+                        val feeds = app.repository.subscriptionFeeds(site, tags)
+                        store.personal.refreshInbox(site.id, feeds)
+                        failed += feeds.count { it.error != null }
+                        checked += tags.size
+                    }
                 }
                 message = if (checked == 0) "还没有订阅标签，可在来源内容中订阅感兴趣的标签。" else "已检查 $checked 个订阅${if (failed > 0) "，$failed 项暂不可用，已保留原有记录" else ""}"
             } catch (e: Exception) { if (e is CancellationException) throw e; message = e.message ?: "检查失败，原有更新保留" } finally { busy = false } }

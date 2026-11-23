@@ -1,7 +1,10 @@
 package com.r34v.r34v
 
+import android.content.Intent
 import androidx.compose.ui.test.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import com.r34v.r34v.data.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -57,10 +60,66 @@ class GalleryUiTest : ComposeUiCase() {
         assertEquals(saved.page, f.app.library.reading(f.video("ehentai").id)!!.page)
         f.shot("11-reader-offline-restored")
     }
-    @Test fun pageFailuresRecoverInPlaceAndExLoginIsGated() = ComposeFixture().use { f ->
-        f.app.library.switchSite("ehentai"); f.brokenPage = 1; f.launchGallery(read = true); waitText("重试此页")
-        f.brokenPage = 0; clickText("重试此页"); ui.waitUntil(15000) { f.app.library.reading(f.video("ehentai").id)?.page == 1 }
-        back(f); f.app.library.switchSite("exhentai"); assertFalse(f.app.network.session.hasGallerySession(SiteRegistry.EXHENTAI))
+    @Test fun continuousComicRestoresOffsetAfterSinglePageRetryAndOfflineRecreation() = ComposeFixture().use { f ->
+        val video = f.video("ehentai")
+        val saved = ReadingProgress(video, 3, 8, "", offset = -240)
+        f.app.library.personal.setReaderMode(video.site, ReaderMode.STRIP)
+        f.app.library.saveReading(saved)
+        f.brokenPage = saved.page
+        val activity = f.launchGallery(read = true)
+        waitText("重试此页")
+        ui.onNodeWithText("3 / 8").assertIsDisplayed()
+        assertEquals(0f, stripPageOffset(saved.page), 1f)
+
+        val target = video.site to saved.page
+        val attempts = f.imageRequests.count { it == target }
+        val expectedOffset = saved.offset / activity.resources.displayMetrics.density
+        f.brokenPage = 0
+        clickText("重试此页")
+        waitForReaderPageAt(saved.page, expectedOffset)
+        assertEquals(attempts + 1, f.imageRequests.count { it == target })
+        ui.onNodeWithText("重试此页").assertDoesNotExist()
+
+        f.offline = true
+        ui.runOnIdle { activity.recreate() }
+        ui.waitUntil(15000) {
+            ui.runOnIdle {
+                ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                    .any { it is GalleryActivity && it !== activity }
+            }
+        }
+        waitForReaderPageAt(saved.page, expectedOffset)
+        assertEquals(attempts + 1, f.imageRequests.count { it == target })
+        back(f)
+        waitText("继续阅读 · 第 3 页")
+        val restored = checkNotNull(f.app.library.reading(video.id, video.site))
+        assertEquals(saved.page, restored.page)
+        assertEquals(saved.offset, restored.offset)
+    }
+
+    @Test fun explicitPhotoPageOpensAtTopAndKeepsBookModeOverride() = ComposeFixture().use { f ->
+        val video = f.video(SiteRegistry.FOURKHD.id)
+        f.app.library.saveReading(ReadingProgress(video, 2, 8, "", offset = -240))
+        f.app.library.personal.setReaderMode(video.site, ReaderMode.RIGHT_TO_LEFT)
+        val preferences = ReaderPreferences(mode = ReaderMode.STRIP.name, start = ReaderStart.LAST)
+        f.app.library.personal.setReaderPreferences(video, preferences)
+        f.ins.startActivitySync(Intent(f.ins.targetContext, GalleryActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            .putExtra("gallery", f.app.library.gson.toJson(video)).putExtra("read", true).putExtra("page", 4))
+
+        waitForReaderPageAt(4, 0f)
+        ui.onNodeWithText("4 / 8").assertIsDisplayed()
+        back(f)
+        waitText("开始浏览 · 第 8 页")
+        val saved = checkNotNull(f.app.library.reading(video.id, video.site))
+        assertEquals(4, saved.page)
+        assertEquals(0, saved.offset)
+        assertEquals(preferences, f.app.library.personal.readerPreferences(video))
+        assertEquals(ReaderMode.RIGHT_TO_LEFT, f.app.library.personal.readerMode(video.site))
+    }
+
+    @Test fun exLoginIsGated() = ComposeFixture().use { f ->
+        f.app.library.switchSite("exhentai"); assertFalse(f.app.network.session.hasGallerySession(SiteRegistry.EXHENTAI))
         f.launch(); waitText("ExHentai 必须登录"); ui.onNodeWithText("首页").assertIsSelected(); f.shot("12-ex-login-gate")
         clickText("官方网页登录"); waitText("ExHentai 官方登录"); clickText("验证登录"); waitText("尚未取得登录会话，请先在官方页面完成登录。")
         ui.runOnIdle {
@@ -70,5 +129,20 @@ class GalleryUiTest : ComposeUiCase() {
         }
         ui.onNodeWithText("尚未取得登录会话，请先在官方页面完成登录。").assertExists()
         assertFalse(f.app.network.session.hasGallerySession(SiteRegistry.EXHENTAI))
+    }
+
+    private fun stripPageOffset(page: Int): Float {
+        val pageTop = ui.onNodeWithTag("reader-page-$page").getUnclippedBoundsInRoot().top.value
+        val stripTop = ui.onNodeWithTag("comic-strip").getUnclippedBoundsInRoot().top.value
+        return pageTop - stripTop
+    }
+
+    private fun waitForReaderPageAt(page: Int, offsetDp: Float) {
+        ui.waitUntil(15000) {
+            runCatching {
+                ui.onAllNodesWithContentDescription("第 $page 页，双击或双指缩放").fetchSemanticsNodes().isNotEmpty() &&
+                    kotlin.math.abs(stripPageOffset(page) - offsetDp) <= 1f
+            }.getOrDefault(false)
+        }
     }
 }

@@ -563,24 +563,26 @@ class Repository(private val network: Network, private val library: LibraryStore
     suspend fun works() = withContext(Dispatchers.IO) { adapter().index("works") }
     suspend fun ranking(url: String) = withContext(Dispatchers.IO) { adapter().index("artists") }
 
-    /**
-     * Fetches every followed tag for [site] at once.
-     *
-     * One tag failing must not blank the screen: each failure is recorded on its own [TagFeed] and
-     * the rest still render. Results are merged by [SubscriptionMerge], so a work carrying several
-     * followed tags appears once, in the position the user's tag order gives it.
-     */
     suspend fun subscriptions(site: SiteContext, order: SubscriptionOrder, tags: List<Subscription>): SubscriptionPage =
+        library.subscriptionPage(subscriptionFeeds(site, tags), order)
+
+    /** Keep the site's full response for the inbox baseline and isolate failures to each tag. */
+    internal suspend fun subscriptionFeeds(site: SiteContext, tags: List<Subscription>): List<TagFeed> =
         withContext(Dispatchers.IO) {
+            val adapter = AdapterRegistry.adapter(site, network)
             val permits = kotlinx.coroutines.sync.Semaphore(3)
-            val feeds = coroutineScope {
+            coroutineScope {
                 tags.map { entry ->
                     async {
                         runCatching {
                             permits.acquire()
                             try {
-                            val page = feed(FeedRequest(FeedKind.TAG, entry.slug, Sort.NEWEST), site)
-                            TagFeed(entry, page.videos.filter { library.allowed(it, site.id) }, null, page.cached)
+                                val linkedTag = entry.url.takeIf(String::isNotBlank)?.let { adapter.linkRequest(site.absolute(it)) }
+                                    ?.takeIf { it.kind == FeedKind.TAG && it.target == entry.slug }
+                                val request = linkedTag?.copy(sort = Sort.NEWEST)
+                                    ?: FeedRequest(FeedKind.TAG, entry.slug, Sort.NEWEST)
+                                val page = feed(request, site)
+                                TagFeed(entry, page.videos, cached = page.cached)
                             } finally { permits.release() }
                         }.getOrElse { error ->
                             if (error is CancellationException) throw error
@@ -589,8 +591,6 @@ class Repository(private val network: Network, private val library: LibraryStore
                     }
                 }.awaitAll()
             }
-            SubscriptionPage(tags = feeds, videos = SubscriptionMerge.sort(feeds, order), order = order,
-                failed = feeds.filter { it.error != null })
         }
 
     /** Whether a tag has anything to show right now, used to keep the follow list honest. */

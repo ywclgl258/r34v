@@ -62,12 +62,23 @@ class IwaraContractTest {
         assertEquals(1, first.current); assertEquals(2, first.total); assertTrue(first.hasNext)
         val video = first.videos.single()
         assertEquals("iwara", video.site)
+        assertEquals(listOf("city_walk"), video.tagSlugs)
         assertEquals("https://www.iwara.tv/video/Sample9AbCdEf/city-walk", video.url)
         assertEquals("02:05", video.duration)
         assertEquals("https://i.iwara.tv/image/thumbnail/01234567-89ab-cdef-0123-456789abcdef/thumbnail-03.jpg", video.thumb)
         assertTrue(video.preview.endsWith("/preview.webp"))
         val next = fixture("list.json").asJsonObject.apply { addProperty("page", 1); addProperty("count", 41) }
         assertEquals(3, IwaraProtocol.feed(next, site, FeedRequest(page = 2)).total)
+    }
+
+    @Test fun relatedCardsKeepOnlyTheirOwnTags() {
+        val related = fixture("list.json").asJsonObject.getAsJsonArray("results").apply {
+            get(0).asJsonObject.addProperty("id", "RelatedSample01")
+            add(JsonParser.parseString("""{"id":"RelatedSample02","title":"Untyped sample"}"""))
+        }
+        val detail = IwaraProtocol.detail(metadata(), fixture("sources.json").asJsonArray, site, related)
+        assertEquals(listOf("city_walk"), detail.related[0].tagSlugs)
+        assertNull(detail.related[1].tagSlugs)
     }
 
     @Test fun customThumbnailUsesItsOwnFileAndEncodedName() {

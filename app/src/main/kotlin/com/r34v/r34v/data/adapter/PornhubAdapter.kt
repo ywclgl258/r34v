@@ -105,7 +105,11 @@ object PornhubProtocol {
             FeedKind.SEARCH -> "${site.base}/video/search?search=${MissavProtocol.encode(request.target.trim())}$pagePart"
             FeedKind.TAG -> "${site.base}/video/search?search=${MissavProtocol.encode(request.target.trim())}&t=tag$pagePart"
             FeedKind.MODEL -> "${site.base}/pornstar/${slug(request.target)}" + if (page > 1) "?page=$page" else ""
-            FeedKind.CATEGORY -> "${site.base}/video?c=${request.target.trim()}$pagePart"
+            FeedKind.CATEGORY -> {
+                val target = request.target.trim()
+                if (target.isEmpty() || target.all { it.isDigit() }) "${site.base}/video?c=$target$pagePart"
+                else "${site.base}/categories/${MissavProtocol.encode(target)}" + if (page > 1) "?page=$page" else ""
+            }
             FeedKind.POPULAR -> "${site.base}/video?o=mv$pagePart"
             FeedKind.RATED -> "${site.base}/video?o=tr$pagePart"
             else -> "${site.base}/video?o=${when (request.sort) { Sort.VIEWS -> "mv"; Sort.RATING -> "tr"; else -> "cm" }}$pagePart"
@@ -270,6 +274,7 @@ object PornhubProtocol {
         return when (parts.firstOrNull()) {
             "pornstar", "model" -> parts.getOrNull(1)?.let { FeedRequest(FeedKind.MODEL, it.replace('-', ' ')) }
             "video" -> url.queryParameter("c")?.let { FeedRequest(FeedKind.CATEGORY, it) }
+            "categories" -> parts.getOrNull(1)?.takeIf { parts.size == 2 }?.let { FeedRequest(FeedKind.CATEGORY, it) }
             else -> null
         }
     }

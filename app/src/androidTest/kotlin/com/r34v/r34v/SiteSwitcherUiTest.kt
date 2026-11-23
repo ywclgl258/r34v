@@ -114,7 +114,10 @@ class SiteSwitcherUiTest : ComposeUiCase() {
     @Test fun drawerTouchNavigationAndSiteSpecificLibrary() = ComposeFixture().use { f ->
         val video = f.video(); f.app.library.toggleFavorite(Favorite("video", video.id, video.title, video.url, video.thumb))
         f.launch(); waitHome(); switchSite(SiteRegistry.HANIME1.name); waitHome(); assertEquals("hanime1", f.app.library.siteId)
-        clickText("片库"); clickText("收藏"); waitText("还没有收藏内容")
+        clickText("片库"); clickText("收藏"); waitText(video.title)
+        assertEquals("hanime1", f.app.library.siteId)
+        ui.onNodeWithContentDescription("返回我的片库").performClick()
+        clickText("首页")
         switchSite(SiteRegistry.IWARA.name); waitHome(); assertEquals("iwara", f.app.library.siteId)
         clickText("发现")
         val iwara = f.video(SiteRegistry.IWARA.id)

@@ -30,8 +30,10 @@ import kotlinx.coroutines.*
 @Composable fun PersonalHomeScreen(app: R34Application, catalog: List<CatalogEntry>?, play: (Video) -> Unit,
     waiting: () -> Unit, updates: () -> Unit, search: (SavedSearch?) -> Unit, discover: () -> Unit,
     channel: (DiscoveryChannel) -> Unit = {}, manageChannels: () -> Unit = {}) {
-    val personal by app.library.personal.changes.collectAsState()
-    val snapshot = remember(personal) { app.library.personal.snapshot() }
+    val store = app.library
+    val personal by store.personal.changes.collectAsState()
+    val blocked by store.blockedTagChanges.collectAsState()
+    val snapshot = remember(personal) { store.personal.snapshot() }
     var categoryIndex by rememberSaveable { mutableIntStateOf(0) }
     val category = SiteCategory.entries.getOrNull(categoryIndex - 1)
     fun matches(video: Video) = category == null || SiteRegistry.byIdOrDefault(video.site).category == category
@@ -42,8 +44,10 @@ import kotlinx.coroutines.*
     val continuingRail = continuing.drop(1).take(12)
     val continuingKeys = continuingRail.mapTo(mutableSetOf()) { it.video.entryKey }
     val queuedRail = queued.filter { it.video.entryKey != hero?.video?.entryKey && it.video.entryKey !in continuingKeys }
-    val unread = snapshot.inboxes.values.sumOf { box -> box.entries.count { !it.read } } +
-        snapshot.searchUpdates.values.sumOf { box -> box.entries.count { !it.read } }
+    val unread = remember(snapshot, blocked) {
+        store.personal.visibleSubscriptionEntries(data = snapshot).count { !it.read } +
+            snapshot.searchUpdates.values.sumOf { box -> box.entries.count { !it.read } }
+    }
     val padding = 14.dp
     LazyColumn(Modifier.fillMaxSize().testTag("personal-home"),
         contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

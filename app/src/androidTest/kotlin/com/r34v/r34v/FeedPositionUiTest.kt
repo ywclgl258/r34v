@@ -3,13 +3,18 @@ package com.r34v.r34v
 import androidx.compose.ui.test.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.r34v.r34v.data.AdapterRegistry
 import com.r34v.r34v.data.FeedKind
 import com.r34v.r34v.data.FeedPage
 import com.r34v.r34v.data.FeedRequest
 import com.r34v.r34v.data.GalleryLanguage
+import com.r34v.r34v.data.Link
 import com.r34v.r34v.data.SiteRegistry
 import com.r34v.r34v.data.Sort
 import com.r34v.r34v.data.Video
+import com.r34v.r34v.data.adapter.IwaraAdapter
+import com.r34v.r34v.data.adapter.PornhubAdapter
+import com.r34v.r34v.data.adapter.SiteAdapter
 import com.r34v.r34v.data.entryKey
 import com.google.gson.JsonParser
 import java.io.File
@@ -147,6 +152,80 @@ class FeedPositionUiTest : ComposeUiCase() {
         waitForWork(all)
         ui.onNodeWithText("清除筛选").assertDoesNotExist()
         assertEquals(GalleryLanguage.ALL, f.app.library.galleryLanguage(site.id))
+    }
+
+    @Test fun discoverOpensAndSearchesTheCurrentSiteCategoryDirectory() = ComposeFixture().use { f ->
+        val site = SiteRegistry.PORNHUB
+        val native = PornhubAdapter(site, f.app.network)
+        val field = AdapterRegistry::class.java.getDeclaredField("cache").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST") val adapters = field.get(AdapterRegistry) as MutableMap<String, SiteAdapter>
+        val neutral = adapters.getValue(site.id)
+        val directory = (1..48).map { index ->
+            Link("sample-$index", if (index == 48) "远山样本" else "分类样本 $index", "${site.base}/categories/sample-$index/")
+        }
+        val loaded = AtomicReference(directory)
+        adapters[site.id] = object : SiteAdapter by neutral {
+            override val sections = native.sections
+            override val catalogueTitle = native.catalogueTitle
+            override fun homeRequest(page: Int) = native.homeRequest(page)
+            override fun sectionUrl(key: String) = native.sectionUrl(key)
+            override fun linkRequest(url: String) = native.linkRequest(url)
+            override suspend fun index(section: String): List<Link> {
+                check(section == "categories")
+                return loaded.get()
+            }
+        }
+        val iwara = SiteRegistry.IWARA
+        val iwaraFixture = adapters.getValue(iwara.id)
+        adapters[iwara.id] = object : SiteAdapter by iwaraFixture {
+            override val sections = IwaraAdapter(iwara, f.app.network).sections
+        }
+        f.app.library.switchSite(site.id)
+        check(f.app.library.prefs.edit().remove("${site.id}:explore_filter_v1")
+            .remove("${SiteRegistry.R34V.id}:explore_filter_v1").remove("${iwara.id}:explore_filter_v1").commit())
+        f.launch(); waitHome(); clickText("发现")
+        val openCategories = ui.onNode(hasText("分类") and hasClickAction())
+        openCategories.assertIsDisplayed().performClick()
+        waitText("分类样本 1")
+        ui.onAllNodesWithText("分类").assertCountEquals(1)
+
+        val search = ui.onNode(hasSetTextAction() and hasText("搜索分类"))
+        search.performTextInput("远山")
+        ui.onNodeWithText("远山样本").assertIsDisplayed()
+        search.performTextReplacement("SAMPLE-48")
+        ui.onNodeWithText("远山样本").assertIsDisplayed()
+        closeKeyboard(f)
+        f.shot("library-management-categories")
+        search.performTextReplacement("no-match")
+        ui.onNodeWithText("没有匹配的分类").assertIsDisplayed()
+        ui.onNodeWithText("当前站点的分类目录为空").assertDoesNotExist()
+        ui.onNodeWithContentDescription("清除分类搜索").performClick()
+        ui.onNodeWithText("分类样本 1").assertIsDisplayed()
+
+        search.performTextInput("sample-48")
+        ui.onNodeWithText("远山样本").performClick()
+        ui.waitUntil(15000) { f.requests.any { it.first == site.id && it.second.kind == FeedKind.CATEGORY && it.second.target == "sample-48" } }
+        ui.onNodeWithContentDescription("固定当前频道").assertIsDisplayed()
+        ui.onNodeWithContentDescription("返回").performClick()
+        waitText("远山样本")
+        ui.onNodeWithContentDescription("返回").performClick()
+
+        loaded.set(emptyList())
+        openCategories.performClick()
+        waitText("当前站点的分类目录为空")
+        ui.onNodeWithText("没有匹配的分类").assertDoesNotExist()
+
+        switchSite(SiteRegistry.R34V.name); waitHome(); clickText("发现")
+        openCategories.assertDoesNotExist()
+        ui.onNodeWithContentDescription("内容分类，当前 最新更新").performClick()
+        clickText("分类")
+        ui.waitUntil(15000) { f.requests.any { it.first == SiteRegistry.R34V.id && it.second.kind == FeedKind.CATEGORY && it.second.target == "sample" } }
+
+        switchSite(iwara.name); waitHome(); clickText("发现")
+        openCategories.assertDoesNotExist()
+        ui.onNodeWithContentDescription("内容分类，当前 最新上传").performClick()
+        ui.onNode(hasText("最新上传") and hasAnyAncestor(isDialog())).assertExists()
+        ui.onNode(hasText("分类") and hasAnyAncestor(isDialog())).assertDoesNotExist()
     }
 
     @Test fun homeAndDiscoverRestoreWorksAcrossProcesses() {

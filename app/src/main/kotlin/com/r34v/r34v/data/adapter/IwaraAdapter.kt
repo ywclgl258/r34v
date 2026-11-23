@@ -235,7 +235,16 @@ object IwaraProtocol {
             .apply { data.string("slug").takeIf(String::isNotBlank)?.let(::addPathSegment) }.build().toString()
         return Video(id, title, canonical, thumb, "${data.number("numImages", 0)} 张", "${data.number("numViews", 0)} 次浏览",
             "${data.number("numLikes", 0)} 赞", "图库", site = site.id, mediaKind = MediaKind.GALLERY,
-            thumbWidth = thumbnail?.number("width", 0)?.toInt() ?: 0, thumbHeight = thumbnail?.number("height", 0)?.toInt() ?: 0)
+            thumbWidth = thumbnail?.number("width", 0)?.toInt() ?: 0, thumbHeight = thumbnail?.number("height", 0)?.toInt() ?: 0,
+            tagSlugs = tagSlugs(data))
+    }
+
+    private fun tagSlugs(data: JsonObject): List<String>? {
+        val tags = data.get("tags")?.takeIf { it.isJsonArray }?.asJsonArray ?: return null
+        return tags.mapNotNull { raw ->
+            if (!raw.isJsonObject) return@mapNotNull null
+            raw.asJsonObject.string("id").takeIf(String::isNotBlank)
+        }
     }
 
     private fun galleryFiles(data: JsonObject, site: SiteContext): Pair<List<GalleryImage>, Int> {
@@ -268,11 +277,11 @@ object IwaraProtocol {
             thumbWidth = rawEntry.thumbWidth.takeIf { it > 0 } ?: data.array("files").firstOrNull()?.asJsonObject?.number("width", 0)?.toInt() ?: 0,
             thumbHeight = rawEntry.thumbHeight.takeIf { it > 0 } ?: data.array("files").firstOrNull()?.asJsonObject?.number("height", 0)?.toInt() ?: 0)
         val groups = linkedMapOf<String, List<Link>>()
-        data.array("tags").mapNotNull { raw ->
-            if (!raw.isJsonObject) return@mapNotNull null
-            val tag = raw.asJsonObject.string("id").takeIf(String::isNotBlank) ?: return@mapNotNull null
-            Link(tag, tag, site.base.toHttpUrl().newBuilder().addPathSegment("images").addQueryParameter("tags", tag).build().toString())
-        }.takeIf { it.isNotEmpty() }?.let { groups["标签"] = it }
+        entry.tagSlugs.orEmpty().takeIf { it.isNotEmpty() }?.let { tags ->
+            groups["标签"] = tags.map { tag ->
+                Link(tag, tag, site.base.toHttpUrl().newBuilder().addPathSegment("images").addQueryParameter("tags", tag).build().toString())
+            }
+        }
         data.obj("user")?.let { user ->
             val id = user.string("id")
             if (id.isNotBlank()) groups["作者"] = listOf(Link(id, user.string("name").ifBlank { user.string("username") }.ifBlank { id },
@@ -307,7 +316,7 @@ object IwaraProtocol {
             .apply { data.string("slug").takeIf(String::isNotBlank)?.let(::addPathSegment) }.build().toString()
         return Video(id, title, canonical, thumb, duration, "${data.number("numViews", 0)} 次观看",
             "${data.number("numLikes", 0)} 赞", if (data.string("embedUrl").isNotBlank()) "站外视频" else "",
-            if (fileId.isNotBlank()) imageUrl("original", fileId, "preview.webp") else "", site.id)
+            if (fileId.isNotBlank()) imageUrl("original", fileId, "preview.webp") else "", site.id, tagSlugs = tagSlugs(data))
     }
 
     private fun imageUrl(size: String, id: String, name: String) = "https://i.iwara.tv".toHttpUrl().newBuilder()
@@ -330,10 +339,11 @@ object IwaraProtocol {
         val playback = streams(false)
         check(playback.isNotEmpty()) { "Iwara 没有可用的 HTTPS 视频源，请稍后重试" }
         val groups = linkedMapOf<String, List<Link>>()
-        metadata.array("tags").mapNotNull { item ->
-            val tag = if (item.isJsonObject) item.asJsonObject.string("id") else ""
-            if (tag.isBlank()) null else Link(tag, tag, site.base.toHttpUrl().newBuilder().addPathSegment("videos").addQueryParameter("tags", tag).build().toString())
-        }.takeIf { it.isNotEmpty() }?.let { groups["标签"] = it }
+        video.tagSlugs.orEmpty().takeIf { it.isNotEmpty() }?.let { tags ->
+            groups["标签"] = tags.map { tag ->
+                Link(tag, tag, site.base.toHttpUrl().newBuilder().addPathSegment("videos").addQueryParameter("tags", tag).build().toString())
+            }
+        }
         metadata.obj("user")?.let { user ->
             val id = user.string("id"); val username = user.string("username")
             if (id.isNotBlank()) groups["作者"] = listOf(Link(id, user.string("name").ifBlank { username }.ifBlank { id },
