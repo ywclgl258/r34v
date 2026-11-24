@@ -1,14 +1,24 @@
 package com.r34v.r34v
 
+import android.app.Application
+import android.content.ContentProvider
+import android.content.ContentResolver
+import android.content.ContentValues
+import android.database.Cursor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.DocumentsContract
 import androidx.core.content.FileProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.r34v.r34v.data.*
 import kotlinx.coroutines.*
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.ByteArrayOutputStream
@@ -101,5 +111,29 @@ class GalleryExportTest {
             assertTrue(runCatching { exporter.prepare("invalid", listOf(1), ExportMode.CBZ, { "not an image".toByteArray() }) }.isFailure)
             assertTrue(root.listFiles().orEmpty().isEmpty())
         } finally { root.deleteRecursively() }
+    }
+
+    @Test fun interruptedSingleDocumentSaveDoesNotDeleteExistingTarget(): Unit = runBlocking {
+        assumeTrue(Build.VERSION.SDK_INT >= 36)
+        var deletions = 0
+        val provider = object : ContentProvider() {
+            override fun onCreate() = true
+            override fun query(uri: Uri, projection: Array<String>?, selection: String?, selectionArgs: Array<String>?, sortOrder: String?): Cursor? = null
+            override fun getType(uri: Uri): String? = null
+            override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+            override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?) = 0
+            override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<String>?) = 0
+            override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
+                deletions++
+                return Bundle()
+            }
+        }
+        val resolver = ContentResolver.wrap(provider)
+        val target = DocumentsContract.buildDocumentUri("test.documents", "existing")
+        val model = GalleryExportModel(context.applicationContext as Application, resolver)
+        withContext(Dispatchers.Main.immediate) { model.save(target, tree = false) }
+        withTimeout(5000) { while (model.busy) delay(50) }
+        assertTrue(model.message.contains("导出任务已中断"))
+        assertEquals(0, deletions)
     }
 }

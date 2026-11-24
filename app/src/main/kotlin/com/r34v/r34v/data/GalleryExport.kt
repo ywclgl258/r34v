@@ -1,6 +1,7 @@
 package com.r34v.r34v.data
 
 import android.app.Application
+import android.content.ContentResolver
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.DocumentsContract
@@ -97,7 +98,7 @@ class GalleryExporter(private val root: File) {
     }
 }
 
-class GalleryExportModel(application: Application) : AndroidViewModel(application) {
+class GalleryExportModel @JvmOverloads constructor(application: Application, private val resolver: ContentResolver = application.contentResolver) : AndroidViewModel(application) {
     private val app = application as R34Application
     private val exporter = GalleryExporter(File(app.cacheDir, "exports"))
     var prepared by mutableStateOf<PreparedExport?>(null); private set
@@ -147,12 +148,13 @@ class GalleryExportModel(application: Application) : AndroidViewModel(applicatio
         val batch = prepared
         busy = true; progress = "正在保存…"
         job = viewModelScope.launch {
+            // Only documents created below are safe to delete. A single-file picker URI may
+            // refer to a pre-existing user document, including when the export is interrupted.
             val created = mutableListOf<Uri>()
             try {
                 withContext(Dispatchers.IO) {
-                    if (!tree) created += uri
                     check(batch != null) { "导出任务已中断，请重新导出" }
-                    val resolver = app.contentResolver
+                    val resolver = this@GalleryExportModel.resolver
                     val parent = if (tree) DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri)) else null
                     batch.files.forEachIndexed { index, item ->
                         currentCoroutineContext().ensureActive()
@@ -166,7 +168,7 @@ class GalleryExportModel(application: Application) : AndroidViewModel(applicatio
             } catch (error: Exception) {
                 var remaining = 0
                 withContext(NonCancellable + Dispatchers.IO) {
-                    created.forEach { if (!runCatching { DocumentsContract.deleteDocument(app.contentResolver, it) }.getOrDefault(false)) remaining++ }
+                    created.forEach { if (!runCatching { DocumentsContract.deleteDocument(resolver, it) }.getOrDefault(false)) remaining++ }
                 }
                 val cleanup = if (remaining > 0) "；$remaining 个未完成文件无法移除，请在目标位置删除" else ""
                 message = if (error is CancellationException) "已取消保存$cleanup" else "保存失败：${error.message}，请重新选择位置$cleanup"
