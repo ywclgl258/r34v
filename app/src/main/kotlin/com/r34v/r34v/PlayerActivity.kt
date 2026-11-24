@@ -145,7 +145,7 @@ class PlayerActivity : ComponentActivity() {
         playbackPreferences = store.personal.playback(video.site).let { prefs ->
             if (store.personal.snapshot().playbackPreferences.containsKey(video.site)) prefs else prefs.copy(defaultRate = globalRate)
         }
-        userRate = playbackPreferences.defaultRate
+        userRate = savedInstanceState?.getFloat("userRate", playbackPreferences.defaultRate) ?: playbackPreferences.defaultRate
         fullscreen = savedInstanceState?.getBoolean("fullscreen") ?: false
         autoFullscreenApplied = savedInstanceState?.getBoolean("autoFullscreenApplied") ?: false
         showingCover = savedInstanceState?.getBoolean("showingCover") ?: !intent.getBooleanExtra("autoplay", true)
@@ -1019,6 +1019,7 @@ class PlayerActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         savePosition()
         outState.putLong("position", position)
+        outState.putFloat("userRate", userRate)
         outState.putBoolean("fullscreen", fullscreen)
         outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied)
         outState.putBoolean("resumePlay", resumePlay)

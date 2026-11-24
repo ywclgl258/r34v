@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
@@ -110,6 +112,24 @@ class ComposeReaderGestureTest {
         ui.runOnIdle { save!!.invoke() }
         assertEquals(3, position)
         assertFalse(position == 1)
+    }
+
+    @Test fun stripReaderReusesSharedRatiosWhileARecreatedBufferIsLoading() {
+        var generation by mutableStateOf(0)
+        val ratios = mutableStateMapOf<Int, Float>()
+        setReader {
+            val current = generation
+            key(current) {
+                ComicReader(listOf(3), ReaderJump(0, 3),
+                    load = { _, _ -> if (current == 0) rendered(3) else kotlinx.coroutines.awaitCancellation() },
+                    toggle = {}, pause = {}, position = { _, _, _ -> }, readyPages = {}, attachSave = {}, ratios = ratios)
+            }
+        }
+        ui.waitUntil(3000) { ui.runOnIdle { ratios[3] == 4f } }
+        ui.runOnIdle { generation = 1 }
+        ui.waitForIdle()
+        val bounds = ui.onNodeWithTag("reader-page-3").fetchSemanticsNode().boundsInRoot
+        assertEquals(4f, bounds.width / bounds.height, .1f)
     }
 
     private fun rendered(page: Int): GalleryRepository.RenderedPage {

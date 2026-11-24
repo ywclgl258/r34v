@@ -56,7 +56,7 @@ class NextLocalUiTest : ComposeUiCase() {
                 .putExtra("gallery", f.app.library.gson.toJson(video)).putExtra("read", true))
             waitText("本地文件不存在，请重新导入同一文件或目录")
             ui.onNodeWithText("重新选择文件 / 目录").performScrollTo().performClick()
-            waitText("导入本地漫画"); clickText("选择 CBZ / ZIP 文件")
+            waitText("导入本地内容"); clickText("选择 CBZ / ZIP 漫画")
             ui.waitUntil(20000) { ui.onAllNodesWithTag("reader-page-2").fetchSemanticsNodes().isNotEmpty() }
             ui.onNodeWithText("2 / 3").assertIsDisplayed()
             assertEquals(2, f.app.library.reading(video.id, "local")!!.page)
@@ -73,7 +73,7 @@ class NextLocalUiTest : ComposeUiCase() {
         try {
             f.launch(); waitHome()
             clickText("片库"); ui.onNodeWithTag("library-hub").performScrollToNode(hasText("导入 CBZ / ZIP / 图片目录"))
-            clickText("导入 CBZ / ZIP / 图片目录"); clickText("选择 CBZ / ZIP 文件")
+            clickText("导入 CBZ / ZIP / 图片目录"); clickText("选择 CBZ / ZIP 漫画")
             // A repeated import intentionally reopens the existing copy and saved page.
             ui.waitUntil(20000) { ui.onAllNodesWithContentDescription("阅读工具").fetchSemanticsNodes().isNotEmpty() }
             assertTrue(f.galleryCalls.isEmpty()); assertTrue(f.app.localLibrary.books().count { it.id !in before } in 0..1)

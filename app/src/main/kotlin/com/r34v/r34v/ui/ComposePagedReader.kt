@@ -14,7 +14,7 @@ import com.r34v.r34v.data.*
 @Composable internal fun PagedComicReader(navigation: ReaderNavigation, jump: ReaderJump, mode: ReaderMode,
     load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage, toggle: () -> Unit, pause: () -> Unit,
     position: (Int, GalleryImage?, Int) -> Unit, readyPages: (List<Int>) -> Unit, attachSave: ((() -> Unit)?) -> Unit,
-    fit: ReaderFit, cropPercent: Int, currentPage: Int) {
+    fit: ReaderFit, cropPercent: Int, currentPage: Int, ratios: MutableMap<Int, Float>? = null) {
     val readingPage by rememberUpdatedState(currentPage)
     val currentJump by rememberUpdatedState(jump)
     val loader by rememberUpdatedState(load)
@@ -23,7 +23,8 @@ import com.r34v.r34v.data.*
     val currentPause by rememberUpdatedState(pause)
     key(navigation, mode) {
         val scope = rememberCoroutineScope()
-        val buffer = remember { ReaderBuffer(navigation.pages, scope) { number, force -> loader(number, force) } }
+        val localRatios = remember { mutableStateMapOf<Int, Float>() }
+        val buffer = remember(ratios) { ReaderBuffer(navigation.pages, scope, ratios ?: localRatios) { number, force -> loader(number, force) } }
         val sheets = navigation.sheets
         val pager = rememberPagerState(initialPage = navigation.sheetIndex(readingPage)) { sheets.size }
         var settledJump by remember { mutableStateOf<ReaderJump?>(null) }

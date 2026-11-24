@@ -33,7 +33,7 @@ import java.io.Closeable
 
 @RunWith(AndroidJUnit4::class)
 class BrowseUiTest : ComposeUiCase() {
-    @Test fun browseSearchLibraryAndSettings() = ComposeFixture().use { f ->
+    @Test fun browseSearchLibraryAndSettings() = motionFixture { f ->
         f.app.library.clearHistory()
         val activity = f.launch(); openSourceHome(); ui.waitUntil(10000) { ui.onAllNodesWithContentDescription("暂停轮播").fetchSemanticsNodes().isNotEmpty() }; waitCovers()
         assertTrue("The hero must be visible on the initial viewport", ui.onNodeWithTag("home-carousel").fetchSemanticsNode().boundsInRoot.height > f.ins.targetContext.resources.displayMetrics.density * 200)
@@ -60,11 +60,15 @@ class BrowseUiTest : ComposeUiCase() {
         assertEquals("1080p", f.app.library.string("quality")); f.shot("04-settings")
     }
     @Test fun playerQualitySpeedFullScreenAndPositionSurviveRecreation() = fullscreenFixture { f ->
+        f.app.library.personal.setPlayback(f.video().site, PlaybackPreferences(defaultRate = .75f))
         val activity = f.launchPlayer()
         val title = f.video().title
         val originalOrientation = ui.runOnIdle { activity.resources.configuration.orientation }
         val field = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
         waitForDecodedVideo(f)
+        ui.runOnIdle {
+            assertEquals(.75f, (field.get(activity) as Player).playbackParameters.speed, .001f)
+        }
         openPlaybackOption("清晰度")
         // Startup quality adapts to the process-wide measured link speed.
         val initialQuality = ui.onNode(hasAnyQualityOption() and isSelected()).fetchSemanticsNode()
@@ -105,6 +109,7 @@ class BrowseUiTest : ComposeUiCase() {
             assertEquals(2f, engine.playbackParameters.speed, .001f)
         }
         assertEquals(changedQuality, f.app.library.string("quality"))
+        assertEquals(.75f, f.app.library.personal.playback(f.video().site).defaultRate, .001f)
     }
 
     @Test fun portraitFullscreenWaitsForDimensionsAndStaysExitedAfterRecreation() =
@@ -147,6 +152,22 @@ class BrowseUiTest : ComposeUiCase() {
             waitForPlayerDetails(title)
             waitForPlayerWindow(recreated, SCREEN_ORIENTATION_UNSPECIFIED, originalOrientation, fullscreen = false)
         }
+
+    private fun motionFixture(test: (ComposeFixture) -> Unit) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val resolver = instrumentation.targetContext.contentResolver
+        val key = Settings.Global.ANIMATOR_DURATION_SCALE
+        val previous = Settings.Global.getFloat(resolver, key, 1f)
+        fun write(value: Float) {
+            val output = ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand("settings put global $key $value"))
+                .bufferedReader().use { it.readText() }
+            check(Settings.Global.getFloat(resolver, key, 1f) == value) { "Could not update $key. $output" }
+        }
+        Closeable { if (previous != 1f) write(previous) }.use {
+            if (previous != 1f) write(1f)
+            ComposeFixture().use(test)
+        }
+    }
 
     private fun fullscreenFixture(videoAsset: String = "test-pattern.mp4", test: (ComposeFixture) -> Unit) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()

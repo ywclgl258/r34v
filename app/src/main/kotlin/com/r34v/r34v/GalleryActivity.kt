@@ -77,6 +77,7 @@ class GalleryActivity : ComponentActivity() {
     private val images = mutableStateMapOf<Int, GalleryImage>()
     private val dialogs = ComposeDialogs()
     private val exports: GalleryExportModel by viewModels()
+    private val readerViewport: ReaderViewportModel by viewModels()
     private val exportDocument = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) {
         exports.save(if (it.resultCode == RESULT_OK) it.data?.data else null, tree = false)
     }
@@ -313,9 +314,9 @@ class GalleryActivity : ComponentActivity() {
         Box(Modifier.fillMaxSize().background(Color.Black).displayCutoutPadding()) {
             val toggle = { pauseReaderPlayback(); controlsVisible = !controlsVisible }
             if (mode == ReaderMode.STRIP) ComicReader(pages, readerJump, ::loadStripPage, toggle, ::pauseReaderPlayback,
-                positionChanged, { readyPages = it }, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent)
+                positionChanged, { readyPages = it }, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent, readerViewport.ratios)
             else PagedComicReader(navigation, readerJump, mode, ::loadStripPage, toggle, ::pauseReaderPlayback,
-                positionChanged, { readyPages = it }, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent, currentPage)
+                positionChanged, { readyPages = it }, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent, currentPage, readerViewport.ratios)
             androidx.compose.animation.AnimatedVisibility(controlsVisible, Modifier.align(Alignment.TopCenter),
                 enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
                 Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(chromeSurface, chromeEdge)))

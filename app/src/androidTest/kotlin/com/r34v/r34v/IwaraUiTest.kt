@@ -23,7 +23,7 @@ class IwaraUiTest : ComposeUiCase() {
         catch (e: Throwable) { println("Iwara search requests: ${f.requests.toList()}"); f.shot("api24-iwara-search-timeout"); throw e }
         back(f); waitText("最近搜索"); ui.onNode(hasSetTextAction()).assertTextContains("creator sample")
         assertEquals("creator sample", f.app.library.searches().first())
-        switchSite(SiteRegistry.R34V.name); clickText("搜索"); waitText("搜索过的关键词会保存在这里")
+        switchSite(SiteRegistry.R34V.name); clickText("搜索"); waitText("暂无搜索记录")
         assertTrue(f.app.library.searches().isEmpty())
     }
 }

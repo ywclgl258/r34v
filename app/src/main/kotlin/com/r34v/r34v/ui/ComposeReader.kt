@@ -16,12 +16,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
 import com.r34v.r34v.data.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
@@ -30,10 +33,11 @@ import kotlinx.coroutines.sync.withPermit
 import kotlin.math.abs
 
 /** Owns requests and strong bitmap references, independent of lazy item composition. */
-internal class ReaderBuffer(private val numbers: List<Int>, private val scope: CoroutineScope, private val load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage) {
+internal class ReaderBuffer(private val numbers: List<Int>, private val scope: CoroutineScope,
+    val ratios: MutableMap<Int, Float> = mutableStateMapOf(),
+    private val load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage) {
     val pages = mutableStateMapOf<Int, GalleryRepository.RenderedPage>()
     val errors = mutableStateMapOf<Int, String>()
-    val ratios = mutableStateMapOf<Int, Float>()
     private val jobs = mutableMapOf<Int, Job>()
     private val cached = mutableSetOf<Int>()
     private val permits = Semaphore(2)
@@ -76,15 +80,22 @@ internal class ReaderBuffer(private val numbers: List<Int>, private val scope: C
     fun retry(number: Int) { pages.remove(number); errors.remove(number); cached.remove(number); ensure(number, force = true) }
     fun close() { disposed = true; jobs.values.toList().forEach { it.cancel() }; jobs.clear(); pages.clear(); errors.clear() }
 }
+
+/** Dimensions survive reader mode changes and configuration recreation, without retaining bitmaps. */
+internal class ReaderViewportModel : ViewModel() {
+    val ratios = mutableStateMapOf<Int, Float>()
+}
+
 data class ReaderJump(val serial: Int, val page: Int, val offset: Int = 0)
 
 @Composable fun ComicReader(numbers: List<Int>, jump: ReaderJump, load: suspend (Int, Boolean) -> GalleryRepository.RenderedPage,
     toggle: () -> Unit, pause: () -> Unit, position: (Int, GalleryImage?, Int) -> Unit,
     readyPages: (List<Int>) -> Unit, attachSave: ((() -> Unit)?) -> Unit,
-    fit: ReaderFit = ReaderFit.WIDTH, cropPercent: Int = 0) {
+    fit: ReaderFit = ReaderFit.WIDTH, cropPercent: Int = 0, ratios: MutableMap<Int, Float>? = null) {
     val scope = rememberCoroutineScope()
     val loader by rememberUpdatedState(load)
-    val buffer = remember(numbers) { ReaderBuffer(numbers, scope) { number, force -> loader(number, force) } }
+    val localRatios = remember { mutableStateMapOf<Int, Float>() }
+    val buffer = remember(numbers, ratios) { ReaderBuffer(numbers, scope, ratios ?: localRatios) { number, force -> loader(number, force) } }
     val list = rememberLazyListState(numbers.binarySearch(jump.page).coerceAtLeast(0))
     val currentJump by rememberUpdatedState(jump)
     var settledJump by remember { mutableStateOf<ReaderJump?>(null) }
@@ -186,15 +197,36 @@ data class ReaderJump(val serial: Int, val page: Int, val offset: Int = 0)
     }
 }
 
+/** Maximum translation that keeps the scaled bitmap within its actual rendered bounds. */
+internal fun readerPanLimit(bitmapWidth: Int, bitmapHeight: Int, containerWidth: Int, containerHeight: Int,
+    fit: ReaderFit, cropPercent: Int, zoom: Float): Offset {
+    if (bitmapWidth <= 0 || bitmapHeight <= 0 || containerWidth <= 0 || containerHeight <= 0) return Offset.Zero
+    val fitScale = when (fit) {
+        ReaderFit.WIDTH -> containerWidth.toFloat() / bitmapWidth
+        ReaderFit.HEIGHT -> containerHeight.toFloat() / bitmapHeight
+        ReaderFit.ORIGINAL -> 1f
+    }
+    val scale = fitScale * zoom.coerceAtLeast(1f) * (1f + cropPercent / 100f)
+    return Offset((bitmapWidth * scale - containerWidth).coerceAtLeast(0f) / 2f,
+        (bitmapHeight * scale - containerHeight).coerceAtLeast(0f) / 2f)
+}
+
 @Composable internal fun ReaderLeaf(number: Int, rendered: GalleryRepository.RenderedPage?, error: String?, modifier: Modifier,
     toggle: () -> Unit, pause: () -> Unit, fit: ReaderFit, cropPercent: Int, resetZoom: Boolean = false,
     errorPadding: Dp = 16.dp, retry: () -> Unit) {
     var zoom by remember(number) { mutableFloatStateOf(1f) }
     var pan by remember(number) { mutableStateOf(Offset.Zero) }
+    var containerSize by remember(number) { mutableStateOf(IntSize.Zero) }
     val currentToggle by rememberUpdatedState(toggle)
     val currentPause by rememberUpdatedState(pause)
+    val currentRendered by rememberUpdatedState(rendered)
+    val currentFit by rememberUpdatedState(fit)
+    val currentCrop by rememberUpdatedState(cropPercent)
+    val limit = readerPanLimit(rendered?.bitmap?.width ?: 0, rendered?.bitmap?.height ?: 0,
+        containerSize.width, containerSize.height, fit, cropPercent, zoom)
     LaunchedEffect(resetZoom) { if (resetZoom) { zoom = 1f; pan = Offset.Zero } }
-    Box(modifier.clipToBounds().background(androidx.compose.ui.graphics.Color.Black).testTag("reader-page-$number").semantics { stateDescription = "缩放 $zoom" }
+    LaunchedEffect(limit) { pan = Offset(pan.x.coerceIn(-limit.x, limit.x), pan.y.coerceIn(-limit.y, limit.y)) }
+    Box(modifier.onSizeChanged { containerSize = it }.clipToBounds().background(androidx.compose.ui.graphics.Color.Black).testTag("reader-page-$number").semantics { stateDescription = "缩放 $zoom" }
         .pointerInput(number) {
             detectTapGestures(onTap = { currentToggle() }, onDoubleTap = {
                 currentPause()
@@ -218,9 +250,11 @@ data class ReaderJump(val serial: Int, val page: Int, val offset: Int = 0)
                         if (!dragging) currentPause()
                         dragging = true
                         zoom = (zoom * change).coerceIn(1f, 5f)
-                        val limitX = size.width * (zoom - 1f) / 2f
-                        val limitY = size.height * (zoom - 1f) / 2f
-                        pan = Offset((pan.x + movement.x).coerceIn(-limitX, limitX), (pan.y + movement.y).coerceIn(-limitY, limitY))
+                        val bitmap = currentRendered?.bitmap
+                        val panLimit = readerPanLimit(bitmap?.width ?: 0, bitmap?.height ?: 0,
+                            size.width, size.height, currentFit, currentCrop, zoom)
+                        pan = Offset((pan.x + movement.x).coerceIn(-panLimit.x, panLimit.x),
+                            (pan.y + movement.y).coerceIn(-panLimit.y, panLimit.y))
                         event.changes.forEach { it.consume() }
                     }
                 } while (event.changes.any { it.pressed })
