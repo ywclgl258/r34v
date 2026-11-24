@@ -8,7 +8,6 @@ import android.graphics.BitmapFactory
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
-import androidx.media3.exoplayer.offline.Download
 import com.r34v.r34v.GalleryActivity
 import com.r34v.r34v.PlayerActivity
 import com.r34v.r34v.R34Application
@@ -16,6 +15,10 @@ import java.io.File
 import java.util.UUID
 import java.util.WeakHashMap
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 data class PlaybackQueue(
     val id: String = "",
@@ -32,6 +35,9 @@ data class PlaybackQueue(
 /** One persisted session, with small intent tokens instead of large Binder payloads. */
 class PlaybackQueueStore(private val library: LibraryStore) {
     private val key = "playback_queue_v1"
+    private val revisions = MutableStateFlow(0L)
+    val changes = revisions.asStateFlow()
+
     @Synchronized fun snapshot() = runCatching { library.gson.fromJson(library.prefs.getString(key, null), PlaybackQueue::class.java) }.getOrNull()
     @Synchronized fun start(title: String, shelf: String, entries: List<Video>, offlineOnly: Boolean = false): PlaybackQueue {
         require(entries.isNotEmpty() && entries.size <= 50000)
@@ -44,14 +50,22 @@ class PlaybackQueueStore(private val library: LibraryStore) {
         if (queue.next == null) return null
         return queue.copy(index = queue.index + 1).also { write(it) }
     }
-    private fun write(value: PlaybackQueue) { check(library.prefs.edit().putString(key, library.gson.toJson(value)).commit()) { "无法保存片单观看进度" } }
-    @Synchronized fun end(token: String) { if (snapshot()?.id == token) check(library.prefs.edit().remove(key).commit()) }
+    private fun write(value: PlaybackQueue) {
+        check(library.prefs.edit().putString(key, library.gson.toJson(value)).commit()) { "无法保存片单观看进度" }
+        revisions.update { it + 1 }
+    }
+    @Synchronized fun end(token: String) {
+        if (snapshot()?.id != token) return
+        check(library.prefs.edit().remove(key).commit()) { "无法结束片单" }
+        revisions.update { it + 1 }
+    }
     @Synchronized internal fun endCurrent(token: String, video: Video) {
         if (session(token, video) != null) end(token)
     }
-    @Synchronized internal fun restore(previous: PlaybackQueue, advanced: PlaybackQueue) {
+    @Synchronized internal fun restore(previous: PlaybackQueue?, replacement: PlaybackQueue) {
         val current = snapshot()
-        if (current?.id == advanced.id && current.index == advanced.index) write(previous)
+        if (current?.id != replacement.id || current.index != replacement.index) return
+        if (previous == null) end(replacement.id) else write(previous)
     }
 }
 
@@ -83,6 +97,7 @@ object MediaRouter {
                 launchOffline(context, app, video, source.intent(context, app, video, read), session.id)
             } else {
                 val intent = regularIntent(context, app, video, read)
+                if (queue != null) check(app.queue.session(queue, video) != null) { "片单已结束" }
                 val token = queue ?: app.queue.snapshot()?.takeIf { !it.offlineOnly && it.current?.entryKey == video.entryKey }?.id
                 context.startActivity(intent.putExtra("queue_session", token))
             }
@@ -95,50 +110,42 @@ object MediaRouter {
         launchOpen(context, failed, cancelled) {
             val app = context.applicationContext as R34Application
             val candidates = entries.asSequence().filterNot { it.completed }.map { it.video }.distinctBy { it.entryKey }.toList()
-            if (offlineOnly) {
-                val available = offlineSources(app, candidates)
-                val ready = candidates.filter { it.entryKey in available }
-                val first = ready.firstOrNull() ?: error("当前筛选下没有完整可离线打开的未完成作品")
-                val source = offlineSources(app, listOf(first))[first.entryKey] ?: error("「${first.title}」的离线文件已不可用")
-                val intent = source.intent(context, app, first, read = true)
-                val queue = app.queue.start(title, shelf, ready, offlineOnly = true)
-                launchOffline(context, app, first, intent, queue.id)
-                opened(candidates.size - ready.size)
-            } else {
-                val queue = app.queue.start(title, shelf, candidates)
-                val intent = regularIntent(context, app, candidates.first(), read = true)
-                context.startActivity(intent.putExtra("queue_session", queue.id))
-                opened(0)
+            val available = if (offlineOnly) offlineSources(app, candidates) else null
+            val ready = if (available == null) candidates else candidates.filter { it.entryKey in available }
+            val first = ready.firstOrNull() ?: error(if (offlineOnly) "当前筛选下没有完整可离线打开的未完成作品" else "片单中没有未完成的作品")
+            val intent = if (available == null) regularIntent(context, app, first, read = true) else {
+                val source = available.getValue(first.entryKey)
+                check(withContext(Dispatchers.IO) { source.available(app, first) }) { "「${first.title}」的离线文件已不可用" }
+                source.intent(context, app, first, read = true)
             }
+            val previous = app.queue.snapshot()
+            val queue = app.queue.start(title, shelf, ready, offlineOnly)
+            launchQueue(context, app, intent, previous, queue)
+            opened(candidates.size - ready.size)
         }
 
-    fun next(activity: Activity, video: Video, token: String): Boolean {
-        val app = activity.application as R34Application
-        if (activity is ComponentActivity && opening[activity]?.isActive == true) return false
-        val previous = app.queue.session(token, video) ?: return false
-        val target = previous.next ?: return false
-        if (previous.offlineOnly) return launchOpen(activity, { showError(activity, it, "无法打开下一项") }, {}) {
-            val sources = offlineSources(app, listOf(video, target))
-            if (video.entryKey !in sources) stopOffline(app, token, video, video)
-            val source = sources[target.entryKey] ?: stopOffline(app, token, video, target)
-            val intent = source.intent(activity, app, target, read = true)
-            val queue = app.queue.advance(token, video) ?: return@launchOpen
-            launchOffline(activity, app, target, intent, queue.id)
+    fun next(activity: Activity, video: Video, token: String,
+        failed: (Throwable) -> Unit = { showError(activity, it, "无法打开下一项") }, finished: () -> Unit = {}): Boolean =
+        launchOpen(activity, { error -> finished(); failed(error) }, finished) {
+            val app = activity.application as R34Application
+            val previous = app.queue.session(token, video) ?: error("片单已结束")
+            val target = previous.next ?: error("片单没有下一项")
+            val intent = if (previous.offlineOnly) {
+                val sources = offlineSources(app, listOf(video, target))
+                if (video.entryKey !in sources) stopOffline(app, token, video, video)
+                val source = sources[target.entryKey] ?: stopOffline(app, token, video, target)
+                source.intent(activity, app, target, read = true)
+            } else regularIntent(activity, app, target, read = true)
+            val queue = app.queue.advance(token, video) ?: error("片单已结束")
+            launchQueue(activity, app, intent, previous, queue)
             app.library.personal.complete(video, queue.shelf, true)
             activity.finish()
+            finished()
         }
-        return launchOpen(activity, { showError(activity, it, "无法打开下一项") }, {}) {
-            val queue = app.queue.advance(token, video) ?: return@launchOpen
-            try {
-                val intent = regularIntent(activity, app, target, read = true)
-                activity.startActivity(intent.putExtra("queue_session", queue.id))
-                app.library.personal.complete(video, queue.shelf, true)
-                activity.finish()
-            } catch (error: Exception) {
-                app.queue.restore(previous, queue)
-                throw error
-            }
-        }
+
+    private fun launchQueue(context: Context, app: R34Application, intent: Intent, previous: PlaybackQueue?, queue: PlaybackQueue) {
+        try { context.startActivity(intent.putExtra("queue_session", queue.id)) }
+        catch (error: Exception) { app.queue.restore(previous, queue); throw error }
     }
 
     private fun stopOffline(app: R34Application, token: String, current: Video, missing: Video): Nothing {
@@ -155,41 +162,36 @@ object MediaRouter {
         Toast.makeText(context, error.message ?: fallback, Toast.LENGTH_LONG).show()
     }
 
-    // 本地站点按条目类型分流，因为该站点的历史默认类型为图集。
-    private fun isGallery(video: Video) = video.mediaKind == MediaKind.GALLERY ||
-        (video.site != SiteRegistry.LOCAL.id && SiteRegistry.byId(video.site)?.mediaKind == MediaKind.GALLERY)
-
     private fun galleryIntent(context: Context, app: R34Application, video: Video, read: Boolean, offline: Boolean, root: String) =
-        Intent(context, GalleryActivity::class.java).putExtra("gallery", app.library.gson.toJson(video))
+        Intent(context, GalleryActivity::class.java).putExtra("gallery", app.library.gson.toJson(video.copy(mediaKind = MediaKind.GALLERY)))
             .putExtra("read", read).putExtra("offline", offline).putExtra("root", root)
 
     private fun playerIntent(context: Context, app: R34Application, video: Video) =
-        Intent(context, PlayerActivity::class.java).putExtra("video", app.library.gson.toJson(video))
+        Intent(context, PlayerActivity::class.java).putExtra("video", app.library.gson.toJson(video.copy(mediaKind = MediaKind.VIDEO)))
 
     private suspend fun regularIntent(context: Context, app: R34Application, video: Video, read: Boolean): Intent {
-        val gallery = isGallery(video)
-        val scanned = if (video.site == SiteRegistry.LOCAL.id) null else withContext(Dispatchers.IO) {
-            app.index.scan(app.playback::cached).firstOrNull { it.site == video.site && it.id == video.id && it.isComic == gallery && it.state == LibraryRecord.STATE_COMPLETED }
-        }
-        return if (gallery) {
-            val offline = scanned != null || video.site == SiteRegistry.LOCAL.id || app.galleryDownloads.task(video)?.state == GalleryDownloadState.COMPLETED
-            galleryIntent(context, app, video, read, offline, scanned?.sourceRoot.orEmpty())
-        } else if (video.site == SiteRegistry.LOCAL.id) {
-            val record = withContext(Dispatchers.IO) { app.library.localVideos(SiteRegistry.LOCAL.id).firstOrNull { it.id == video.id } }
-                ?: error("本地视频文件不存在，请重新导入")
-            playerIntent(context, app, video).putExtra("local", record.path)
-        } else {
-            val task = app.playback.downloads().firstOrNull { it.state == Download.STATE_COMPLETED && app.playback.metadata(it)?.video?.entryKey == video.entryKey }
-            playerIntent(context, app, video).apply {
-                if (scanned != null) { putExtra("cached", scanned.cacheKey); putExtra("root", scanned.sourceRoot) } else putExtra("download", task?.request?.id)
-            }
-        }
+        offlineSources(app, listOf(video))[video.entryKey]?.let { return it.intent(context, app, video, read) }
+        check(video.site != SiteRegistry.LOCAL.id) { "本地文件不可用，请重新导入" }
+        val site = SiteRegistry.byId(video.site) ?: error("作品来源已不可用")
+        val url = site.absolute(video.url)
+        check(url.toHttpUrlOrNull() != null) { "作品地址无效" }
+        val entry = video.copy(url = url)
+        return if (entry.isGalleryWork) {
+            val offline = app.galleryDownloads.task(entry)?.state == GalleryDownloadState.COMPLETED
+            galleryIntent(context, app, entry, read, offline, "")
+        } else playerIntent(context, app, entry)
     }
 
     private sealed interface OfflineSource {
         data class Gallery(val root: String) : OfflineSource
         data class LocalFile(val path: String) : OfflineSource
         data class CachedVideo(val record: LibraryRecord) : OfflineSource
+
+        suspend fun available(app: R34Application, video: Video): Boolean = when (this) {
+            is Gallery -> if (video.site == SiteRegistry.LOCAL.id) localComicAvailable(app, video) else completeGallery(app, video, root)
+            is LocalFile -> localVideoAvailable(app, video, path)
+            is CachedVideo -> app.playback.cached(record.cacheKey, record.sourceRoot)
+        }
 
         fun intent(context: Context, app: R34Application, video: Video, read: Boolean): Intent = when (this) {
             is Gallery -> galleryIntent(context, app, video, read, offline = true, root = root)
@@ -201,56 +203,72 @@ object MediaRouter {
 
     private suspend fun offlineSources(app: R34Application, videos: List<Video>): Map<String, OfflineSource> = withContext(Dispatchers.IO) {
         val sources = mutableMapOf<String, OfflineSource>()
-        val registered = videos.filterNot(::isGallery).map { it.site }.distinct().associateWith { site ->
-            app.library.localVideos(site).groupBy { it.id }
+        val roots = app.storage.readableLayouts().map { it.root.absolutePath }
+        // A local gallery id is independent from any legacy local-video registration.
+        for (video in videos.filter { it.isGalleryWork }.distinctBy { it.entryKey }) {
+            ensureActive()
+            val source = if (video.site == SiteRegistry.LOCAL.id) {
+                OfflineSource.Gallery("").takeIf { localComicAvailable(app, video) }
+            } else roots.firstOrNull { completeGallery(app, video, it) }?.let(OfflineSource::Gallery)
+            if (source != null) sources[video.entryKey] = source
         }
-        for (video in videos) {
-            if (isGallery(video)) {
-                if (video.site == SiteRegistry.LOCAL.id && localComicAvailable(app, video)) sources[video.entryKey] = OfflineSource.Gallery("")
-            } else {
-                val file = registered[video.site]?.get(video.id)?.firstOrNull { localVideoAvailable(app, video, it.path) }
-                if (file != null) sources[video.entryKey] = OfflineSource.LocalFile(file.path)
-            }
+        val unresolved = videos.filterNot { it.isGalleryWork }
+            .filterNot { it.entryKey in sources }.distinctBy { it.entryKey }.associateBy { it.entryKey }
+        if (unresolved.isEmpty()) return@withContext sources
+        // An imported video must be validated as a local book even if the same id also has a
+        // legacy local-video registration. Do not let the latter bypass the imported file check.
+        for (video in unresolved.values) {
+            ensureActive()
+            app.library.localVideos(video.site).firstOrNull { it.id == video.id && localVideoAvailable(app, video, it.path) }
+                ?.let { sources[video.entryKey] = OfflineSource.LocalFile(it.path) }
         }
-        val indexed = videos.filter { it.site != SiteRegistry.LOCAL.id && it.entryKey !in sources }
-        if (indexed.isEmpty()) return@withContext sources
-        val videoIds = indexed.filterNot(::isGallery).mapTo(mutableSetOf()) { it.site to it.id }
-        val known = if (videoIds.isEmpty()) emptyList() else app.playback.downloads().mapNotNull { task ->
-            val meta = app.playback.metadata(task) ?: return@mapNotNull null
-            if ((meta.site to meta.video.id) !in videoIds) return@mapNotNull null
-            LibraryRecord(site = meta.site, id = meta.video.id, quality = meta.quality, cacheKey = task.request.id,
-                title = meta.video.title, url = meta.video.url, thumb = meta.video.thumb, duration = meta.video.duration,
-                bytes = task.bytesDownloaded, at = task.startTimeMs,
-                state = if (task.state == Download.STATE_COMPLETED) LibraryRecord.STATE_COMPLETED else LibraryRecord.STATE_PARTIAL)
+        val remoteUnresolved = unresolved.filterValues { it.site != SiteRegistry.LOCAL.id }
+        if (remoteUnresolved.isEmpty()) return@withContext sources
+        val known = app.playback.downloads().mapNotNull { app.playback.libraryRecord(it) }
+            .filter { it.video.entryKey in remoteUnresolved }
+        for (record in known.sortedByDescending { it.at }) {
+            ensureActive()
+            if (record.state != LibraryRecord.STATE_COMPLETED || record.video.entryKey in sources) continue
+            val root = roots.firstOrNull { app.playback.cached(record.cacheKey, it) } ?: continue
+            sources[record.video.entryKey] = OfflineSource.CachedVideo(record.copy(sourceRoot = root))
         }
-        val records = app.index.scan(app.playback::cached, known).filter { it.state == LibraryRecord.STATE_COMPLETED }
-            .groupBy { Triple(it.site, it.id, it.isComic) }
-        for (video in indexed) {
-            val gallery = isGallery(video)
-            val record = records[Triple(video.site, video.id, gallery)]?.firstOrNull() ?: continue
-            if (gallery) {
-                // The reader additionally requires usable page metadata. Its audit is disk-only.
-                val complete = try { app.galleries.auditDownload(video, record.sourceRoot).complete }
-                catch (error: CancellationException) { throw error }
-                catch (_: Exception) { false }
-                if (complete) sources[video.entryKey] = OfflineSource.Gallery(record.sourceRoot)
-            } else if (record.sourceRoot.isNotBlank() && record.cacheKey.isNotBlank()) {
-                sources[video.entryKey] = OfflineSource.CachedVideo(record)
+        // Restored videos can have an arbitrary quality and no DownloadManager row. The sidecars
+        // are the only list of those variants, so scan once if some requested videos remain.
+        if (remoteUnresolved.keys.any { it !in sources }) {
+            val unavailableTaskKeys = known.filter { it.state != LibraryRecord.STATE_COMPLETED }.mapTo(mutableSetOf()) { it.cacheKey }
+            for (record in app.index.scan(app.playback::cached)) {
+                ensureActive()
+                val key = record.video.entryKey
+                if (record.isComic || record.state != LibraryRecord.STATE_COMPLETED || record.cacheKey in unavailableTaskKeys ||
+                    record.sourceRoot.isBlank() || key !in remoteUnresolved || key in sources) continue
+                sources[key] = OfflineSource.CachedVideo(record)
             }
         }
         sources
+    }
+
+    private suspend fun completeGallery(app: R34Application, video: Video, root: String): Boolean = try {
+        val entry = video.copy(mediaKind = MediaKind.GALLERY)
+        val folder = app.galleries.downloadDirectory(entry, root)
+        val pages = File(folder, "complete").takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull()
+        if (pages == null || pages <= 0) false else {
+            val audit = app.galleries.auditDownload(entry, root)
+            audit.complete && audit.total == pages
+        }
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        false
     }
 
     private fun localVideoAvailable(app: R34Application, video: Video, path: String): Boolean = runCatching {
         val file = File(path)
         if (!file.isFile || !file.canRead() || file.length() == 0L) return false
         if (video.site != SiteRegistry.LOCAL.id) return true
-        val book = app.localLibrary.book(video.id) ?: return false
-        val imported = File(File(app.localLibrary.rootDirectory(), book.id), book.files.singleOrNull() ?: return false)
-        book.kind == "video" && imported.canonicalFile == file.canonicalFile && file.length() == book.bytes
+        return app.localLibrary.isLocalVideoComplete(video.id, path)
     }.getOrDefault(false)
 
-    private fun localComicAvailable(app: R34Application, video: Video): Boolean = runCatching {
+    internal fun localComicAvailable(app: R34Application, video: Video): Boolean = runCatching {
         val book = app.localLibrary.book(video.id) ?: return false
         if (book.kind != "comic") return false
         val folder = File(app.localLibrary.rootDirectory(), book.id)

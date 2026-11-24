@@ -55,11 +55,39 @@ class GalleryEpicRoutingUiTest : ComposeUiCase() {
         }
     }
 
+    @Test fun crossSiteAndSavedSearchUpdatesExposeTheDirectoryEntryWithoutLoadingWorks() = ComposeFixture().use { f ->
+        val indexes = installDirectoryFixture(f)
+        val site = SiteRegistry.GALLERYEPIC
+        val search = SavedSearch(name = "Coser 方案", query = "sample:model", sources = listOf("r34v", site.id), category = site.category.name)
+        f.app.library.personal.saveSearch(search)
+        f.app.library.personal.refreshSearch(search, site.id, FeedPage(listOf(f.video(site.id).copy(title = "旧目录条目")), 1, 1, ""))
+        f.launch()
+        ui.onNodeWithContentDescription("搜索内容").performClick()
+        ui.onNodeWithText(search.name).performClick()
+        waitText("打开 Coser 目录")
+        ui.onNodeWithText("打开 Coser 目录").performClick()
+        waitText("中性 Coser")
+        assertTrue(indexes.contains("cosers:1:sample:model"))
+        assertTrue(f.requests.none { it.first == site.id && it.second.kind == FeedKind.SEARCH })
+
+        repeat(2) { back(f) }
+        ui.onNode(hasText("更新", substring = true) and hasClickAction()).performClick()
+        clickText("全部")
+        ui.onNodeWithText("旧目录条目").assertDoesNotExist()
+        clickText("检查搜索更新")
+        ui.waitUntil(15_000) { f.app.library.personal.snapshot().searchUpdates[search.id]?.checks?.get(site.id)?.directory == true }
+        assertTrue(f.requests.none { it.first == site.id && it.second.kind == FeedKind.SEARCH })
+        clickText("检查详情")
+        ui.onNodeWithText("打开 Coser 目录").performClick()
+        waitText("中性 Coser")
+        assertEquals(2, indexes.count { it == "cosers:1:sample:model" })
+    }
+
     @Test fun searchOpensPagedCoserDirectoryThenModelFeed() {
         ComposeFixture().use { f ->
             val indexes = installDirectoryFixture(f)
             f.app.library.switchSite("galleryepic")
-            f.launch(); openSourceHome(); waitText("最新写真集")
+            f.launch(); waitText("最新写真集")
             ui.onNodeWithContentDescription("搜索内容").performClick()
             ui.onNode(hasSetTextAction()).performTextInput("sample:model")
             ui.onNodeWithContentDescription("提交搜索").performClick()

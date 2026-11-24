@@ -10,7 +10,7 @@ class NewFeatureDataTest {
 
     @Test fun firstSuccessfulRefreshIsABaseline() {
         val box = SubscriptionInbox().refreshed(listOf(feed("a", "1", "2")))
-        assertEquals(listOf("1", "2"), box.known["a"])
+        assertEquals(listOf("r34v:1", "r34v:2"), box.known["a"])
         assertTrue(box.entries.all { it.read })
     }
     @Test fun onlyNewlyObservedIdsBecomeUnread() {

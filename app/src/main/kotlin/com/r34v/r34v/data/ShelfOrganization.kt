@@ -2,6 +2,22 @@ package com.r34v.r34v.data
 
 import java.util.Locale
 
+private val cosplayteleVideoId = Regex("video-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", RegexOption.IGNORE_CASE)
+
+/** Older records from gallery sites may still carry Video's default media kind. */
+val Video.isGalleryWork: Boolean get() {
+    if (site == SiteRegistry.COSPLAYTELE.id &&
+        (cosplayteleVideoId.matches(id) || cosplayteleVideoId.matches(url.substringAfter('#', "")))) return false
+    return mediaKind == MediaKind.GALLERY ||
+        (site != SiteRegistry.LOCAL.id && SiteRegistry.byId(site)?.mediaKind == MediaKind.GALLERY)
+}
+
+val Video.workCategory: SiteCategory get() = when {
+    !isGalleryWork -> SiteCategory.VIDEO
+    SiteRegistry.byId(site)?.category == SiteCategory.COMIC -> SiteCategory.COMIC
+    else -> SiteCategory.PHOTO
+}
+
 enum class ShelfOrder(val title: String) { MANUAL("手动顺序"), NEWEST("最近加入"), OLDEST("最早加入"), TITLE("标题 A–Z") }
 
 /** A local view over one shelf. It never rewrites the user's manual order. */
@@ -16,7 +32,7 @@ data class ShelfQuery(val text: String = "", val status: Int = 0, val category: 
             val searchable = "${entry.video.title} ${site.name} ${site.id}"
             words.all { searchable.contains(it, ignoreCase = true) } &&
                 (status == 0 || entry.completed == (status == 2)) &&
-                (category.isBlank() || site.category.name == category) &&
+                (category.isBlank() || entry.video.workCategory.name == category) &&
                 (source.isBlank() || entry.video.site == source) && entry.joinedAt >= cutoff
         }
         return when (order) {

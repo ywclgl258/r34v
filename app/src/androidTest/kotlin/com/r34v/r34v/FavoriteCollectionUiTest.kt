@@ -24,7 +24,9 @@ class FavoriteCollectionUiTest : ComposeUiCase() {
         val video = Favorite("video", shared.id, "视频多选", shared.url, shared.thumb, site = site.id)
         val gallery = Favorite("gallery", shared.id, "图库多选", shared.url, shared.thumb, site = site.id)
         val other = Favorite("gallery", "second", "另一漫画", shared.url, shared.thumb, site = SiteRegistry.EHENTAI.id)
-        f.app.library.prefs.edit().putString("${site.id}:favorites_v1", f.app.library.gson.toJson(listOf(video, gallery))).commit()
+        val tag = Favorite("tag", "sample", "本站标签", "/videos?tags=sample", site = site.id)
+        val creator = Favorite("model", "author", "本站作者", "/profile/author", site = site.id)
+        f.app.library.prefs.edit().putString("${site.id}:favorites_v1", f.app.library.gson.toJson(listOf(video, gallery, tag, creator))).commit()
         f.app.library.prefs.edit().putString("${other.site}:favorites_v1", f.app.library.gson.toJson(listOf(other))).commit()
         assertTrue(f.app.library.isFavorite("video", shared.id, site.id))
         assertTrue(f.app.library.isFavorite("gallery", shared.id, site.id))
@@ -41,6 +43,10 @@ class FavoriteCollectionUiTest : ComposeUiCase() {
         clickText("本站收藏")
         clickText("多选")
         val list = ui.onNodeWithTag("favorites-list")
+        listOf(tag, creator).forEach { favorite ->
+            list.performScrollToNode(hasTestTag("favorite-${favorite.key}"))
+            ui.onNodeWithTag("favorite-${favorite.key}").assertHasNoClickAction()
+        }
         list.performScrollToNode(hasTestTag("favorite-${video.key}"))
         ui.onNodeWithTag("favorite-${video.key}").assertIsOn()
         list.performScrollToNode(hasTestTag("favorite-${gallery.key}"))

@@ -10,14 +10,15 @@ data class CatalogEntry(val video: Video, val at: Long = 0, val addedAt: Long = 
     val started: Boolean = false, val completed: Boolean = false, val offline: Boolean = false, val downloadState: String = "未下载", val remainingBytes: Long? = null)
 
 fun SmartShelf.select(entries: List<CatalogEntry>, now: Long = System.currentTimeMillis()): List<CatalogEntry> = entries.filter { item ->
-    (source.isBlank() || item.video.site == source) && (category.isBlank() || SiteRegistry.byId(item.video.site)?.category?.name == category) && when (rule) {
+    (source.isBlank() || item.video.site == source) && (category.isBlank() || item.video.workCategory.name == category) && when (rule) {
         SmartRule.UNFINISHED -> item.started && !item.completed
         SmartRule.OFFLINE_UNSEEN -> item.offline && !item.started
         SmartRule.RECENT -> item.addedAt > 0 && now - item.addedAt <= 30L * 24 * 60 * 60 * 1000
     }
 }.sortedByDescending { if (rule == SmartRule.RECENT) it.addedAt else it.at }.take(500)
 
-suspend fun personalCatalog(app: R34Application, scanned: List<LibraryRecord> = emptyList()): List<CatalogEntry> = withContext(Dispatchers.IO) {
+/** A supplied scan already verified the download files, including when it found no records. */
+suspend fun personalCatalog(app: R34Application, scanned: List<LibraryRecord>? = null): List<CatalogEntry> = withContext(Dispatchers.IO) {
     val store = app.library
     val values = linkedMapOf<String, CatalogEntry>()
     fun add(video: Video, at: Long = 0) {
@@ -47,16 +48,25 @@ suspend fun personalCatalog(app: R34Application, scanned: List<LibraryRecord> = 
                 started = true, completed = reading.page == total)
         }
     }
-    scanned.filter { it.state == LibraryRecord.STATE_COMPLETED }.forEach { record -> add(record.video.copy(mediaKind = if (record.isComic) MediaKind.GALLERY else MediaKind.VIDEO), record.at); val old = values.getValue(record.video.entryKey); values[record.video.entryKey] = old.copy(offline = true, downloadState = "已离线") }
-    app.playback.downloads().forEach { task -> app.playback.metadata(task)?.let { meta ->
-        val video = meta.video; add(video, task.startTimeMs); val old = values.getValue(video.entryKey)
-        val ready = task.state == Download.STATE_COMPLETED && app.playback.cached(task.request.id)
+    val completed = scanned?.filter { it.state == LibraryRecord.STATE_COMPLETED }
+    val completedVideoKeys = completed?.filterNot { it.isComic }?.mapTo(mutableSetOf()) { it.cacheKey }
+    val completedGalleryKeys = completed?.filter { it.isComic }?.mapTo(mutableSetOf()) { it.video.entryKey }
+    completed?.forEach { record ->
+        val video = record.video
+        add(video, record.at)
+        values[video.entryKey] = values.getValue(video.entryKey).copy(offline = true, downloadState = "已离线")
+    }
+    app.playback.downloads().forEach { task -> app.playback.libraryRecord(task)?.let { record ->
+        val video = record.video; add(video, record.at); val old = values.getValue(video.entryKey)
+        val ready = task.state == Download.STATE_COMPLETED &&
+            (completedVideoKeys?.contains(record.cacheKey) ?: app.playback.cached(record.cacheKey))
         val label = when (task.state) { Download.STATE_COMPLETED -> if (ready) "已离线" else "文件缺失"; Download.STATE_DOWNLOADING -> "正在下载"; Download.STATE_QUEUED, Download.STATE_RESTARTING -> "已排队"; Download.STATE_STOPPED -> "已暂停"; Download.STATE_REMOVING -> "正在删除"; else -> "下载失败" }
         values[video.entryKey] = old.copy(offline = old.offline || ready, downloadState = if (old.offline) "已离线" else label, remainingBytes = task.contentLength.takeIf { it > 0 }?.let { (it - task.bytesDownloaded).coerceAtLeast(0) })
     } }
     app.galleryDownloads.tasks().forEach { task ->
         add(task.entry, task.addedAt); val old = values.getValue(task.entry.entryKey)
-        val ready = task.state == GalleryDownloadState.COMPLETED && app.galleries.isDownloaded(task.entry)
+        val ready = task.state == GalleryDownloadState.COMPLETED &&
+            (completedGalleryKeys?.contains(task.entry.entryKey) ?: app.galleries.isDownloaded(task.entry))
         val label = when(task.state) { GalleryDownloadState.COMPLETED -> if (ready) "已离线" else "文件缺失"; GalleryDownloadState.DOWNLOADING -> "正在下载"; GalleryDownloadState.QUEUED -> "已排队"; GalleryDownloadState.PAUSED -> "已暂停"; GalleryDownloadState.REMOVING -> "正在删除"; else -> "下载失败" }
         values[task.entry.entryKey] = old.copy(offline = old.offline || ready, downloadState = if (old.offline) "已离线" else label)
     }

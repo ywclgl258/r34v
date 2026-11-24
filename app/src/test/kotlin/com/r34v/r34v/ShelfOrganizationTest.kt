@@ -10,6 +10,20 @@ class ShelfOrganizationTest {
         Video(id, title, "${SiteRegistry.byIdOrDefault(site).base}/videos/$id/", site = site)
     private val day = 86_400_000L
 
+    @Test fun workKindsKeepLegacyGalleriesLocalVideosAndEmbeddedPhotoVideosDistinct() {
+        val gallery = video("gallery", site = "cosplaytele").copy(mediaKind = MediaKind.GALLERY)
+        val uuid = "12345678-1234-4abc-8def-1234567890ab"
+        val embedded = Video("video-$uuid", "Article video", "${gallery.url}#video-$uuid", site = "cosplaytele")
+        val localVideo = video("local-video", site = SiteRegistry.LOCAL.id)
+        assertTrue(gallery.isGalleryWork)
+        assertEquals(SiteCategory.PHOTO, gallery.workCategory)
+        assertFalse(embedded.isGalleryWork)
+        assertEquals(SiteCategory.VIDEO, embedded.workCategory)
+        assertFalse(localVideo.isGalleryWork)
+        assertTrue(localVideo.copy(mediaKind = MediaKind.GALLERY).isGalleryWork)
+        assertEquals(SiteCategory.PHOTO, video("gallery", site = "iwara").copy(mediaKind = MediaKind.GALLERY).workCategory)
+    }
+
     @Test fun oldShelfJsonReceivesSafeMetadataDefaults() {
         val old = Gson().fromJson("""{"id":"watch-later","name":"稍后看","entries":[]}""", Shelf::class.java)
         assertEquals("", old.note); assertEquals("", old.coverKey); assertFalse(old.pinned); assertEquals(0L, old.modifiedAt)

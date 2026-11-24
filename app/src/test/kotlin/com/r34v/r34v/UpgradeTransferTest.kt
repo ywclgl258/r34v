@@ -2,9 +2,11 @@ package com.r34v.r34v
 
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
+import com.r34v.r34v.data.PendingUpgrade
 import com.r34v.r34v.data.UpgradeAsset
 import com.r34v.r34v.data.cachedUpgrade
 import com.r34v.r34v.data.downloadUpgrade
+import com.r34v.r34v.data.pruneUpgradeCache
 import kotlinx.coroutines.*
 import okhttp3.*
 import okhttp3.mockwebserver.*
@@ -53,6 +55,52 @@ class UpgradeTransferTest {
         assertThrows(IllegalStateException::class.java) { UpgradeAsset.fromGitHub(10, metadata) }
         metadata.addProperty("digest", "sha512:$hash")
         assertThrows(IllegalStateException::class.java) { UpgradeAsset.fromGitHub(10, metadata) }
+    }
+
+    @Test fun cachedPackageRevalidatesMetadataAndBytesWhenResumingOffline() = runBlocking {
+        val asset = assetFor("expected")
+        val directory = asset.cacheDirectory(updates).apply { mkdirs() }
+        val published = File(directory, "${asset.sha256}.apk").apply { writeText("expected") }
+        val pending = PendingUpgrade("v2.12.1", asset)
+        assertEquals(pending, PendingUpgrade.decode(pending.encode()))
+        assertEquals(published, pending.file(updates))
+        assertEquals(published, cachedUpgrade(updates, pending.asset) { assertEquals(pending.file(updates), it) })
+        published.writeText("replaced")
+        assertNull(cachedUpgrade(updates, pending.asset) { fail("Modified bytes cannot resume") })
+    }
+
+    @Test fun transferWithoutRemoteDigestReceivesALocalResumeIdentity() = runBlocking {
+        MockWebServer().use { server ->
+            val asset = assetFor("expected", withDigest = false)
+            server.enqueue(MockResponse().setBody("expected"))
+            val downloaded = download(server, asset)
+            val pending = PendingUpgrade("v2.12.1", asset.copy(sha256 = downloaded.nameWithoutExtension))
+            assertEquals(assetFor("expected").sha256, pending.asset.sha256)
+            assertEquals(pending, PendingUpgrade.decode(pending.encode()))
+            assertEquals(downloaded, cachedUpgrade(updates, pending.asset) { assertEquals(pending.file(updates), it) })
+            assertNull(PendingUpgrade.decode("invalid"))
+        }
+    }
+
+    @Test fun expiredCacheIsPrunedWithoutDeletingThePinnedOrPendingPackage() {
+        val now = 200_000L
+        val pending = PendingUpgrade("v2.12.1", assetFor("pinned"))
+        val pinned = pending.file(updates).apply { parentFile!!.mkdirs(); writeText("pinned") }
+        val oldAsset = assetFor("old", id = 21)
+        val old = File(oldAsset.cacheDirectory(updates), "ab".repeat(32) + ".apk")
+            .apply { parentFile!!.mkdirs(); writeText("old") }
+        val partial = File(pending.asset.cacheDirectory(updates), "download-active.apk").apply { writeText("partial") }
+        val legacy = File(updates, "r34v-update.apk").apply { writeText("legacy") }
+        val unrelated = File(updates, "export.cbz").apply { writeText("export") }
+        val empty = File(updates, "apk/20-22").apply { mkdirs() }
+        listOf(pinned, old, partial, legacy, unrelated).forEach { check(it.setLastModified(1L)) }
+        pruneUpgradeCache(updates, pinned, now)
+        assertTrue(pinned.isFile)
+        assertFalse(old.isFile)
+        assertFalse(partial.isFile)
+        assertFalse(legacy.isFile)
+        assertTrue(unrelated.isFile)
+        assertFalse(empty.isDirectory)
     }
 
     @Test fun progressingTransferCanOutlastThePageCallTimeout() = runBlocking {

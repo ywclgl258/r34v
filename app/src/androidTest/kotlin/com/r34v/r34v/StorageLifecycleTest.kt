@@ -8,6 +8,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.r34v.r34v.data.*
 import com.r34v.r34v.downloads.GalleryDownloadStore
+import com.r34v.r34v.downloads.failedRemoval
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
@@ -267,6 +268,112 @@ class StorageLifecycleTest {
         assertTrue(GalleryRepository.isCompleteDownload(sharedBook, store.gson))
         assertFalse(GalleryRepository.isCompleteDownload(privateBook, store.gson))
         assertTrue(storage.pendingRestart)
+    }
+    @Test fun missingPermissionIsAnActionableFailedRemovalAndDoesNotDeleteThePrivateCopy() = runBlocking {
+        val entry = book(StorageRoot.Mode.PRIVATE, "permission-delete")
+        book(StorageRoot.Mode.SHARED, entry.id)
+        val network = Network(context, store)
+        val repository = GalleryRepository(context, network, storage)
+        val queue = GalleryDownloadStore(context, repository, network, LibraryIndex(context, storage)) { false }
+        var granted = false
+        val protected = StorageRoot(context, store, storage.sharedRoot) { granted }
+        val protectedQueue = GalleryDownloadStore(context, GalleryRepository(context, network, protected), network,
+            LibraryIndex(context, protected)) { false }
+        protectedQueue.add(entry)
+        val error = assertThrows(IllegalStateException::class.java) { runBlocking { protectedQueue.remove(queue.key(entry)) } }
+        assertTrue(error.message.orEmpty().contains("权限"))
+        assertTrue(protectedQueue.task(entry)!!.failedRemoval)
+        assertTrue(GalleryRepository.isCompleteDownload(bookFolder(StorageRoot.Mode.PRIVATE, entry.id)))
+        granted = true
+        protectedQueue.remove(queue.key(entry))
+        assertNull(protectedQueue.task(entry))
+        assertFalse(repository.isDownloaded(entry))
+    }
+    @Test fun duplicateRemovalKeepsTheOtherPhysicalRootAndItsSidecar() = runBlocking {
+        val entry = book(StorageRoot.Mode.PRIVATE, "precise-duplicate")
+        book(StorageRoot.Mode.SHARED, entry.id)
+        val network = Network(context, store)
+        val repository = GalleryRepository(context, network, storage)
+        val index = LibraryIndex(context, storage)
+        index.putComic(entry, 128, layout = storage.layoutOf(StorageRoot.Mode.PRIVATE))
+        index.putComic(entry, 128, layout = storage.layoutOf(StorageRoot.Mode.SHARED))
+        val queue = GalleryDownloadStore(context, repository, network, index) { false }
+        val sharedRoot = storage.sharedRoot!!.absolutePath
+        val copy = repository.duplicateBooks().single { it.sourceRoot == sharedRoot }.let { ref ->
+            DuplicateCopy(ref.source, ref.id, ref.title, ref.site, 1, 0, ref.sourceRoot, ref.entry)
+        }
+        queue.add(entry)
+        queue.pause(queue.key(entry))
+        queue.removeDuplicate(copy)
+        assertFalse(GalleryRepository.isCompleteDownload(bookFolder(StorageRoot.Mode.SHARED, entry.id)))
+        assertFalse(index.comicSidecar(entry.site, entry.id, storage.layoutOf(StorageRoot.Mode.SHARED)).isFile)
+        assertTrue(GalleryRepository.isCompleteDownload(bookFolder(StorageRoot.Mode.PRIVATE, entry.id)))
+        assertNotNull(queue.task(entry))
+        assertTrue(index.comicSidecar(entry.site, entry.id, storage.layoutOf(StorageRoot.Mode.PRIVATE)).isFile)
+    }
+    @Test fun aTrailingTruncatedImageCannotPassHeaderValidationOrReaderAudit() {
+        val entry = book(StorageRoot.Mode.PRIVATE, "truncated-page", count = 2)
+        val folder = bookFolder(StorageRoot.Mode.PRIVATE, entry.id)
+        val image = File(folder, "${hash(pageUrl(entry.id, 1))}.image")
+        val original = image.readBytes()
+        image.writeBytes(original.copyOf(original.size - 12))
+        assertFalse(GalleryRepository.isCompleteDownload(folder, store.gson))
+        val repository = GalleryRepository(context, Network(context, store), storage)
+        val audit = runBlocking { repository.auditDownload(entry) }
+        assertEquals(listOf(1), audit.corruptPages)
+        val offline = runCatching { runBlocking {
+            repository.originalPage(SiteRegistry.NHENTAI, pageUrl(entry.id, 1), entry = entry, offlineOnly = true, expectedPage = 1)
+        } }.exceptionOrNull()
+        assertTrue(offline?.message.orEmpty().contains("损坏"))
+        image.writeBytes(original)
+        assertTrue(GalleryRepository.isCompleteDownload(folder, store.gson))
+    }
+    @Test fun legacyGifAndWebPFilesKeepPassingValidation() {
+        val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        val webp = ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.WEBP, 100, it); bitmap.recycle() }.toByteArray()
+        val gif = byteArrayOf(71, 73, 70, 56, 57, 97, 1, 0, 1, 0, -128, 0, 0, 0, 0, 0, -1, -1, -1,
+            33, -7, 4, 1, 0, 0, 0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 68, 1, 0, 59)
+        for ((name, bytes) in mapOf("webp.image" to webp, "gif.image" to gif, "png.image" to pngBytes())) {
+            val file = File(root, name).apply { writeBytes(bytes) }
+            assertTrue(name, isCompleteGalleryImage(file))
+            if (name != "png.image") {
+                file.writeBytes(bytes.copyOf(bytes.size - 1))
+                assertFalse("截断的 $name", isCompleteGalleryImage(file))
+            }
+        }
+    }
+    private fun pngBytes(): ByteArray = ByteArrayOutputStream().use { output ->
+        val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        try { bitmap.compress(Bitmap.CompressFormat.PNG, 100, output) } finally { bitmap.recycle() }
+        output.toByteArray()
+    }
+    @Test fun duplicateScanUsesTheLogicalPageManifestAndOldReadableDirectories() {
+        val entry = book(StorageRoot.Mode.PRIVATE, "logical-duplicate", count = 2)
+        val folder = bookFolder(StorageRoot.Mode.PRIVATE, entry.id)
+        val selection = File(folder, "selection.json").apply { writeText("selected") }
+        val complete = File(folder, "complete")
+        val marker = complete.readText()
+        val page = File(folder, "${hash(pageUrl(entry.id, 1))}.image")
+        val original = page.readBytes()
+        val extra = File(folder, "unreferenced.image").apply { writeBytes(original) }
+        val repository = GalleryRepository(context, Network(context, store), storage)
+        val refs = repository.duplicateBooks()
+        assertEquals(2, refs.single().pageFiles.size)
+        assertTrue(selection.delete())
+        page.writeBytes(original.copyOf(original.size - 12))
+        assertTrue(DuplicateScan.scan(refs).isEmpty())
+        page.writeBytes(original)
+        extra.delete()
+        assertTrue(DuplicateScan.scan(repository.duplicateBooks()).isEmpty())
+        complete.writeText(marker)
+    }
+
+    @Test fun anEmptySelectionNeverMasqueradesAsAnIntactPartialBook() = runBlocking {
+        val entry = book(StorageRoot.Mode.PRIVATE, "empty-selection", count = 2)
+        File(bookFolder(StorageRoot.Mode.PRIVATE, entry.id), "complete").delete()
+        val repository = GalleryRepository(context, Network(context, store), storage)
+        assertFalse(repository.isSelectionDownloaded(entry, emptyList()))
+        assertFalse(repository.isDownloaded(entry))
     }
     @Test fun conflictingPartialBooksStopBeforeCopyingOrCommittingTheLocation() = runBlocking {
         val entry = book(StorageRoot.Mode.PRIVATE, "partial-conflict")

@@ -2,6 +2,7 @@ package com.r34v.r34v.downloads
 
 import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
+import com.r34v.r34v.playback.StreamSelection
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -20,15 +21,12 @@ class BatchDownloads(private val app: R34Application) {
                 for (video in entries) {
                     ensureActive()
                     try {
-                        if (video.mediaKind == MediaKind.GALLERY || SiteRegistry.byIdOrDefault(video.site).mediaKind == MediaKind.GALLERY) app.galleryDownloads.add(video)
+                        if (video.isGalleryWork) app.galleryDownloads.add(video.copy(mediaKind = MediaKind.GALLERY))
                         else {
                             val detail = app.repository.detail(video.url)
                             val preferred = app.library.string("quality", "720p")
-                            val height = Regex("\\d+").find(preferred)?.value?.toIntOrNull() ?: 720
-                            val stream = detail.streams.firstOrNull { it.label == preferred }
-                                ?: detail.streams.filter { it.height <= height }.maxByOrNull { it.height }
-                                ?: detail.streams.minByOrNull { it.height } ?: error("没有可下载的片源")
-                            app.playback.add(video, stream)
+                            val stream = StreamSelection.preferred(detail.streams, preferred) ?: error("没有可下载的片源")
+                            app.playback.add(video.copy(mediaKind = MediaKind.VIDEO), stream)
                         }
                         progress.value = progress.value.let { it.copy(processed = it.processed + 1, added = it.added + 1) }
                     } catch (e: Exception) {

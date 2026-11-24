@@ -81,19 +81,7 @@ class PhotoArchiveAdapter(
 
     override suspend fun galleryImage(url: String): GalleryImage {
         val identity = profile.identity(site, url) ?: error("无法识别 ${site.name} 图片地址")
-        var page = identity.page
-        var offset = identity.offset
-        // A page shorter than the first one shifts everything after it; follow forward instead of
-        // failing the whole read.
-        repeat(4) {
-            val images = imagesOf(identity.canonical, page)
-            check(images.isNotEmpty()) { "这条内容的第 $page 个分页没有图片，请刷新后重试" }
-            if (offset in images.indices) return GalleryImage(identity.index, url, images[offset], null, null)
-            if (offset < 0) error("图片序号无效，请刷新后重试")
-            offset -= images.size
-            page++
-        }
-        error("这条内容的分页结构与记录不一致，请刷新后重试")
+        return PhotoPages.image(identity, url, ::imagesOf)
     }
 
     override suspend fun detail(url: String): Detail {
@@ -168,6 +156,25 @@ object PhotoPages {
         val offset = numbers[3].toIntOrNull()?.takeIf { it >= 0 } ?: return null
         return Identity(canonicalUrl, index, page, offset)
     }
+
+    internal suspend fun image(
+        identity: Identity,
+        url: String,
+        loadPage: suspend (String, Int) -> List<String>,
+    ): GalleryImage {
+        var page = identity.page
+        var offset = identity.offset
+        // If the saved offset no longer fits, continue into later content pages.
+        repeat(4) {
+            val images = loadPage(identity.canonical, page)
+            check(images.isNotEmpty()) { "这条内容的第 $page 个分页没有图片，请刷新后重试" }
+            if (offset in images.indices) return GalleryImage(identity.index, url, images[offset], null, null)
+            if (offset < 0) error("图片序号无效，请刷新后重试")
+            offset -= images.size
+            page++
+        }
+        error("这条内容的分页结构与记录不一致，请刷新后重试")
+    }
 }
 
 /** Everything that differs between two photo archives. */
@@ -204,8 +211,6 @@ interface PhotoProfile {
     fun thumbHeight(doc: Document): Int
     fun description(doc: Document, total: Int, pages: Int): String
     fun groups(doc: Document, site: SiteContext): Map<String, List<Link>> = emptyMap()
-    /** Exact image count when the page itself states it; null means "derive from page sizes". */
-    fun totalImages(doc: Document): Int? = null
 }
 
 /**

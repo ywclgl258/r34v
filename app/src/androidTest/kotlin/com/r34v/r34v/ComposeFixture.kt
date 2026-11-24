@@ -22,19 +22,25 @@ import org.junit.Rule
 import java.io.Closeable
 import java.io.File
 import java.io.IOException
+import java.net.Proxy
+import java.net.ProxySelector
+import java.net.SocketAddress
+import java.net.URI
+import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ConcurrentHashMap
 
 /** Neutral media and real repository/cache/player paths; no production test switches. */
 class ComposeFixture(private val cinematic: Boolean = false, private val preservePreferences: Set<String> = emptySet(),
-                     videoAsset: String = "test-pattern.mp4", private val awaitUi: () -> Unit = {}) : Closeable {
+                     videoAsset: String = "test-pattern.mp4", private val liveProbeHosts: Set<String> = emptySet(),
+                     private val awaitUi: () -> Unit = {}) : Closeable {
     val ins = InstrumentationRegistry.getInstrumentation()
     val app = ins.targetContext.applicationContext as R34Application
     private val prefs = app.library.prefs.all.toMap()
     private val previousSite = app.library.siteId
     private val cacheField = AdapterRegistry::class.java.getDeclaredField("cache").apply { isAccessible = true }
     @Suppress("UNCHECKED_CAST") private val adapters = cacheField.get(AdapterRegistry) as MutableMap<String, SiteAdapter>
-    private val originals = adapters.toMap()
+    private val originals = synchronized(AdapterRegistry) { adapters.toMap() }
     private val clientField = Network::class.java.getDeclaredField("current").apply { isAccessible = true }
     private val originalClient = app.network.client
     private val originalFeeds = app.network.feedCacheDirectory.listFiles().orEmpty().filter { it.isFile }.associate { it.name to it.readBytes() }
@@ -74,9 +80,22 @@ class ComposeFixture(private val cinematic: Boolean = false, private val preserv
                     if (request.getHeader("Range") != null) setHeader("Content-Range", "bytes $start-${clip.size - 1}/${clip.size}")
                     if (videoThrottleMillis > 0) throttleBody(16384, videoThrottleMillis, java.util.concurrent.TimeUnit.MILLISECONDS)
                 }.setBody(Buffer().write(clip.copyOfRange(start, clip.size)))
-        } }; start()
+        } }
     }
-    private val fixtureClient = originalClient.newBuilder().proxy(java.net.Proxy.NO_PROXY).dispatcher(okhttp3.Dispatcher()).connectionPool(ConnectionPool()).addInterceptor { chain ->
+    // Select a route after application interceptors (including per-test synthetic responses)
+    // and again on redirects. Reject unknown hosts before DNS or a socket connection.
+    private val localRoutes = object : ProxySelector() {
+        private val allowedHosts = setOf("localhost", "127.0.0.1", "[::1]", "::1") + liveProbeHosts
+        override fun select(uri: URI): List<Proxy> {
+            if (uri.host !in allowedHosts) {
+                throw UnknownHostException("No device fixture for ${uri.host}")
+            }
+            return listOf(Proxy.NO_PROXY)
+        }
+        override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) = Unit
+    }
+    private val fixtureClient = originalClient.newBuilder().proxy(null).proxySelector(localRoutes).cache(null)
+        .dispatcher(okhttp3.Dispatcher()).connectionPool(ConnectionPool()).addInterceptor { chain ->
         val path = chain.request().url.encodedPath
         if (path.contains("compose-image") || path.contains("compose-cover")) {
             val number = Regex("compose-image-(\\d+)").find(path)?.groupValues?.get(1)?.toIntOrNull()
@@ -91,16 +110,23 @@ class ComposeFixture(private val cinematic: Boolean = false, private val preserv
             if (path.contains("compose-cover")) coverRequests.add(chain.request())
             val cover = if (cinematic && path.contains("compose-cover")) {
                 val i = Regex("compose-cover-\\d+-(\\d+)").find(path)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                ins.context.assets.open("cinema/${cinemaArt[i % cinemaArt.size]}").use { it.readBytes() }
+                app.assets.open("preview/${cinemaArt[i % cinemaArt.size]}").use { it.readBytes() }
             } else png
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("Neutral fixture").body(cover.toResponseBody("image/png".toMediaType())).build()
         } else chain.proceed(chain.request())
     }.build()
     init {
-        clientField.set(app.network, fixtureClient)
-        SiteRegistry.all.forEach { site -> adapters[site.id] = FixtureAdapter(site) }
-        app.library.switchSite("r34v")
-        app.library.prefs.edit().putBoolean(LibraryStore.SITE_SWITCH_TUTORIAL_SEEN, true).putBoolean("settings_v1_auto_update", false).putBoolean("settings_v1_auto_fullscreen", false).commit()
+        try {
+            server.start()
+            clientField.set(app.network, fixtureClient)
+            synchronized(AdapterRegistry) { SiteRegistry.all.forEach { site -> adapters[site.id] = FixtureAdapter(site) } }
+            app.library.switchSite("r34v")
+            check(app.library.prefs.edit().putBoolean(LibraryStore.SITE_SWITCH_TUTORIAL_SEEN, true)
+                .putBoolean("settings_v1_auto_update", false).putBoolean("settings_v1_auto_fullscreen", false).commit())
+        } catch (failure: Throwable) {
+            runCatching { restore(started = false) }.exceptionOrNull()?.let(failure::addSuppressed)
+            throw failure
+        }
     }
     fun video(siteId: String = app.library.siteId, page: Int = 1, index: Int = 0): Video {
         val site = SiteRegistry.byIdOrDefault(siteId)
@@ -170,21 +196,68 @@ class ComposeFixture(private val cinematic: Boolean = false, private val preserv
         val image = ins.uiAutomation.takeScreenshot() ?: error("No screenshot")
         File(dir, "$name.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }; image.recycle()
     }
-    override fun close() {
-        kotlinx.coroutines.runBlocking { app.galleryDownloads.tasks().filter { it.id !in originalBookTasks }.forEach { app.galleryDownloads.remove(it.id) } }
-        ins.runOnMainSync { listOf(Stage.RESUMED, Stage.STARTED, Stage.PAUSED, Stage.STOPPED, Stage.CREATED).flatMap { ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(it) }.distinct().forEach(Activity::finish) }
-        ins.waitForIdleSync(); adapters.clear(); adapters.putAll(originals); clientField.set(app.network, originalClient)
-        app.library.switchSite(previousSite)
-        val restored = prefs.filterKeys { it !in preservePreferences } + app.library.prefs.all.filterKeys { it in preservePreferences }
-        app.library.prefs.edit().clear().apply { restored.forEach { (key, value) -> when (value) { is String -> putString(key, value); is Boolean -> putBoolean(key, value); is Long -> putLong(key, value); is Int -> putInt(key, value); is Float -> putFloat(key, value); is Set<*> -> putStringSet(key, value.filterIsInstance<String>().toSet()) } } }.commit()
-        app.network.feedCacheDirectory.listFiles().orEmpty().filter { it.isFile }.forEach { it.delete() }; originalFeeds.forEach { (name, bytes) -> File(app.network.feedCacheDirectory, name).writeBytes(bytes) }
-        File(app.filesDir, "gallery-cache").walkTopDown().filter { it.isFile && it.absolutePath !in galleryFiles }.forEach { it.delete() }
-        fixtureClient.connectionPool.evictAll(); fixtureClient.dispatcher.executorService.shutdown(); server.shutdown()
+    override fun close() = restore(started = true)
+
+    private fun restore(started: Boolean) {
+        var failure: Throwable? = null
+        fun cleanup(action: () -> Unit) {
+            try {
+                action()
+            } catch (error: Throwable) {
+                val first = failure
+                if (first == null) failure = error else first.addSuppressed(error)
+            }
+        }
+        if (started) {
+            cleanup {
+                ins.runOnMainSync {
+                    listOf(Stage.RESUMED, Stage.STARTED, Stage.PAUSED, Stage.STOPPED, Stage.CREATED)
+                        .flatMap { ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(it) }.distinct().forEach(Activity::finish)
+                }
+                ins.waitForIdleSync()
+            }
+            cleanup {
+                kotlinx.coroutines.runBlocking {
+                    app.galleryDownloads.tasks().filter { it.id !in originalBookTasks }.forEach { app.galleryDownloads.remove(it.id) }
+                }
+            }
+        }
+        cleanup { fixtureClient.dispatcher.cancelAll() }
+        cleanup { synchronized(AdapterRegistry) { adapters.clear(); adapters.putAll(originals) } }
+        cleanup { app.library.switchSite(previousSite) }
+        cleanup {
+            val restored = prefs.filterKeys { it !in preservePreferences } + app.library.prefs.all.filterKeys { it in preservePreferences }
+            val editor = app.library.prefs.edit().clear()
+            restored.forEach { (key, value) -> when (value) {
+                is String -> editor.putString(key, value)
+                is Boolean -> editor.putBoolean(key, value)
+                is Long -> editor.putLong(key, value)
+                is Int -> editor.putInt(key, value)
+                is Float -> editor.putFloat(key, value)
+                is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+            } }
+            check(editor.commit()) { "Could not restore device fixture preferences" }
+        }
+        if (started) {
+            cleanup {
+                val directory = app.network.feedCacheDirectory
+                directory.listFiles().orEmpty().filter { it.isFile && it.name !in originalFeeds }.forEach { check(it.delete()) }
+                originalFeeds.forEach { (name, bytes) -> File(directory, name).writeBytes(bytes) }
+            }
+            cleanup {
+                File(app.filesDir, "gallery-cache").walkTopDown().filter { it.isFile && it.absolutePath !in galleryFiles }.forEach { check(it.delete()) }
+            }
+        }
+        cleanup { clientField.set(app.network, originalClient) }
+        cleanup { fixtureClient.connectionPool.evictAll() }
+        cleanup { fixtureClient.dispatcher.executorService.shutdown() }
+        cleanup { server.shutdown() }
+        failure?.let { throw it }
     }
 }
 abstract class ComposeUiCase {
     @get:Rule val ui = createEmptyComposeRule()
-    fun waitText(text: String) { ui.waitUntil(15000) { runCatching { ui.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }.getOrDefault(false) } }
+    fun waitText(text: String, substring: Boolean = false) { ui.waitUntil(15000) { runCatching { ui.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().isNotEmpty() }.getOrDefault(false) } }
     fun waitCovers() { ui.waitUntil(15000) { ui.onAllNodesWithTag("cover-ready", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }; ui.waitForIdle() }
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun waitForDecodedVideo(fixture: ComposeFixture, position: LongRange = 0L..Long.MAX_VALUE) {
@@ -231,6 +304,10 @@ abstract class ComposeUiCase {
         ui.waitForIdle()
     }
     fun switchSite(name: String) { ui.onNode(hasContentDescription("切换站点，当前", substring = true)).performClick(); ui.onNodeWithContentDescription("站点列表").performScrollToNode(hasText(name)); clickText(name) }
-    fun readerTool(label: String) { ui.onNodeWithContentDescription("阅读工具").performClick(); clickText(label) }
+    fun readerTool(label: String) {
+        ui.onNodeWithContentDescription("阅读工具").performClick()
+        waitText(label)
+        ui.onAllNodesWithText(label).onLast().performScrollTo().performClick()
+    }
     fun openWatchLater() { ui.onNodeWithTag("library-hub").performScrollToNode(hasText("稍后看")); clickText("稍后看") }
 }

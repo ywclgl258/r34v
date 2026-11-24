@@ -7,6 +7,7 @@ import android.app.Notification
 import android.content.Context
 import android.net.Uri
 import androidx.annotation.VisibleForTesting
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
@@ -19,6 +20,7 @@ import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.NoOpCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.hls.HlsDataSourceFactory
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadManager
 import androidx.media3.exoplayer.offline.DefaultDownloadIndex
@@ -160,14 +162,15 @@ class PlaybackStore(private val context: Context, private val network: Network, 
                         refreshJobs.remove(download.request.id)?.cancel()
                         // The sidecar is what survives an uninstall; Media3's database does not.
                         runCatching {
-                            val meta = metadata(download) ?: return@runCatching
-                            index.putVideo(meta.video, meta.quality, download.bytesDownloaded)
+                            val record = libraryRecord(download) ?: return@runCatching
+                            index.putVideo(record.video, record.quality, record.bytes,
+                                at = record.at.takeIf { it > 0 } ?: System.currentTimeMillis())
                         }
                     }
                     downloadUpdates.update { it + 1 }
                 }
             })
-            if (!storage.pendingRestart && !storage.changing) resumeDownloads()
+            if (storage.canWriteDownloads) resumeDownloads()
         }
     }
 
@@ -210,6 +213,25 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     }
 
     internal fun openHlsSeekSession() = hlsSeekSessionFactory()
+
+    internal fun hlsSourceFactory(offline: Boolean, siteId: String, sourceRoot: String, hlsKey: String,
+                                  cacheStreaming: Boolean, hlsSeek: HlsSeekSession?): HlsDataSourceFactory {
+        val media = sourceFactory(offline, siteId, sourceRoot, hlsKey, cacheStreaming)
+        val seekMedia = hlsSeek?.let { sourceFactory(offline, siteId, sourceRoot, hlsKey, hlsSeek = it) }
+        val owner = SiteRegistry.byId(siteId)
+        // HLS manifests may describe live media and can reuse addresses for different bytes.
+        // Keep an explicit HTTP path independent of the byte caches, including when stream-cache
+        // is disabled. Downloaded HLS never opens it: the read-only cache factory has no upstream.
+        val liveManifest = if (offline) null else mediaAware(DefaultDataSource.Factory(context, httpFactory(owner)), owner)
+        return HlsDataSourceFactory { type ->
+            val factory = when (type) {
+                C.DATA_TYPE_MANIFEST -> liveManifest ?: media
+                C.DATA_TYPE_MEDIA -> seekMedia ?: media
+                else -> media
+            }
+            factory.createDataSource()
+        }
+    }
 
     internal fun sourceFactory(offline: Boolean = false, siteId: String? = null, sourceRoot: String = "", hlsKey: String? = null,
                                cacheStreaming: Boolean = false, sessionKey: String? = null,
@@ -377,6 +399,13 @@ class PlaybackStore(private val context: Context, private val network: Network, 
     }
     fun metadata(download: Download): DownloadMeta? =
         runCatching { library.gson.fromJson(String(download.request.data), DownloadMeta::class.java) }.getOrNull()
+
+    fun libraryRecord(download: Download, meta: DownloadMeta? = metadata(download)): LibraryRecord? = meta?.let {
+        LibraryRecord(site = it.site, id = it.video.id, quality = it.quality, cacheKey = download.request.id,
+            title = it.video.title, url = it.video.url, thumb = it.video.thumb, duration = it.video.duration,
+            bytes = download.bytesDownloaded, at = download.startTimeMs,
+            state = if (download.state == Download.STATE_COMPLETED) LibraryRecord.STATE_COMPLETED else LibraryRecord.STATE_PARTIAL)
+    }
 
     /** Downloads belonging to the site that is currently open. */
     fun downloadsFor(siteId: String = library.siteId): List<Download> =

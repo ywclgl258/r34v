@@ -19,30 +19,50 @@ class GalleryDownloadService : Service() {
     private var worker: Job? = null
     private var lastStart = 0
     private var wakeLock: PowerManager.WakeLock? = null
+    private var progressUpdates: Job? = null
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onCreate() {
         super.onCreate()
-        if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)
-            .createNotificationChannel(NotificationChannel(CHANNEL, "图集下载", NotificationManager.IMPORTANCE_LOW))
-        showProgress()
+        enterForeground()
         wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "R34V:GalleryDownload").apply {
             setReferenceCounted(false); acquire(6 * 60 * 60 * 1000L)
         }
-        scope.launch { app.galleryDownloads.changes.collectLatest { delay(200); showProgress() } }
     }
-    private fun showProgress() {
-        val task = app.galleryDownloads.tasks().firstOrNull { it.state == GalleryDownloadState.DOWNLOADING }
-        val open = PendingIntent.getActivity(this, 42, Intent(this, MainActivity::class.java).putExtra("downloads", true)
-            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val notification = NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("图集下载").setContentText(task?.let { "${it.entry.title} · ${it.pages} / ${it.total} 页" } ?: "正在准备下载任务")
-            .setContentIntent(open).setOnlyAlertOnce(true).setOngoing(true)
-            .setProgress(task?.total ?: 0, task?.pages ?: 0, task == null || task.total == 0).build()
+
+    private fun enterForeground() {
+        if (Build.VERSION.SDK_INT >= 26) getSystemService(NotificationManager::class.java)
+            .createNotificationChannel(NotificationChannel(CHANNEL, "图集下载", NotificationManager.IMPORTANCE_LOW))
+        val notification = progressNotification()
         if (Build.VERSION.SDK_INT >= 29) startForeground(42, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         else startForeground(42, notification)
+        if (progressUpdates?.isActive != true) {
+            progressUpdates = scope.launch {
+                app.galleryDownloads.changes.collectLatest {
+                    delay(200)
+                    val updated = progressNotification()
+                    withContext(Dispatchers.Main) { getSystemService(NotificationManager::class.java).notify(42, updated) }
+                }
+            }
+        }
+    }
+    private fun progressNotification(): Notification {
+        val task = app.galleryDownloads.tasks().firstOrNull { it.state == GalleryDownloadState.DOWNLOADING }
+            ?: app.galleryDownloads.tasks().firstOrNull { it.failure == com.r34v.r34v.data.GalleryFailureKind.STORAGE }
+        val state = when {
+            task == null -> "正在准备下载任务"
+            task.failure == com.r34v.r34v.data.GalleryFailureKind.STORAGE -> "存储写入失败：${task.error}"
+            else -> "${task.entry.title} · ${task.pages} / ${task.total} 页"
+        }
+        val open = PendingIntent.getActivity(this, 42, Intent(this, MainActivity::class.java).putExtra("downloads", true)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("图集下载").setContentText(state)
+            .setContentIntent(open).setOnlyAlertOnce(true).setOngoing(true)
+            .setProgress(task?.total ?: 0, task?.pages ?: 0, task == null || task.total == 0 || task.failure == com.r34v.r34v.data.GalleryFailureKind.STORAGE).build()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         lastStart = startId
+        enterForeground()
         if (worker?.isActive != true) pump()
         return START_STICKY
     }
@@ -54,13 +74,20 @@ class GalleryDownloadService : Service() {
             }
             withContext(Dispatchers.Main) {
                 worker = null
-                if (app.galleryDownloads.hasPending() && app.galleryDownloads.canRun) pump() else { stopForeground(STOP_FOREGROUND_REMOVE); stopSelfResult(lastStart) }
+                if (app.galleryDownloads.hasPending() && app.galleryDownloads.canRun) pump()
+                else {
+                    progressUpdates?.cancel()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelfResult(lastStart)
+                }
             }
         }
     }
     override fun onTimeout(startId: Int, fgsType: Int) {
         app.galleryDownloads.pauseForTimeout()
-        scope.cancel(); stopSelf()
+        scope.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
     override fun onDestroy() { scope.cancel(); wakeLock?.let { if (it.isHeld) it.release() }; super.onDestroy() }
     companion object { private const val CHANNEL = "gallery-downloads" }

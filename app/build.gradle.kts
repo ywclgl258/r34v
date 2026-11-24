@@ -63,6 +63,7 @@ val validateReleaseSigning = tasks.register("validateReleaseSigning") {
             val file = keyFile("${prefix}KEYSTORE_PATH") ?: error("缺少固定发布密钥，请配置 $signingHome/signing.properties；禁止临时生成密钥")
             val password = signingValue("${prefix}KEYSTORE_PASSWORD") ?: error("签名配置缺少密码")
             val alias = signingValue("${prefix}KEY_ALIAS") ?: error("签名配置缺少别名")
+            check(!signingValue("${prefix}KEY_PASSWORD").isNullOrBlank()) { "签名配置缺少私钥密码" }
             val keyStore = KeyStore.getInstance(file, password.toCharArray())
             val certificate = keyStore.getCertificate(alias) ?: error("发布密钥中不存在指定别名")
             val digest = MessageDigest.getInstance("SHA-256").digest(certificate.encoded).joinToString("") { "%02x".format(it) }
@@ -88,8 +89,8 @@ val signUpgradeRelease = tasks.register("signUpgradeRelease") {
         fun runSigner(args: List<String>) {
             val process = ProcessBuilder(listOf(java.absolutePath, "-jar", signer.absolutePath) + args).redirectErrorStream(true)
             process.environment().putAll(environment)
-            val running = process.start(); val output = running.inputStream.bufferedReader().readText()
-            check(running.waitFor() == 0) { "签名校验失败：$output" }
+            val running = process.redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+            check(running.waitFor() == 0) { "apksigner ${args.first()} 失败，请检查固定签名配置" }
         }
         fun signerArgs(legacy: Boolean): List<String> {
             val prefix = if (legacy) "LEGACY_" else ""
@@ -101,10 +102,51 @@ val signUpgradeRelease = tasks.register("signUpgradeRelease") {
         runSigner(listOf("sign", "--v4-signing-enabled", "false", "--rotation-min-sdk-version", "28", "--lineage", rootProject.file("app/signing/upgrade.lineage").absolutePath) +
             signerArgs(true) + "--next-signer" + signerArgs(false) + apk.absolutePath)
         runSigner(listOf("verify", apk.absolutePath)); runSigner(listOf("verify", compatibilityApk.absolutePath))
-        logger.lifecycle("发布签名继承校验通过；正式 APK 和旧 2.0.0 兼容 APK 已生成")
     }
 }
-tasks.matching { it.name == "assembleRelease" }.configureEach { dependsOn(signUpgradeRelease) }
+
+// Also runnable on an existing pair of APKs without invoking a signing task.
+val verifyReleaseApks = tasks.register("verifyReleaseApks") {
+    mustRunAfter(signUpgradeRelease)
+    doLast {
+        val tools = androidComponents.sdkComponents.sdkDirectory.get().asFile.resolve("build-tools/${android.buildToolsVersion}")
+        val suffix = if (System.getProperty("os.name").startsWith("Windows")) ".exe" else ""
+        val javaBin = File(System.getProperty("java.home"), "bin/java$suffix")
+        val releaseDir = layout.buildDirectory.dir("outputs/apk/release").get().asFile
+        val version = identity.getProperty("versionName")
+        val standard = releaseDir.resolve("app-release.apk")
+        val compatibility = releaseDir.resolve("R34V-v$version-compat-2.0.0.apk")
+        fun inspect(command: List<String>): String {
+            val process = ProcessBuilder(command).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            check(process.waitFor() == 0) { "无法校验 ${command.last()}" }
+            return output
+        }
+        for (apk in listOf(standard, compatibility)) {
+            val badging = inspect(listOf(tools.resolve("aapt2$suffix").absolutePath, "dump", "badging", apk.absolutePath))
+            val packageInfo = badging.lineSequence().single { it.startsWith("package: ") }
+            val attributes = Regex(" (name|versionCode|versionName)='([^']*)'").findAll(packageInfo)
+                .associate { it.groupValues[1] to it.groupValues[2] }
+            check(attributes["name"] == "com.r34v.r34v" && attributes["versionCode"] == identity.getProperty("versionCode") &&
+                attributes["versionName"] == version) { "${apk.name} 的包名或版本与发布配置不符" }
+            logger.lifecycle("${apk.name} ${attributes["name"]} $version (${attributes["versionCode"]})")
+        }
+        fun verifySigner(apk: File, minSdk: Int, maxSdk: Int?, certificate: String) {
+            val command = listOf(javaBin.absolutePath, "-jar", tools.resolve("lib/apksigner.jar").absolutePath,
+                "verify", "--print-certs", "--min-sdk-version", minSdk.toString()) +
+                (maxSdk?.let { listOf("--max-sdk-version", it.toString()) } ?: emptyList()) + apk.absolutePath
+            val signers = inspect(command).lineSequence().mapNotNull {
+                Regex("Signer #\\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})").matchEntire(it)?.groupValues?.get(1)?.lowercase()
+            }.toList()
+            check(signers == listOf(certificate)) { "${apk.name} 在 API $minSdk–${maxSdk ?: "最新"} 的签名不匹配" }
+            logger.lifecycle("${apk.name} API $minSdk–${maxSdk ?: "最新"} SHA-256 $certificate")
+        }
+        verifySigner(standard, 24, 27, identity.getProperty("historicalCertificate"))
+        verifySigner(standard, 28, null, identity.getProperty("releaseCertificate"))
+        verifySigner(compatibility, 24, 27, identity.getProperty("releaseCertificate"))
+    }
+}
+tasks.matching { it.name == "assembleRelease" }.configureEach { dependsOn(signUpgradeRelease, verifyReleaseApks) }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.08.01"))

@@ -47,7 +47,7 @@ data class SubscriptionPage(
  * it, which means the user's own tag order decides where it lands in [SubscriptionOrder.SUBSCRIBED].
  */
 object SubscriptionMerge {
-    fun key(video: Video) = "${video.site}:${video.id}"
+    fun key(video: Video) = video.entryKey
 
     /** Works in the user's tag order, each work appearing once under the first tag that had it. */
     fun grouped(tags: List<TagFeed>): List<Pair<Subscription, List<Video>>> {

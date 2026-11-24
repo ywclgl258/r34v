@@ -83,6 +83,17 @@ class StreamSelectionTest {
         assertNull(StreamSelection.lower(standard, bottom))
     }
 
+    @Test fun anUnknownOriginalIsNeverRankedBelowAKnownResolution() {
+        val mixed = streams("原画", "1080p", "360p 原画", "360p")
+        assertEquals("360p 原画", StreamSelection.preferred(mixed, "144p")?.label)
+        assertEquals("360p", StreamSelection.pick(mixed, "360p", 300).label)
+        assertEquals("360p 原画", StreamSelection.lower(mixed, mixed[1])?.label)
+        assertNull(StreamSelection.lower(mixed, mixed[2]))
+        assertNull(StreamSelection.lower(mixed, mixed[0]))
+        assertEquals(mixed[0], StreamSelection.preferred(mixed, "原画"))
+        assertEquals(mixed[0], StreamSelection.preferred(listOf(mixed[0]), "360p"))
+    }
+
     @Test fun aTightLinkShortensTheStartupBuffer() {
         val strained = StreamSelection.bufferPlan(2500, 3000)
         assertTrue("起播缓冲必须收紧", strained.minMs <= 2500)

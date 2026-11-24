@@ -40,6 +40,20 @@ class ModernUiTest : ComposeUiCase() {
         org.junit.Assert.assertEquals("ehentai", f.app.library.siteId)
     }
 
+    @Test fun personalCatalogRefreshesWithoutReopeningThePage() = ComposeFixture(cinematic = true).use { f ->
+        clear(f)
+        val video = f.video().copy(title = "正在更新的观看记录")
+        f.launch()
+        openPersonalHome()
+        waitText("发现下一部")
+
+        val watch = Watch(video.id, video.title, video.thumb, video.url, 120, 600, site = video.site)
+        ui.runOnIdle { f.app.library.saveWatch(watch) }
+        waitText(video.title)
+        ui.runOnIdle { f.app.library.saveWatch(watch.copy(position = 600, ended = true)) }
+        waitText("发现下一部")
+    }
+
     private fun clear(f: ComposeFixture) {
         f.app.library.prefs.edit().putString(PersonalStore.KEY, f.app.library.gson.toJson(PersonalLibrary())).commit()
         f.app.library.prefs.edit().apply {

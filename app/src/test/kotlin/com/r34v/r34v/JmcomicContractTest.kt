@@ -7,6 +7,8 @@ import com.r34v.r34v.data.MediaKind
 import com.r34v.r34v.data.SiteCategory
 import com.r34v.r34v.data.SiteContext
 import com.r34v.r34v.data.Sort
+import com.r34v.r34v.data.SiteRegistry
+import com.r34v.r34v.data.incomingLink
 import com.r34v.r34v.data.adapter.JmcomicMirrorRouter
 import com.r34v.r34v.data.adapter.JmcomicProtocol
 import kotlinx.coroutines.runBlocking
@@ -96,6 +98,20 @@ class JmcomicContractTest {
         assertEquals("${site.base}/album/501", JmcomicProtocol.resolve(site, listing))
         assertEquals(listOf("chapter-500001", "chapter-500002"), JmcomicProtocol.chapterFeed(site, album).videos.map { it.id })
         assertEquals("chapter-500001", JmcomicProtocol.gallery(site, null, chapter).entry.id)
+    }
+
+    @Test fun sharedAlbumPreservesOnlyTheExactChapterListingFragment() {
+        val album = "$mirror/album/501/city-sketch"
+        val link = incomingLink("Chapter list ($album#chapters)")
+        assertEquals(SiteRegistry.JMCOMIC, link.site)
+        assertEquals("$album#chapters", link.url)
+        assertEquals(FeedRequest(FeedKind.CATEGORY, "501"), JmcomicProtocol.linkRequest(link.url))
+        for (fragment in listOf("Chapters", "%63hapters", "chapters-extra")) {
+            assertEquals(album, incomingLink("$album#$fragment").url)
+        }
+        assertEquals("$mirror/photo/500001", incomingLink("$mirror/photo/500001#chapters").url)
+        assertEquals("$mirror/album/0", incomingLink("$mirror/album/0#chapters").url)
+        assertEquals("https://hanime1.me/video/501", incomingLink("https://hanime1.me/video/501#chapters").url)
     }
 
     @Test fun readerUsesPageNumbersAndPreservesTheActualImageReferer() {

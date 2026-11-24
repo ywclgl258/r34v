@@ -3,11 +3,25 @@ package com.r34v.r34v.data
 import java.io.File
 import java.security.MessageDigest
 
-/** 一本参与比对的整本图集：下载任务目录或本地导入目录，由调用方给出安全删除身份。 */
-data class DuplicateBook(val source: String, val id: String, val title: String, val site: String, val dir: File)
+/** 页文件由各来源的清单解析，顺序与阅读器一致。 */
+internal data class DuplicateBook(
+    val source: String,
+    val id: String,
+    val title: String,
+    val site: String,
+    val pageFiles: List<File>,
+    val validatePage: (File) -> Boolean,
+    val sourceRoot: String = "",
+    val entry: Video? = null,
+)
 
 /** 一本确认参与比对的副本：扫描后携带真实页数与字节量。 */
-data class DuplicateCopy(val source: String, val id: String, val title: String, val site: String, val pages: Int, val sizeBytes: Long)
+data class DuplicateCopy(
+    val source: String, val id: String, val title: String, val site: String, val pages: Int, val sizeBytes: Long,
+    val sourceRoot: String = "", val entry: Video? = null,
+) {
+    val key get() = Triple(source, id, sourceRoot)
+}
 
 /** 同一内容指纹的整本副本组；[wastedBytes] 是“多出的那一本”占用的空间。 */
 data class DuplicateGroup(val fingerprint: String, val copies: List<DuplicateCopy>) {
@@ -27,58 +41,68 @@ data class DuplicateGroup(val fingerprint: String, val copies: List<DuplicateCop
  * （下载中心事务删除 / 本地库删除），这里绝不直接删任何文件。
  */
 internal object DuplicateScan {
-    private val IGNORE = setOf("complete", "book.json")
+    private data class Measured(val book: DuplicateBook, val lengths: List<Long>) {
+        val bytes = lengths.sum()
+        val pages = lengths.size
+        fun copy() = DuplicateCopy(book.source, book.id, book.title, book.site, pages, bytes, book.sourceRoot, book.entry)
+    }
 
-    private data class Measured(val book: DuplicateBook, val pages: Int, val sizeBytes: Long, val fingerprint: String)
-
-    /**
-     * [shouldStop] 由调用方提供（通常是协程取消检查）：大库扫描可能持续很久，
-     * 对话框关闭后必须能停下来，而不是继续读完整个磁盘再往已销毁的界面状态写结果。
-     */
-    fun scan(books: List<DuplicateBook>, shouldStop: () -> Boolean = { false }): List<DuplicateGroup> =
-        books.mapNotNull { book ->
-            if (shouldStop()) return@mapNotNull null
-            val files = pageFiles(book.dir)
-            if (files.isEmpty()) return@mapNotNull null
-            val fingerprint = fingerprint(files, shouldStop).takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            Measured(book, files.size, files.sumOf { it.length() }, fingerprint)
+    fun scan(books: List<DuplicateBook>, shouldStop: () -> Boolean = { false }): List<DuplicateGroup> {
+        val measured = books.mapNotNull { book ->
+            if (shouldStop()) return emptyList()
+            val lengths = book.pageFiles.map { file ->
+                if (shouldStop()) return emptyList()
+                if (file.isFile) file.length() else 0L
+            }
+            if (lengths.isEmpty() || lengths.any { it <= 0 }) null else Measured(book, lengths)
         }
-        .also { if (shouldStop()) return emptyList() }
-        .groupBy { it.pages to it.sizeBytes }
-        .values
-        .filter { it.size > 1 }
-        .flatMap { candidates ->
-            candidates.groupBy { it.fingerprint }
-                .filter { it.value.size > 1 }
-                .map { (fingerprint, group) -> DuplicateGroup(fingerprint,
-                    group.map { m -> DuplicateCopy(m.book.source, m.book.id, m.book.title, m.book.site, m.pages, m.sizeBytes) }
-                        .sortedWith(compareBy<DuplicateCopy> { it.site }.thenBy { it.title })) }
+        val groups = mutableListOf<DuplicateGroup>()
+        for (candidates in measured.groupBy { it.pages to it.bytes }.values) {
+            if (candidates.size < 2) continue
+            val fingerprints = candidates.mapNotNull { candidate ->
+                if (shouldStop()) return emptyList()
+                fingerprint(candidate, shouldStop)?.let { it to candidate.copy() }
+            }
+            fingerprints.groupBy({ it.first }, { it.second }).forEach { (digest, copies) ->
+                if (copies.size > 1) groups += DuplicateGroup(digest, copies.sortedWith(compareBy<DuplicateCopy> { it.site }.thenBy { it.title }))
+            }
         }
-        .sortedByDescending { it.wastedBytes }
+        return if (shouldStop()) emptyList() else groups.sortedByDescending { it.wastedBytes }
+    }
 
-    /** 指纹 = 自然页序逐页内容摘要串联再摘要；目录缺页或读不到内容时返回空串。 */
-    internal fun fingerprint(files: List<File>, shouldStop: () -> Boolean = { false }): String {
-        if (files.isEmpty()) return ""
+    private fun fingerprint(candidate: Measured, shouldStop: () -> Boolean): String? {
         val digest = MessageDigest.getInstance("SHA-256")
-        files.forEach { file ->
-            if (shouldStop()) return ""
+        val buffer = ByteArray(64 * 1024)
+        candidate.book.pageFiles.forEachIndexed { index, file ->
+            if (shouldStop()) return null
             val page = MessageDigest.getInstance("SHA-256")
-            // 文件可能在扫描期间被删除/移除，读失败只代表“这本算不同”，不能让整次扫描崩掉。
-            runCatching {
+            val expected = candidate.lengths[index]
+            try {
+                val modified = file.lastModified()
+                if (file.length() != expected || !candidate.book.validatePage(file)) return null
                 file.inputStream().use { input ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) { val read = input.read(buffer); if (read < 0) break; page.update(buffer, 0, read) }
+                    var remaining = expected
+                    while (remaining > 0) {
+                        if (shouldStop()) return null
+                        val count = input.read(buffer, 0, minOf(remaining, buffer.size.toLong()).toInt())
+                        if (count <= 0) return null
+                        page.update(buffer, 0, count)
+                        remaining -= count
+                    }
+                    if (input.read() != -1) return null
                 }
-            }.onFailure { return "" }
+                if (file.length() != expected || file.lastModified() != modified) return null
+            } catch (error: java.io.IOException) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                return null
+            } catch (error: SecurityException) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                return null
+            }
             digest.update(page.digest())
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
-
-    /** 页面文件：排除完成标记、元数据与临时文件，按自然页序排列。 */
-    private fun pageFiles(dir: File): List<File> = dir.listFiles().orEmpty()
-        .filter { it.isFile && it.name !in IGNORE && !it.name.endsWith(".part") }
-        .sortedWith(compareBy(LocalLibrary.naturalOrder) { it.name })
 }
 
 /** 与下载中心一致的体积文案。 */

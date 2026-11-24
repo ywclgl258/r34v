@@ -2,6 +2,7 @@ package com.r34v.r34v
 
 import com.r34v.r34v.data.DuplicateBook
 import com.r34v.r34v.data.DuplicateScan
+import com.r34v.r34v.data.LocalLibrary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -19,6 +20,11 @@ class DuplicateScanTest {
         extras.forEach { File(dir, it).writeText("x") }
     }
 
+    private fun ref(source: String, id: String, title: String, site: String, dir: File,
+        files: List<File> = dir.listFiles().orEmpty().filter { it.extension in setOf("image", "jpg") }
+            .sortedWith(compareBy(LocalLibrary.naturalOrder) { it.name }), valid: (File) -> Boolean = { true }): DuplicateBook =
+        DuplicateBook(source, id, title, site, files, valid)
+
     private fun same(bytes: Int = 3) = ByteArray(bytes) { 7 }
 
     @Test fun identicalBooksAreGroupedRegardlessOfNames() {
@@ -27,8 +33,8 @@ class DuplicateScanTest {
         book(a, listOf("1.image" to same(), "2.image" to same(4)))
         book(b, listOf("001.jpg" to same(), "002.jpg" to same(4)))
         val groups = DuplicateScan.scan(listOf(
-            DuplicateBook("local", "a", "画集 A", "本地", a),
-            DuplicateBook("download", "b", "画集 B", "ehentai", b)))
+            ref("local", "a", "画集 A", "本地", a),
+            ref("download", "b", "画集 B", "ehentai", b)))
         assertEquals(1, groups.size)
         assertEquals(2, groups[0].copies.size)
         assertEquals(7L, groups[0].unitBytes)   // 整本总字节 = 3 + 4
@@ -43,9 +49,9 @@ class DuplicateScanTest {
         book(b, listOf("1.image" to same(), "2.image" to byteArrayOf(1, 2)))   // 字节不同
         book(c, listOf("1.image" to same()))                                    // 页数不同
         val groups = DuplicateScan.scan(listOf(
-            DuplicateBook("local", "a", "A", "本地", a),
-            DuplicateBook("local", "b", "B", "本地", b),
-            DuplicateBook("local", "c", "C", "本地", c)))
+            ref("local", "a", "A", "本地", a),
+            ref("local", "b", "B", "本地", b),
+            ref("local", "c", "C", "本地", c)))
         assertTrue(groups.isEmpty())
     }
 
@@ -56,8 +62,8 @@ class DuplicateScanTest {
         book(a, pages.map { (n, b) -> "$n.image" to b })
         book(b, pages.map { (n, b) -> "$n.jpg" to b })
         val groups = DuplicateScan.scan(listOf(
-            DuplicateBook("local", "a", "A", "本地", a),
-            DuplicateBook("local", "b", "B", "本地", b)))
+            ref("local", "a", "A", "本地", a),
+            ref("local", "b", "B", "本地", b)))
         assertEquals(1, groups.size)
     }
 
@@ -67,8 +73,8 @@ class DuplicateScanTest {
         book(a, pages)
         book(b, pages, extras = listOf("complete", "book.json", "3.image.part"))
         val groups = DuplicateScan.scan(listOf(
-            DuplicateBook("download", "a", "A", "ehentai", a),
-            DuplicateBook("download", "b", "B", "ehentai", b)))
+            ref("download", "a", "A", "ehentai", a),
+            ref("download", "b", "B", "ehentai", b)))
         assertEquals(1, groups.size)
         assertEquals(2, groups[0].copies[0].pages)
     }
@@ -83,11 +89,11 @@ class DuplicateScanTest {
         book(small2, listOf("1.image" to same()))
         val empty = temp.newFolder("empty")
         val groups = DuplicateScan.scan(listOf(
-            DuplicateBook("local", "big", "大书", "本地", big),
-            DuplicateBook("local", "big2", "大书二", "本地", big2),
-            DuplicateBook("local", "small", "小书", "本地", small),
-            DuplicateBook("local", "small2", "小书二", "本地", small2),
-            DuplicateBook("local", "empty", "空", "本地", empty)))
+            ref("local", "big", "大书", "本地", big),
+            ref("local", "big2", "大书二", "本地", big2),
+            ref("local", "small", "小书", "本地", small),
+            ref("local", "small2", "小书二", "本地", small2),
+            ref("local", "empty", "空", "本地", empty)))
         assertEquals(2, groups.size)
         assertEquals(2, groups[0].copies.size)
         assertEquals(128L * 1024, groups[0].wastedBytes)
@@ -99,7 +105,7 @@ class DuplicateScanTest {
         val a = temp.newFolder("a"); val b = temp.newFolder("b")
         val pages = listOf("1.image" to same(), "2.image" to same())
         book(a, pages); book(b, pages)
-        val books = listOf(DuplicateBook("local", "a", "A", "本地", a), DuplicateBook("local", "b", "B", "本地", b))
+        val books = listOf(ref("local", "a", "A", "本地", a), ref("local", "b", "B", "本地", b))
         // 关闭对话框后扫描必须立刻停下：两本书都在读完页之前被跳过，不会继续读整个库。
         var calls = 0
         assertTrue(DuplicateScan.scan(books) { ++calls > 0 }.isEmpty())
@@ -115,8 +121,30 @@ class DuplicateScanTest {
         // 扫描期间文件被移除：读失败只代表这本算不同，不能让整次扫描抛异常。
         File(a, "1.image").delete()
         val groups = DuplicateScan.scan(listOf(
-            DuplicateBook("local", "a", "A", "本地", a),
-            DuplicateBook("local", "b", "B", "本地", b)))
+            ref("local", "a", "A", "本地", a),
+            ref("local", "b", "B", "本地", b)))
         assertTrue(groups.isEmpty())
+    }
+
+    @Test fun prefilterDoesNotReadUnmatchedCandidates() {
+        val a = temp.newFolder("a"); val b = temp.newFolder("b")
+        val first = page(a, "1.image", byteArrayOf(1, 2, 3))
+        val second = page(b, "1.image", byteArrayOf(1))
+        var validated = 0
+        assertTrue(DuplicateScan.scan(listOf(
+            ref("local", "a", "A", "本地", a, valid = { validated++; true }),
+            ref("local", "b", "B", "本地", b, valid = { validated++; true }),
+        )).isEmpty())
+        assertEquals(0, validated)
+    }
+
+    @Test fun cancellationInsideAPageAndInvalidTailCannotProduceAGroup() {
+        val a = temp.newFolder("a"); val b = temp.newFolder("b")
+        page(a, "1.image", ByteArray(32768) { 5 }); page(b, "1.image", ByteArray(32768) { 5 })
+        val books = listOf(ref("local", "a", "A", "本地", a), ref("local", "b", "B", "本地", b))
+        var reads = 0
+        assertTrue(DuplicateScan.scan(books) { ++reads > 5 }.isEmpty())
+        assertTrue(DuplicateScan.scan(listOf(
+            ref("local", "a", "A", "本地", a, valid = { false }), ref("local", "b", "B", "本地", b))).isEmpty())
     }
 }

@@ -261,6 +261,8 @@ object SiteRegistry {
 
     fun byIdOrDefault(id: String): SiteContext = byId(id) ?: R34V
 
+    fun displayName(id: String): String = byId(id)?.name ?: retiredVideoHosts[id] ?: id
+
     fun forHost(hostname: String): SiteContext? = all.firstOrNull { it.isSite(hostname) }
 
     fun forRequestHost(hostname: String): SiteContext? = forHost(hostname)

@@ -57,7 +57,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.*
 import androidx.media3.exoplayer.*
-import androidx.media3.exoplayer.hls.HlsDataSourceFactory
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
@@ -106,7 +106,11 @@ class PlayerActivity : ComponentActivity() {
     private var opening = false
     private var presented = false
     private var autoFullscreenApplied = false
+    private var resumed = false
     private var resumePlay = true
+    private var needsPrepare = false
+    private var hasPlayed = false
+    private var savedProgress: Watch? = null
     private var showingCover by mutableStateOf(false)
     private var pendingError: Throwable? = null
     private var hintJob: Job? = null
@@ -125,14 +129,15 @@ class PlayerActivity : ComponentActivity() {
     private var autoDowngrades = 0
     private var lastDowngradeAt = 0L
     private var appliedPlan: String? = null
-    /** 等首帧之后才入队的自动下载；见 [startPendingAutoDownload]。 */
-    private var pendingAutoDownload: Stream? = null
+    /** 保留到当前片源实际渲染首帧。 */
+    private var autoDownloadPending = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         video = runCatching { store.gson.fromJson(intent.getStringExtra("video"), Video::class.java) }.getOrNull()?.takeIf { it.id.isNotBlank() } ?: run { finish(); return }
         local = intent.getStringExtra("local"); offlineId = intent.getStringExtra("download"); cachedKey = intent.getStringExtra("cached")
         sourceRoot = intent.getStringExtra("root").orEmpty()
+        autoDownloadPending = !offline && (savedInstanceState?.getBoolean("autoDownloadPending") ?: store.bool("auto_download"))
         position = savedInstanceState?.getLong("position")
             ?: store.watch(video.id, video.site)?.takeIf { it.started && !it.finished }?.position?.times(1000)
             ?: 0
@@ -170,26 +175,35 @@ class PlayerActivity : ComponentActivity() {
         pendingError = null
         autoDowngrades = 0; stallsInWindow = 0; stallWindowStart = 0; bufferingSince = 0; lastDowngradeAt = 0
         lifecycleScope.launch { try {
-            stream = when {
+            val selected = when {
                 local != null -> {
-                    val record = checkNotNull(store.localVideos(video.site).firstOrNull { it.id == video.id && it.path == local }) {
-                        "离线文件不存在"
+                    val file = withContext(Dispatchers.IO) {
+                        val record = store.localVideos(video.site).firstOrNull { it.id == video.id && it.path == local }
+                            ?: error("离线文件不存在")
+                        File(record.path).also {
+                            check(it.isFile && it.canRead() && it.length() > 0) { "离线文件不可用" }
+                            if (video.site == SiteRegistry.LOCAL.id) {
+                                check(app.localLibrary.isLocalVideoComplete(video.id, it.path)) { "本地导入文件已变更" }
+                            }
+                        }
                     }
-                    val file = File(record.path)
-                    if (video.site == SiteRegistry.LOCAL.id && offlineId == null && cachedKey == null) seekPreviewFile = file
+                    if (video.site == SiteRegistry.LOCAL.id) seekPreviewFile = file
                     Stream("本地", Uri.fromFile(file).toString())
                 }
-                offlineId != null -> {
-                    val download = withContext(Dispatchers.IO) { app.playback.manager.downloadIndex.getDownload(offlineId!!) } ?: error("下载记录不存在")
-                    check(download.state == androidx.media3.exoplayer.offline.Download.STATE_COMPLETED) { "下载尚未完成" }
-                    check(app.playback.metadata(download)?.site == video.site) { "下载不属于当前站点" }
-                    Stream(app.playback.metadata(download)?.quality ?: "下载", download.request.uri.toString())
+                offlineId != null -> withContext(Dispatchers.IO) {
+                    val id = checkNotNull(offlineId)
+                    val download = app.playback.manager.downloadIndex.getDownload(id) ?: error("下载记录不存在")
+                    val record = app.playback.libraryRecord(download) ?: error("无法读取下载记录")
+                    check(record.state == LibraryRecord.STATE_COMPLETED) { "下载尚未完成" }
+                    check(record.site == video.site && record.id == video.id) { "下载身份不匹配" }
+                    check(app.playback.cached(id, sourceRoot)) { "本地缓存不完整，请重新下载" }
+                    app.playback.restoredStream(id, sourceRoot, download.request.uri.toString())
                 }
-                cachedKey != null -> {
-                    // Restored from storage: the Media3 record is gone, only the cache remains.
-                    check(cachedKey!!.startsWith("${video.site}:${video.id}:")) { "下载身份不匹配" }
-                    check(withContext(Dispatchers.IO) { app.playback.cached(cachedKey!!, sourceRoot) }) { "本地缓存不完整，请重新下载" }
-                    withContext(Dispatchers.IO) { app.playback.restoredStream(cachedKey!!, sourceRoot, video.url) }
+                cachedKey != null -> withContext(Dispatchers.IO) {
+                    val key = checkNotNull(cachedKey)
+                    check(key.startsWith("${video.site}:${video.id}:")) { "下载身份不匹配" }
+                    check(app.playback.cached(key, sourceRoot)) { "本地缓存不完整，请重新下载" }
+                    app.playback.restoredStream(key, sourceRoot, video.url)
                 }
                 else -> {
                     val result = app.repository.detail(video.url); detail = result; video = result.video.copy(thumb = result.video.thumb.ifBlank { video.thumb })
@@ -204,10 +218,7 @@ class PlayerActivity : ComponentActivity() {
                     chosenStream(result.streams, preferred)
                 }
             }
-            open(stream!!, position, resumePlay)
-            // 自动下载改到首帧之后入队：以前在取到地址的同一刻就开始下载，正好把起播要用的
-            // 那条连接和带宽对半分，弱网下等于自己给自己制造缓冲。
-            if (!offline && local == null && store.bool("auto_download")) pendingAutoDownload = stream
+            open(selected, position)
         } catch (e: Exception) { if (e is CancellationException) throw e; playbackError(e) } finally { opening = false } }
     }
     /**
@@ -217,16 +228,15 @@ class PlayerActivity : ComponentActivity() {
      *
      * 以前是“标签精确匹配，匹配不到就取 ≤720 的最后一档”，于是站点默认给 720p、链路又喂不动时，
      * 播放器只会永远转圈。现在先看链路实测：已知速度就按预算选，未知就先测 1 MB 真实媒体再选，
-     * 测速本身失败（断网、被拦）时退回用户设置，行为和以前一致。
+     * 测速本身失败（断网、被拦）时退回用户设置。
      */
     private suspend fun chosenStream(streams: List<Stream>, preferred: String): Stream {
-        if (streams.isEmpty()) error("详情页没有播放地址，可能需要登录或站点已改版")
-        streams.singleOrNull()?.let { return it }
+        val sample = StreamSelection.preferred(streams, preferred) ?: error("详情页没有播放地址，可能需要登录或站点已改版")
+        if (streams.size == 1) return sample
         val link = app.linkSpeed
         val local = link.estimateKbps()
-        if (local > 0) return noteChoice(StreamSelection.pick(streams, preferred, local), preferred, local, measured = false)
-        val sample = StreamSelection.preferred(streams, preferred) ?: streams.first()
-        if (HlsDownloads.mime(sample.url) != null) return StreamSelection.pick(streams, preferred, 0)
+        if (local > 0) return noteChoice(StreamSelection.pick(streams, preferred, local), sample, local, measured = false)
+        if (HlsDownloads.mime(sample.url) != null) return sample
         phase = "正在测试链路速度"
         val epoch = link.routeEpoch()
         val result: MediaProbe.Result? = try {
@@ -238,12 +248,11 @@ class PlayerActivity : ComponentActivity() {
         }
         val measured = result?.trustedKbps?.takeIf { link.seed(it, epoch) }
         val estimate = link.estimateKbps()
-        return noteChoice(StreamSelection.pick(streams, preferred, estimate), preferred, estimate, measured = measured == estimate)
+        return noteChoice(StreamSelection.pick(streams, preferred, estimate), sample, estimate, measured = measured == estimate)
     }
 
     /** 选了比用户设置更低的档位时说明原因，避免用户以为设置没生效。 */
-    private fun noteChoice(choice: Stream, preferred: String, kbps: Int, measured: Boolean): Stream {
-        val wanted = StreamSelection.preferred(detail?.streams.orEmpty().ifEmpty { listOf(choice) }, preferred) ?: choice
+    private fun noteChoice(choice: Stream, wanted: Stream, kbps: Int, measured: Boolean): Stream {
         if (choice.label != wanted.label && kbps > 0) {
             gestureHint(if (measured) "链路约 ${kbps / 1000} Mbps，已用 ${choice.label}" else "当前网速下自动使用 ${choice.label}")
         }
@@ -258,8 +267,8 @@ class PlayerActivity : ComponentActivity() {
      * 取（必要时重建）播放引擎。
      *
      * Media3 的 `LoadControl` 建好之后不能改，所以缓冲窗口变化只能重建引擎。旧引擎在新引擎
-     * 就位后才释放：降档路径可能正好在旧的 `Player.Listener` 回调里执行，先建后放不会把正在
-     * 上报状态的引擎在回调中抽走。
+     * 就位后才释放：降档路径可能正好在旧的 `Player.Listener` 回调里执行。先解绑 PlayerView
+     * 再释放，避免 Media3 要求同一 SurfaceView 不能同时绑定两个播放器。
      */
     private fun ensureEngine(plan: BufferPlan): ExoPlayer {
         val previous = player
@@ -272,36 +281,61 @@ class PlayerActivity : ComponentActivity() {
             .setBandwidthMeter(app.linkSpeed.meter)
             .build()
         appliedPlan = plan.signature
-        player = created; engineRevision++; playerView?.player = created
-        previous?.let { old -> playerView?.player = created; runCatching { old.stop(); old.release() } }
+        player = created
+        engineRevision++
+        if (previous != null) {
+            playerView?.player = null
+            previous.release()
+        }
         created.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
         created.setHandleAudioBecomingNoisy(true)
         created.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
-                if (created !== player) return
-                status = when (state) { Player.STATE_BUFFERING -> "正在缓冲…"; Player.STATE_READY -> "${stream?.label} · ${if (offline) "离线播放" else if (created.isPlaying) "正在播放" else "已暂停"}"; Player.STATE_ENDED -> "播放完毕"; else -> "准备播放" }
-                playerView?.keepScreenOn = created.isPlaying || state == Player.STATE_BUFFERING
+                if (created !== player || state == Player.STATE_IDLE) return
+                status = when (state) { Player.STATE_BUFFERING -> "正在缓冲…"; Player.STATE_READY -> readyStatus(created); Player.STATE_ENDED -> "播放完毕"; else -> "准备播放" }
+                playerView?.keepScreenOn = created.isPlaying || (created.playWhenReady && state == Player.STATE_BUFFERING)
+                revision++
                 when (state) {
-                    Player.STATE_IDLE -> Unit
                     Player.STATE_BUFFERING -> {
                         phase = if (presented) "正在缓冲" else "正在校准画面"
-                        if (bufferingSince == 0L) { bufferingSince = SystemClock.elapsedRealtime(); countStall() }
+                        if (created.playWhenReady) beginBuffering()
                     }
                     Player.STATE_READY -> { phase = null; presented = true; bufferingSince = 0
                         if (created.duration > 0 && !loop.validFor(created.duration)) { loop = VideoLoopRange(); gestureHint("片源时长已变更，循环区间已清除") }
-                        if (!showingCover && !autoFullscreenApplied && store.bool("auto_fullscreen")) changeFullscreen(true)
-                        startPendingAutoDownload() }
+                        if (!showingCover && !autoFullscreenApplied && store.bool("auto_fullscreen")) changeFullscreen(true) }
                     Player.STATE_ENDED -> { phase = null; bufferingSince = 0
                         if (loop.active && created.playWhenReady) { created.seekTo(loop.startMs); created.play() }
                         else { controls = true; locked = false; savePosition() } }
                 }
             }
-            override fun onIsPlayingChanged(playing: Boolean) { playerView?.keepScreenOn = playing; revision++; if (created.playbackState == Player.STATE_READY) status = "${stream?.label} · ${if (playing) { if (offline) "离线播放" else "正在播放" } else "已暂停"}" }
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (created !== player) return
+                if (resumed || pipMode) resumePlay = playWhenReady
+                if (created.playbackState == Player.STATE_BUFFERING) {
+                    playerView?.keepScreenOn = playWhenReady
+                    if (playWhenReady) beginBuffering() else bufferingSince = 0
+                }
+                revision++
+            }
+            override fun onIsPlayingChanged(playing: Boolean) {
+                if (created !== player) return
+                if (playing) hasPlayed = true
+                playerView?.keepScreenOn = playing || (created.playWhenReady && created.playbackState == Player.STATE_BUFFERING)
+                if (created.playbackState == Player.STATE_READY) status = readyStatus(created)
+                revision++
+            }
+            override fun onRenderedFirstFrame() {
+                if (created === player && !showingCover && autoDownloadPending) {
+                    val target = stream ?: return
+                    autoDownloadPending = false
+                    runCatching { app.playback.add(video, target) }.onFailure { toast("自动下载未开始：${it.message}") }
+                }
+            }
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 if (created === player) updateFullscreenOrientation(videoSize)
             }
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-                if (reason == Player.DISCONTINUITY_REASON_SEEK && !loop.contains(newPosition.positionMs)) {
+                if (created === player && reason == Player.DISCONTINUITY_REASON_SEEK && !loop.contains(newPosition.positionMs)) {
                     loop = VideoLoopRange(); gestureHint("已跳出循环区间，循环已清除")
                 }
             }
@@ -320,12 +354,8 @@ class PlayerActivity : ComponentActivity() {
                         val fresh = app.repository.detail(video.url)
                         val recovered = StreamSelection.afterRefresh(fresh.streams, failed, app.linkSpeed.estimateKbps())
                         detail = fresh
-                        if (pendingAutoDownload != null) pendingAutoDownload = recovered
                         if (recovered.label != failed.label) gestureHint("原清晰度已不可用，已切换到 ${recovered.label}")
-                        val autoplay = if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-                            player?.playWhenReady ?: resumePlay
-                        } else resumePlay
-                        open(recovered, position, autoplay)
+                        open(recovered, position)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -337,50 +367,77 @@ class PlayerActivity : ComponentActivity() {
         return created
     }
 
-    private fun open(value: Stream, start: Long, autoplay: Boolean = true) {
-        if (isFinishing || isDestroyed || !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
-        stream = value; position = start
+    private fun open(value: Stream, start: Long) {
+        stream = value
+        position = start
+        needsPrepare = true
         pendingError = null; failureVisible = false; phase = if (presented) "正在缓冲" else "正在校准画面"
         bufferingSince = 0
-        val engine = ensureEngine(bufferPlanFor(value))
-        val item = if (local != null) MediaItem.fromUri(value.url)
-            else app.playback.item(video, value)
-        val hlsKey = HlsDownloads.mime(value.url)?.let { app.playback.key(video, value.label) }
-        val streamingCache = store.bool("stream_cache")
-        val seekEnabled = local == null && !offline && offlineId == null && cachedKey == null && store.bool("seek_cache", true)
-        val sessionKey = if (seekEnabled && hlsKey == null) app.playback.key(video, value.label) else null
-        val sources = app.playback.sourceFactory(offline && local == null, video.site, sourceRoot, hlsKey, streamingCache, sessionKey)
-        hlsSeekSession?.close()
-        val hlsSeek = if (seekEnabled && hlsKey != null && !streamingCache) app.playback.openHlsSeekSession() else null
-        hlsSeekSession = hlsSeek
-        val mediaSource = if (hlsSeek != null) {
-            val chunks = app.playback.sourceFactory(siteId = video.site, sourceRoot = sourceRoot, hlsKey = hlsKey, hlsSeek = hlsSeek)
-            HlsMediaSource.Factory(HlsDataSourceFactory { type -> (if (type == C.DATA_TYPE_MEDIA) chunks else sources).createDataSource() })
-                .setPlaylistParserFactory(hlsSeek.playlistParsers).createMediaSource(item)
-        } else DefaultMediaSourceFactory(sources).createMediaSource(item)
-        engine.setMediaSource(mediaSource, start.coerceAtLeast(0)); engine.setPlaybackSpeed(userRate); engine.prepare(); engine.playWhenReady = autoplay
+        preparePlayback()
     }
+
+    private fun preparePlayback() {
+        val value = stream ?: return
+        if ((!resumed && !pipMode) || isFinishing || isDestroyed) return
+        needsPrepare = false
+        try {
+            val engine = ensureEngine(bufferPlanFor(value))
+            val item = if (local != null) MediaItem.fromUri(value.url) else app.playback.item(video, value)
+            val hlsKey = HlsDownloads.mime(value.url)?.let { app.playback.key(video, value.label) }
+            val streamingCache = !offline && store.bool("stream_cache")
+            val seekEnabled = !offline && store.bool("seek_cache", true)
+            hlsSeekSession?.close()
+            val hlsSeek = if (seekEnabled && hlsKey != null && !streamingCache) app.playback.openHlsSeekSession() else null
+            hlsSeekSession = hlsSeek
+            val mediaSource = when {
+                local != null -> DefaultMediaSourceFactory(DefaultDataSource.Factory(this)).createMediaSource(item)
+                hlsKey != null -> {
+                    val sources = app.playback.hlsSourceFactory(offline, video.site, sourceRoot, hlsKey, streamingCache, hlsSeek)
+                    HlsMediaSource.Factory(sources).apply {
+                        if (hlsSeek != null) setPlaylistParserFactory(hlsSeek.playlistParsers)
+                    }.createMediaSource(item)
+                }
+                else -> {
+                    val sessionKey = if (seekEnabled) app.playback.key(video, value.label) else null
+                    val sources = app.playback.sourceFactory(offline, video.site, sourceRoot, cacheStreaming = streamingCache, sessionKey = sessionKey)
+                    DefaultMediaSourceFactory(sources).createMediaSource(item)
+                }
+            }
+            engine.setMediaSource(mediaSource, position.coerceAtLeast(0))
+            engine.setPlaybackSpeed(userRate)
+            engine.playWhenReady = resumePlay
+            engine.prepare()
+        } catch (error: Exception) {
+            playbackError(error)
+        }
+    }
+
     private fun playbackError(error: Throwable) {
         bufferingSince = 0
-        pendingError = error; phase = null; status = "播放失败：${error.message}"; failureVisible = true; controls = true; locked = false
+        val token = intent.getStringExtra("queue_session")
+        val stoppedQueue = offline && app.queue.session(token, video)?.offlineOnly == true
+        if (stoppedQueue && token != null) app.queue.endCurrent(token, video)
+        pendingError = error; phase = null; failureVisible = true; controls = true; locked = false
+        status = "播放失败：${error.message}" + if (stoppedQueue) "，离线片单已停止" else ""
     }
+
     private fun restart() {
         refreshJob?.cancel()
         refreshed = false; autoDowngrades = 0; stallsInWindow = 0
+        resumePlay = !showingCover
         val current = stream
         if (current != null) open(current, if (pendingError != null) position else 0) else load()
     }
 
-    /**
-     * 首帧就绪后才真正入队自动下载。
-     *
-     * 以前在拿到播放地址的同一刻就 `add()`，Downloads 立刻和播放抢带宽（并行 2 个任务），在
-     * 250 KB/s 的链路上等于把起播时间翻倍。现在先让画面出来，再开始写盘；只做一次。
-     */
-    private fun startPendingAutoDownload() {
-        val target = pendingAutoDownload ?: return
-        pendingAutoDownload = null
-        runCatching { app.playback.add(video, target) }.onFailure { toast("自动下载未开始：${it.message}") }
+    private fun readyStatus(engine: ExoPlayer): String {
+        val state = if (!engine.isPlaying) "已暂停" else if (offline) "离线播放" else "正在播放"
+        return "${stream?.label} · $state"
+    }
+
+    private fun beginBuffering() {
+        if (bufferingSince != 0L) return
+        bufferingSince = SystemClock.elapsedRealtime()
+        countStall()
     }
 
     /** 记一次卡顿；窗口过期就重新计数，避免十几次轻微抖动累加成一个“持续卡顿”。 */
@@ -410,7 +467,7 @@ class PlayerActivity : ComponentActivity() {
         val lower = StreamSelection.lower(detail?.streams.orEmpty(), current) ?: return
         autoDowngrades++; lastDowngradeAt = now; bufferingSince = 0; stallsInWindow = 0; stallWindowStart = now
         gestureHint("网络跟不上 ${current.label}，已自动降到 ${lower.label}")
-        open(lower, engine.currentPosition, engine.playWhenReady)
+        open(lower, engine.currentPosition)
     }
     @Composable private fun Content() {
         // 普通详情交给系统返回，保留跨 Activity 的预测性返回动画。
@@ -432,8 +489,13 @@ class PlayerActivity : ComponentActivity() {
             if (!coverVisible) Box((if (fullscreen || pipMode) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(minOf(windowSizeDp().width * 9f / 16f, windowSizeDp().height * .55f).dp))
                 .background(Color.Black).testTag("player-surface")) {
                 AndroidView(factory = { context -> PlayerView(context).also { view ->
-                    playerView = view; view.useController = false; view.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER); installGestures(view); view.player = engine
-                } }, modifier = Modifier.fillMaxSize(), update = { it.player = engine }, onRelease = { it.player = null; playerView = null })
+                    playerView = view; view.useController = false; view.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER); installGestures(view)
+                } }, modifier = Modifier.fillMaxSize(), update = { view ->
+                    if (view.player !== engine) view.player = engine
+                }, onRelease = { view ->
+                    view.player = null
+                    if (playerView === view) playerView = null
+                })
                 phase?.let { loading ->
                     Box(Modifier.fillMaxSize().background(palette.bottom.copy(alpha = .84f)), contentAlignment = Alignment.Center) {
                         Loading(title = loading)
@@ -463,7 +525,8 @@ class PlayerActivity : ComponentActivity() {
         val source = SiteRegistry.byIdOrDefault(video.site)
         val height = (windowSizeDp().height * .42f).dp.coerceIn(220.dp, 390.dp)
         Box(Modifier.fillMaxWidth().heightIn(min = height).artworkReveal(video.entryKey).testTag("video-poster-detail")) {
-            SiteImage(video.thumb, source, Modifier.matchParentSize())
+            val cover = video.thumb.takeIf { !offline || it.startsWith("/") || it.startsWith("file:") }.orEmpty()
+            SiteImage(cover, source, Modifier.matchParentSize())
             Box(Modifier.matchParentSize().background(Brush.verticalGradient(
                 0f to palette.bottom.copy(alpha = .48f), .30f to Color.Transparent, .53f to Color.Transparent, 1f to palette.bottom)))
             Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 9.dp, vertical = 3.dp),
@@ -515,6 +578,7 @@ class PlayerActivity : ComponentActivity() {
         revision++
     }
     @Composable private fun BoxScope.VideoControls(engine: ExoPlayer?, palette: ArtworkPalette) {
+        @Suppress("UNUSED_VARIABLE") val changed = revision
         var current by remember(engine) { mutableLongStateOf(position) }
         var duration by remember(engine) { mutableLongStateOf(0) }
         var scrubbing by remember(engine) { mutableStateOf(false) }
@@ -536,7 +600,7 @@ class PlayerActivity : ComponentActivity() {
                     snapshotFlow { previewTarget }.buffer(Channel.CONFLATED).collect { requested ->
                         if (requested == previewTarget) {
                             val frame = requested?.let { preview.frameAt(it) }
-                            if (requested == previewTarget) previewFrame = if (frame != null && requested != null) requested to frame else null
+                            if (requested == previewTarget) previewFrame = if (requested != null && frame != null) requested to frame else null
                         }
                     }
                 } finally {
@@ -593,9 +657,15 @@ class PlayerActivity : ComponentActivity() {
                 }
                 Row(Modifier.fillMaxWidth().then(plate).padding(start = 3.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    val playing = engine?.isPlaying == true
+                    val playing = engine?.let { it.playbackState != Player.STATE_ENDED && it.playWhenReady } == true
                     IconButton(onClick = {
-                        engine?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); if (it.isPlaying) it.pause() else it.play() }
+                        engine?.let {
+                            when {
+                                it.playbackState == Player.STATE_ENDED -> { it.seekTo(0); it.play() }
+                                it.playWhenReady -> it.pause()
+                                else -> it.play()
+                            }
+                        }
                     }, enabled = engine != null, modifier = Modifier.size(48.dp)) {
                         Box(Modifier.size(36.dp).background(if (engine == null) palette.edge else palette.accent, CircleShape),
                             contentAlignment = Alignment.Center) {
@@ -762,7 +832,7 @@ class PlayerActivity : ComponentActivity() {
             refreshJob?.cancel()
             refreshed = false
             if (selected == stream && engine?.isPlaying == true && pendingError == null) return@choose
-            open(selected, engine?.currentPosition ?: position, engine?.playWhenReady ?: true)
+            open(selected, engine?.currentPosition ?: position)
         }
     }
     private fun speed() { val rates = listOf(.25f, .5f, .75f, 1f, 1.25f, 1.5f, 2f, 3f); dialogs.choose("播放速度", rates.map { "${it}×" }, rates.indexOf(userRate)) { userRate = rates[it]; store.set("native_speed", userRate.toString()); player?.setPlaybackSpeed(userRate) } }
@@ -932,31 +1002,56 @@ class PlayerActivity : ComponentActivity() {
     }
     private fun savePosition() {
         val engine = player ?: return
+        if (needsPrepare) return
         val ended = engine.playbackState == Player.STATE_ENDED
         val duration = engine.duration.takeIf { it > 0 } ?: durationSeconds(video.duration) * 1000
         position = if (ended && duration > 0) duration else engine.currentPosition.coerceAtLeast(0)
-        store.saveWatch(Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000,
-            quality = stream?.label.orEmpty(), site = video.site, ended = ended))
+        // The cover can prepare a paused engine even when the user only browses the detail page.
+        if (!hasPlayed) return
+        val progress = Watch(video.id, video.title, video.thumb, video.url, position / 1000, duration / 1000,
+            at = 0, quality = stream?.label.orEmpty(), site = video.site, ended = ended)
+        if (progress == savedProgress) return
+        store.saveWatch(progress.copy(at = System.currentTimeMillis()))
+        savedProgress = progress
     }
-    override fun onSaveInstanceState(outState: Bundle) { savePosition(); outState.putLong("position", position); outState.putBoolean("fullscreen", fullscreen); outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied); outState.putBoolean("resumePlay", player?.playWhenReady ?: resumePlay); outState.putBoolean("showingCover", showingCover); outState.putBoolean("locked", locked); outState.putLong("pauseAt", pauseAt); outState.putLong("loopA", loop.startMs); outState.putLong("loopB", loop.endMs); super.onSaveInstanceState(outState) }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        savePosition()
+        outState.putLong("position", position)
+        outState.putBoolean("fullscreen", fullscreen)
+        outState.putBoolean("autoFullscreenApplied", autoFullscreenApplied)
+        outState.putBoolean("resumePlay", resumePlay)
+        outState.putBoolean("showingCover", showingCover)
+        outState.putBoolean("autoDownloadPending", autoDownloadPending)
+        outState.putBoolean("locked", locked)
+        outState.putLong("pauseAt", pauseAt)
+        outState.putLong("loopA", loop.startMs)
+        outState.putLong("loopB", loop.endMs)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onResume() {
         super.onResume()
-        window.decorView.post {
-            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || stream == null ||
-                refreshJob?.isActive == true || pendingError != null) return@post
-            val engine = player
-            // 引擎存在说明只经历了暂停/恢复（例如上面盖了半透明界面而未 onStop）：
-            // 此时 onPause 已经把播放停掉了，必须显式续播，否则画面一直停着。
-            if (engine == null) open(stream!!, position, resumePlay)
-            else if (resumePlay && !pipMode && !engine.isPlaying && engine.playbackState != Player.STATE_ENDED) engine.play()
-        }
+        resumed = true
+        if (refreshJob?.isActive == true || pendingError != null) return
+        val engine = player
+        if (needsPrepare || engine == null) preparePlayback()
+        else if (engine.playbackState != Player.STATE_ENDED) engine.playWhenReady = resumePlay
     }
-    override fun onPause() { resumePlay = player?.playWhenReady ?: resumePlay; savePosition(); if (!pipMode && !enteringPip) player?.pause(); super.onPause() }
+
+    override fun onPause() {
+        resumed = false
+        savePosition()
+        if (!pipMode && !enteringPip) player?.pause()
+        super.onPause()
+    }
+
     override fun onStop() {
         savePosition()
         playerView?.player = null
-        player?.release()
+        val engine = player
         player = null
+        engine?.release()
         hlsSeekSession?.close()
         hlsSeekSession = null
         appliedPlan = null

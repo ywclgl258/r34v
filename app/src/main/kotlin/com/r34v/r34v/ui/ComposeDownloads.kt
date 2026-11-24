@@ -66,7 +66,7 @@ private data class FilteredDownloads(
     val counts: IntArray,
 )
 
-private fun downloadSiteName(id: String) = SiteRegistry.byId(id)?.name ?: SiteRegistry.retiredVideoHosts[id] ?: id
+private fun downloadSiteName(id: String) = SiteRegistry.displayName(id)
 
 private fun galleryCategory(site: String) = when (SiteRegistry.byId(site)?.category) {
     SiteCategory.VIDEO, SiteCategory.PHOTO -> SiteCategory.PHOTO
@@ -110,12 +110,7 @@ private fun galleryCategory(site: String) = when (SiteRegistry.byId(site)?.categ
                         tasks.map { it.first.request.id to it.first.state }, books.map { it.id to it.state })
                     val before = signature()
                     if (scanned != before) {
-                        val known = tasks.map { (task, meta) ->
-                            LibraryRecord(kind = LibraryRecord.KIND_VIDEO, site = meta.site, id = meta.video.id, quality = meta.quality,
-                                cacheKey = task.request.id, title = meta.video.title, url = meta.video.url, thumb = meta.video.thumb,
-                                duration = meta.video.duration, bytes = task.bytesDownloaded, at = task.startTimeMs,
-                                state = if (task.state == Download.STATE_COMPLETED) LibraryRecord.STATE_COMPLETED else LibraryRecord.STATE_PARTIAL)
-                        }
+                        val known = tasks.mapNotNull { (task, meta) -> app.playback.libraryRecord(task, meta) }
                         disk = app.index.scan(app.playback::cached, known)
                         // An invalidation during the scan must still be observed on the next event.
                         scanned = before
@@ -553,8 +548,9 @@ private fun galleryCategory(site: String) = when (SiteRegistry.byId(site)?.categ
                                 dialogs.confirm("删除这份下载？", "删除", "将删除已下载图页。") {
                                     act("disk:${record.site}:${record.id}") {
                                         val book = app.galleryDownloads.task(record.video)
-                                        if (book != null) app.galleryDownloads.remove(book.id) else withContext(Dispatchers.IO) {
-                                            app.galleries.removeDownload(record.video)
+                                        if (book != null) app.galleryDownloads.removeRestored(record.video, record.sourceRoot)
+                                        else withContext(Dispatchers.IO) {
+                                            app.galleries.removeDownload(record.video, knownRoot = record.sourceRoot)
                                             app.index.forgetComic(record.site, record.id)
                                         }
                                     }

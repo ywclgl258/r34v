@@ -31,7 +31,8 @@ import java.security.MessageDigest
  * and a restart applies it, because Media3's SimpleCache binds its index to one absolute path
  * while open and cannot be relocated underneath a running download manager.
  */
-class StorageRoot(private val context: Context, private val store: LibraryStore, private val rootOverride: File? = null) {
+class StorageRoot(private val context: Context, private val store: LibraryStore, private val rootOverride: File? = null,
+    private val sharedPermission: (() -> Boolean)? = null) {
     enum class Mode { PRIVATE, SHARED }
 
     data class Layout(val mode: Mode, val root: File) {
@@ -82,6 +83,7 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
     private fun userChosen() = read("requested") != null
 
     @Volatile private var adopted = false
+    @Volatile private var startupSaveFailed = false
     private var boundMode: Mode? = null
     @Volatile var changing: Boolean = false
         private set
@@ -91,8 +93,12 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         changing = true
     }
     fun endChange() { changing = false }
+    internal val canWriteDownloads get() = !changing && !pendingRestart && !startupSaveFailed
+
     fun checkDownloadsAllowed() {
-        check(!changing && !pendingRestart) { "下载位置已准备切换，请重启应用后继续下载" }
+        check(canWriteDownloads) {
+            if (startupSaveFailed) SAVE_FAILED_NOTICE else "下载位置已准备切换，请重启应用后继续下载"
+        }
     }
 
     /**
@@ -139,17 +145,17 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         if (sharedLibraryPresent()) runCatching { markApplied(Mode.SHARED) }
     }
 
-    val applied: Mode get() = if (read("applied") == SHARED_ID) Mode.SHARED else Mode.PRIVATE
+    val applied: Mode get() = if (!startupSaveFailed && read("applied") == SHARED_ID) Mode.SHARED else Mode.PRIVATE
 
     val requested: Mode get() = if (read("requested") == SHARED_ID) Mode.SHARED else Mode.PRIVATE
 
-    val pendingRestart: Boolean get() = read("pending") == "1"
+    val pendingRestart: Boolean get() = !startupSaveFailed && read("pending") == "1"
 
     /** True when the user really holds the permission this mode needs right now. */
     fun granted(): Boolean = when {
         sharedRoot == null -> false
         // A test-injected root lives inside the sandbox, which needs no all-files grant.
-        rootOverride != null -> true
+        rootOverride != null -> sharedPermission?.invoke() ?: true
         Build.VERSION.SDK_INT >= 30 -> runCatching { Environment.isExternalStorageManager() }.getOrDefault(false)
         else -> ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
     }
@@ -187,17 +193,60 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         readableLayouts().firstOrNull { it.root.canonicalPath == File(path).canonicalPath }
             ?: error("下载来源目录不可用，请检查存储权限")
 
+    internal fun isSharedSource(path: String): Boolean = path.isNotBlank() && sharedRoot?.let {
+        runCatching { it.canonicalFile == File(path).canonicalFile }.getOrDefault(false)
+    } == true
+
+    private fun sharedComics(): Set<String> = store.prefs.getStringSet(key("shared_comics"), emptySet()).orEmpty()
+
+    /** A shared root can be hidden from the readable layouts as soon as permission is revoked. */
+    internal fun galleryRemovalLayouts(sourceRoot: String = "", knownRoot: String = "", relativeFolder: String = ""): List<Layout> {
+        val hasSharedCopy = isSharedSource(sourceRoot) || (sourceRoot.isBlank() &&
+            (isSharedSource(knownRoot) ||
+                (relativeFolder.isNotBlank() && (relativeFolder in sharedComics() ||
+                    sharedRoot?.let { File(layoutOf(Mode.SHARED).comics, relativeFolder).exists() } == true))))
+        check(!hasSharedCopy || granted()) { "公共下载目录权限不可用，请重新授权后重试删除" }
+        return if (sourceRoot.isBlank()) readableLayouts() else listOf(sourceLayout(sourceRoot))
+    }
+
+    @Synchronized internal fun noteSharedGallery(relativeFolder: String) {
+        if (relativeFolder.isBlank()) return
+        val current = sharedComics()
+        if (relativeFolder in current) return
+        store.prefs.edit().putStringSet(key("shared_comics"), current + relativeFolder).apply()
+    }
+
+    @Synchronized internal fun forgetSharedGallery(relativeFolder: String) {
+        val current = sharedComics()
+        if (relativeFolder !in current) return
+        val next = current - relativeFolder
+        val edit = store.prefs.edit()
+        if (next.isEmpty()) edit.remove(key("shared_comics")) else edit.putStringSet(key("shared_comics"), next)
+        edit.apply()
+    }
+
+    @Synchronized internal fun syncSharedGalleries(present: Set<String>) {
+        if (!granted()) return
+        val current = sharedComics()
+        if (current == present) return
+        val edit = store.prefs.edit()
+        if (present.isEmpty()) edit.remove(key("shared_comics")) else edit.putStringSet(key("shared_comics"), present)
+        edit.apply()
+    }
+
     /** Call before anything binds a cache to a directory. Returns a notice when the switch rolls back. */
-    fun applyPendingOnStart(): String? {
+    @Synchronized fun applyPendingOnStart(): String? {
         if (!pendingRestart) return null
         val target = requested
-        if (target == Mode.PRIVATE || sharedWritable(createDirectories = false)) {
-            markApplied(target)
-            return null
+        val targetAvailable = target == Mode.PRIVATE || sharedWritable(createDirectories = false)
+        try {
+            markApplied(if (targetAvailable) target else Mode.PRIVATE, switchFailed = !targetAvailable)
+        } catch (error: IOException) {
+            startupSaveFailed = true
+            adopted = true
+            return SAVE_FAILED_NOTICE
         }
-        // The migration copied files. Keep both copies and allow downloads on the private root.
-        markApplied(Mode.PRIVATE, switchFailed = true)
-        return SWITCH_FAILED_NOTICE
+        return if (targetAvailable) null else SWITCH_FAILED_NOTICE
     }
 
     /** Creates the folders for [mode] and drops a `.nomedia` so art never lands in the gallery. */
@@ -226,6 +275,7 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
     }.getOrDefault(false)
 
     fun describe(): String = when {
+        startupSaveFailed -> "应用内存储（下载位置保存失败）"
         pendingRestart -> "${if (requested == Mode.SHARED) "公共目录" else "应用内存储"}（重启后生效）"
         read("switch_failed") == "1" -> "应用内存储（公共目录切换失败）"
         applied == Mode.SHARED && !granted() -> "公共目录权限已撤销，请重新授权或重启应用"
@@ -240,6 +290,7 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         val writable = granted && sharedWritable()
         return Status(applied, requested, granted, writable, layout().root.path, pendingRestart,
             note = when {
+                startupSaveFailed -> SAVE_FAILED_NOTICE
                 read("switch_failed") == "1" -> SWITCH_FAILED_NOTICE
                 sharedRoot == null -> "未检测到可写的外部存储卷"
                 applied == Mode.SHARED && !granted -> "所有文件访问权限已被撤销，请重新授权或重启后使用应用内存储"
@@ -257,22 +308,34 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
 
     fun choose(mode: Mode) = write(key("requested"), if (mode == Mode.SHARED) SHARED_ID else PRIVATE_ID)
 
-    fun markPending() = write(key("pending"), "1")
-
-    fun requestOnRestart(mode: Mode) {
-        check(store.prefs.edit().putString(key("requested"), if (mode == Mode.SHARED) SHARED_ID else PRIVATE_ID)
-            .putString(key("pending"), "1").commit()) { "无法保存下载位置设置" }
+    @Synchronized fun requestOnRestart(mode: Mode) {
+        val previous = listOf("requested", "pending", "applied").associateWith(::read)
+        val edit = store.prefs.edit().putString(key("requested"), if (mode == Mode.SHARED) SHARED_ID else PRIVATE_ID)
+            .putString(key("pending"), "1")
+        if (startupSaveFailed) edit.putString(key("applied"), PRIVATE_ID)
+        commitLocation(edit, previous)
+        startupSaveFailed = false
     }
 
-    fun markApplied(mode: Mode) = markApplied(mode, switchFailed = false)
+    @Synchronized fun markApplied(mode: Mode) = markApplied(mode, switchFailed = false)
 
     @android.annotation.SuppressLint("UseKtx") // KTX edit returns Unit, so it cannot report a failed commit.
     private fun markApplied(mode: Mode, switchFailed: Boolean) {
+        val previous = listOf("applied", "pending", "requested", "switch_failed").associateWith(::read)
         val id = if (mode == Mode.SHARED) SHARED_ID else PRIVATE_ID
         val edit = store.prefs.edit().putString(key("applied"), id).remove(key("pending"))
         if (switchFailed) edit.putString(key("requested"), id).putString(key("switch_failed"), "1")
         else edit.remove(key("switch_failed"))
-        check(edit.commit()) { "无法保存下载位置设置" }
+        commitLocation(edit, previous)
+    }
+
+    private fun commitLocation(editor: android.content.SharedPreferences.Editor, previous: Map<String, String?>) {
+        if (runCatching { editor.commit() }.getOrDefault(false)) return
+        // SharedPreferences updates its in-process values even when the disk commit fails.
+        val restore = store.prefs.edit()
+        previous.forEach { (name, value) -> if (value == null) restore.remove(key(name)) else restore.putString(key(name), value) }
+        runCatching { restore.commit() }
+        throw IOException("无法保存下载位置设置")
     }
 
     private fun write(name: String, value: String) = check(store.prefs.edit().putString(name, value).commit()) { "无法保存下载位置设置" }
@@ -403,6 +466,8 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
                 } finally { temporary.delete() }
         }
         completeCopies.forEach { (_, to) -> check(GalleryRepository.isCompleteDownload(to, store.gson)) { "迁移后的图集不完整，下载位置未切换" } }
+        (bookFolders.map { it.relativeTo(source.comics).path } + preservedBooks)
+            .forEach { noteSharedGallery(it.replace(File.separatorChar, '/')) }
         currentCoroutineContext().ensureActive()
         requestOnRestart(Mode.SHARED)
         "已复制 $copied 个文件（跳过 $skipped 个），共 ${done / (1024 * 1024)} MB；重启后生效，应用内原文件保留"
@@ -413,5 +478,6 @@ class StorageRoot(private val context: Context, private val store: LibraryStore,
         private const val PRIVATE_ID = "private"
         private const val SHARED_ID = "shared"
         private const val SWITCH_FAILED_NOTICE = "公共目录不可用，已继续使用应用内存储。现有文件保留，可在下载位置中重试。"
+        private const val SAVE_FAILED_NOTICE = "下载位置保存失败，本次使用应用内存储。请检查存储空间后，在下载位置中重试。"
     }
 }

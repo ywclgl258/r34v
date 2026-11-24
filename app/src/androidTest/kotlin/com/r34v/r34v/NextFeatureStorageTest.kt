@@ -128,4 +128,23 @@ class NextFeatureStorageTest {
             assertEquals(rendered.image.imageUrl, local.imageUri(favorite.video.id, favorite.page))
         } finally { video?.let { local.remove(it.id) }; file.delete(); store.prefs.edit().clear().commit() }
     }
+
+    @Test fun onlyTheRegisteredVideoThumbnailIsLoadableAsACover() {
+        val id = "a".repeat(64)
+        val dir = File(context.filesDir, "local-library/$id").apply { mkdirs() }
+        val otherDir = File(context.filesDir, "local-library/${"b".repeat(64)}").apply { mkdirs() }
+        val local = LocalLibrary(context)
+        try {
+            val image = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+            try { File(dir, "thumb.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+            finally { image.recycle() }
+            File(dir, "video.mp4").writeText("video")
+            File(dir, "book.json").writeText(com.google.gson.Gson().toJson(LocalBook(id, "视频", listOf("video.mp4"), 5, kind = "video", thumb = "thumb.png")))
+            assertTrue(local.ownsThumbnail(File(dir, "thumb.png").absolutePath))
+            assertFalse(local.ownsThumbnail(File(dir, "video.mp4").absolutePath))
+            assertFalse(local.ownsThumbnail("file://${dir.path}/thumb.png"))
+            assertFalse(local.ownsThumbnail("https://example.invalid/thumb.png"))
+            assertFalse(local.ownsThumbnail(File(otherDir, "thumb.png").absolutePath))
+        } finally { dir.deleteRecursively(); otherDir.deleteRecursively() }
+    }
 }

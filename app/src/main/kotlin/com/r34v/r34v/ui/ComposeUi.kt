@@ -48,9 +48,6 @@ val ControlFocusColor = Color(0xff485459)
 val SelectedControlColor = RentalPaper
 val MutedColor = RentalMuted
 val BrandColor = RentalRed
-val MatchColor = Color(0xff46d369)
-val GlassTopColor = Color(0xee202020)
-val GlassBottomColor = Color(0xf0121212)
 
 @Composable fun filledFieldColors(): TextFieldColors {
     val colors = MaterialTheme.colorScheme

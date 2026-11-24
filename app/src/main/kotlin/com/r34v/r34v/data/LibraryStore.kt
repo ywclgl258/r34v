@@ -34,8 +34,14 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
     private val dataDir = File(context.applicationInfo.dataDir).canonicalFile
     private val blockedTagRevision = MutableStateFlow(0)
     internal val blockedTagChanges = blockedTagRevision.asStateFlow()
-    private val blockedTagListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == null || key.endsWith(":blocked_tags")) blockedTagRevision.update { it + 1 }
+    private val catalogRevision = MutableStateFlow(0)
+    internal val catalogChanges = catalogRevision.asStateFlow()
+    private val libraryListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        val field = key?.substringAfter(':')
+        if (field == null || field == "blocked_tags") blockedTagRevision.update { it + 1 }
+        when (field) {
+            null, "watch_history_v1", "reading_history_v1", "favorites_v1", "blocked_tags" -> catalogRevision.update { it + 1 }
+        }
     }
 
     /** The site whose data [history], [favorites] and friends currently resolve to. */
@@ -51,7 +57,7 @@ class LibraryStore(context: Context, name: String = "r34v_native", legacyName: S
         siteId = SiteRegistry.byIdOrDefault(prefs.getString("active_site", null) ?: SiteRegistry.R34V.id).id
         migrateToSiteNamespaced()
         retireNetworkOverrides()
-        prefs.registerOnSharedPreferenceChangeListener(blockedTagListener)
+        prefs.registerOnSharedPreferenceChangeListener(libraryListener)
     }
 
     val needsSiteSwitchTutorial get() = !prefs.getBoolean(SITE_SWITCH_TUTORIAL_SEEN, true)

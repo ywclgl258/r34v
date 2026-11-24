@@ -46,6 +46,12 @@ class SiteIsolationTest {
         assertFalse(SiteRegistry.isRegistered("api.github.com"))
     }
 
+    @Test fun librarySourceNamesSupportCurrentRetiredAndUnknownIds() {
+        assertEquals(SiteRegistry.IWARA.name, SiteRegistry.displayName(SiteRegistry.IWARA.id))
+        assertEquals("netflav.com", SiteRegistry.displayName("netflav"))
+        assertEquals("future-source", SiteRegistry.displayName("future-source"))
+    }
+
     @Test fun hanimeRoutesUseQueryParametersNotKvsPaths() {
         val site = SiteRegistry.HANIME1
         val search = HanimeAdapter.resolve(site, FeedRequest(FeedKind.SEARCH, "ネル"))

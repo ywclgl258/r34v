@@ -23,16 +23,19 @@ import java.util.Date
 
 @Composable fun ReaderStatusBar(value: ReadingBehavior, page: Int, total: Int, modifier: Modifier = Modifier) {
     if (!value.showClock && !value.showBattery && !value.showPage && !value.showProgress) return
-    val context = LocalContext.current
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
     var clock by remember { mutableStateOf("") }
     var battery by remember { mutableIntStateOf(-1) }
-    LaunchedEffect(value.showClock, value.showBattery, lifecycle) {
-        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (isActive) {
-                if (value.showClock) clock = DateFormat.getTimeFormat(context).format(Date())
-                if (value.showBattery) battery = context.getSystemService(BatteryManager::class.java).getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                delay(30_000)
+    if (value.showClock || value.showBattery) {
+        val context = LocalContext.current
+        val lifecycle = LocalLifecycleOwner.current.lifecycle
+        LaunchedEffect(value.showClock, value.showBattery, context, lifecycle) {
+            val batteryManager = if (value.showBattery) context.getSystemService(BatteryManager::class.java) else null
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (isActive) {
+                    if (value.showClock) clock = DateFormat.getTimeFormat(context).format(Date())
+                    if (batteryManager != null) battery = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                    delay(30_000)
+                }
             }
         }
     }

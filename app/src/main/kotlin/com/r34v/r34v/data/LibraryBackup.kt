@@ -34,8 +34,7 @@ object BackupCodec {
     fun encode(backup: LibraryBackup, password: CharArray): ByteArray {
         require(password.size >= 8) { "备份密码至少需要 8 个字符" }
         validateBackup(backup)
-        val plain = Gson().toJson(backup).toByteArray(Charsets.UTF_8)
-        require(plain.size <= MAX_BYTES) { "备份数据超过 16 MiB" }
+        val plain = backup.backupPayload(Gson())
         val salt = ByteArray(16).also(random::nextBytes); val iv = ByteArray(12).also(random::nextBytes)
         val header = magic + salt + iv; val derived = key(password, salt)
         return try {
@@ -58,6 +57,10 @@ object BackupCodec {
     }
 }
 
+private fun LibraryBackup.backupPayload(gson: Gson): ByteArray = gson.toJson(this).toByteArray(Charsets.UTF_8).also {
+    require(it.size <= BackupCodec.MAX_BYTES) { "备份数据超过 16 MiB" }
+}
+
 internal val backupBooleans = setOf("translate_tags", "auto_fullscreen", "auto_download", "auto_update", "download_unmetered", "reduce_transparency", "stream_cache", "seek_cache")
 internal val backupStrings = setOf("quality", "native_speed", "cross_search_sites")
 
@@ -66,6 +69,7 @@ private fun backupSupportsSearch(site: String) = site != SiteRegistry.LOCAL.id &
 
 fun validateBackup(value: LibraryBackup) {
     require(value.schema == 1) { "备份版本不受支持，请使用兼容版本的应用" }
+    value.backupPayload(Gson()).fill(0)
     require(value.sites.size <= SiteRegistry.librarySources.size + SiteRegistry.retiredVideoHosts.size &&
         value.sites.map { it.site }.distinct().size == value.sites.size)
     fun source(site: String) = require(backupSupportsSite(site)) { "备份包含未知来源站点" }
@@ -106,7 +110,8 @@ fun validateBackup(value: LibraryBackup) {
         box.entries.forEach { video(it.video); require(it.video.site == site) }
         box.known.forEach { (slug, ids) -> require(slug.isNotBlank() && ids.size <= 1000 && ids.all { it.isNotBlank() }) }
     }
-    fun validSearch(search: SavedSearch) {
+    fun validSearch(raw: SavedSearch) {
+        val search = raw.restored()
         require(search.id.isNotBlank() && search.name.length in 1..80 && search.query.length <= 2048 && !search.condition.isEmpty)
         search.filter.validate()
         require(search.includeTags.size + search.excludeTags.size <= 200 && (search.includeTags + search.excludeTags).all { it.length in 1..200 })
@@ -142,8 +147,10 @@ fun validateBackup(value: LibraryBackup) {
         } else location(favorite.pageUrl, favorite.video.site)
         require(favorite.imageUrl.length <= 16384 && (favorite.imageUrl.isBlank() || favorite.imageUrl.toHttpUrlOrNull()?.isHttps == true))
     }
-    require(personal.channels.size <= 100 && personal.channels.map { it.id }.distinct().size == personal.channels.size)
-    personal.channels.forEach { channel ->
+    val channelIds = mutableSetOf<String>()
+    personal.channels.forEach { raw ->
+        val channel = raw.restored()
+        require(channelIds.add(channel.id)) { "备份包含重复频道" }
         require(channel.id.isNotBlank() && channel.name.length in 1..80 && channel.kind in FeedKind.entries && channel.target.length <= 2048)
         if (channel.site.isNotBlank()) source(channel.site)
         channel.savedSearch?.let(::validSearch)
@@ -165,7 +172,8 @@ fun mergeBackups(local: LibraryBackup, incoming: LibraryBackup): LibraryBackup {
             subscriptions = (a.subscriptions + b.subscriptions).distinctBy { it.slug },
             blocked = (a.blocked + b.blocked).distinct(), searches = (a.searches + b.searches).distinct().take(30))
     }
-    val a = local.personal; val b = incoming.personal
+    val a = local.personal.let { it.copy(savedSearches = it.savedSearches.map(SavedSearch::restored), channels = it.channels.map(DiscoveryChannel::restored)) }
+    val b = incoming.personal.let { it.copy(savedSearches = it.savedSearches.map(SavedSearch::restored), channels = it.channels.map(DiscoveryChannel::restored)) }
     val shelves = (a.shelves.map { it.id } + b.shelves.map { it.id }).distinct().map { id ->
         val first = a.shelves.firstOrNull { it.id == id }; val second = b.shelves.firstOrNull { it.id == id }
         val all = first?.entries.orEmpty() + second?.entries.orEmpty()
@@ -221,9 +229,9 @@ fun LibraryStore.backupSnapshot(): LibraryBackup = synchronized(this) {
 }
 
 fun LibraryStore.restoreBackup(incoming: LibraryBackup) = synchronized(this) {
-    validateBackup(incoming)
     val merged = mergeBackups(backupSnapshot(), incoming)
     validateBackup(merged)
+    merged.backupPayload(gson).fill(0)
     val editor = prefs.edit()
     val previous = prefs.all
     val keys = mutableSetOf<String>()

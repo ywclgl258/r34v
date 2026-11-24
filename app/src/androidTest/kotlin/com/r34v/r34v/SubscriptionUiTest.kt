@@ -160,7 +160,7 @@ class SubscriptionUiTest : ComposeUiCase() {
 
         f.launch(); waitHome(); openSubscriptions(showContent = false)
         checkTag(tag, "联网成功 · 已建立基线 · 新增未读 0 项")
-        assertEquals(mapOf(tag.slug to listOf(baseline.id)), store.personal.inbox(source).known)
+        assertEquals(mapOf(tag.slug to listOf(baseline.entryKey)), store.personal.inbox(source).known)
         assertTrue(store.personal.inbox(source).entries.single().read)
         assertEquals(listOf(source to tag.slug), f.tagRequests())
         assertEquals(SubscriptionInbox(), store.personal.inbox(other.site))
@@ -230,7 +230,7 @@ class SubscriptionUiTest : ComposeUiCase() {
         f.offline = false
         checkTag(tag, "联网成功 · 新增未读 1 项")
         val after = store.personal.inbox(source.id)
-        assertEquals(setOf(baseline.id, unread.id, fresh.id), after.known.getValue(tag.slug).toSet())
+        assertEquals(setOf(baseline.id, unread.id, fresh.id), after.known.getValue(tag.slug).map { it.substringAfter(':') }.toSet())
         assertEquals(setOf(unread.id, fresh.id), after.entries.filterNot { it.read }.map { it.video.id }.toSet())
         assertEquals(List(4) { source.id to tag.slug }, f.tagRequests())
     }

@@ -68,14 +68,16 @@ object StreamSelection {
      * 用户偏好的那一档。
      *
      * 标签对不上时按高度兜底：认得数字就取“不超过该高度里最高的一档”；连数字都没有
-     * （“原画”“自动”）就按旧的 720p 默认值处理，绝不一上来就给最低档。
+     * （“原画”“自动”）就按旧的 720p 默认值处理，未标高度的未知档位也不会被当成最低档。
      */
     fun preferred(streams: List<Stream>, label: String): Stream? {
         if (streams.isEmpty()) return null
         streams.firstOrNull { it.label == label }?.let { return it }
         val ceiling = Regex("\\d+").find(label)?.value?.toIntOrNull()?.takeIf { it > 0 } ?: DEFAULT_CEILING
-        val ordered = streams.sortedByDescending { it.height }
-        return ordered.firstOrNull { it.height in 1..ceiling } ?: ordered.last()
+        val ranked = streams.filter { it.height > 0 }
+        return ranked.filter { it.height <= ceiling }.maxByOrNull { it.height }
+            ?: ranked.minByOrNull { it.height }
+            ?: streams.first()
     }
 
     /**
@@ -87,28 +89,25 @@ object StreamSelection {
      * - 全都不在预算内（链路极差）：仍然给最低档，让播放器有东西可试，而不是报错。
      */
     fun pick(streams: List<Stream>, preferredLabel: String, bandwidthKbps: Int): Stream {
-        require(streams.isNotEmpty()) { "没有可用的清晰度" }
-        val wanted = preferred(streams, preferredLabel) ?: return streams.first()
+        val wanted = requireNotNull(preferred(streams, preferredLabel)) { "没有可用的清晰度" }
         val budget = bandwidthBudget(bandwidthKbps)
-        if (budget <= 0) return wanted
-        if (requiredKbps(wanted) <= budget) return wanted
-        val ceiling = if (wanted.height > 0) wanted.height else Int.MAX_VALUE
-        return streams.sortedByDescending { it.height }
-            .firstOrNull { it.height <= ceiling && requiredKbps(it) <= budget }
-            ?: streams.minByOrNull { it.height }!!
+        if (budget <= 0 || wanted.height <= 0 || requiredKbps(wanted) <= budget) return wanted
+        val lower = lowerCandidates(streams, wanted)
+        return lower.filter { requiredKbps(it) <= budget }.maxByOrNull { it.height }
+            ?: lower.minByOrNull { it.height }
+            ?: wanted
     }
 
     /** 刷新播放地址时保留当前档位，旧档消失时才按当前链路重新选档。 */
-    fun afterRefresh(streams: List<Stream>, previous: Stream, bandwidthKbps: Int): Stream {
-        streams.firstOrNull { it.label == previous.label }?.let { return it }
-        // 有明确分辨率可比较时，不把“原画”等未知档位误当作最低档。
-        val comparable = streams.filter { it.height > 0 }.ifEmpty { streams }
-        return pick(comparable, previous.label, bandwidthKbps)
-    }
+    fun afterRefresh(streams: List<Stream>, previous: Stream, bandwidthKbps: Int): Stream =
+        streams.firstOrNull { it.label == previous.label } ?: pick(streams, previous.label, bandwidthKbps)
 
-    /** 下一档更低的清晰度；已经是最低档时返回 null。 */
+    /** 未标明高度的档位无法比较；同一高度也不算降档。 */
     fun lower(streams: List<Stream>, current: Stream): Stream? =
-        streams.sortedByDescending { it.height }.dropWhile { it.label != current.label }.drop(1).firstOrNull()
+        lowerCandidates(streams, current).maxByOrNull { it.height }
+
+    private fun lowerCandidates(streams: List<Stream>, current: Stream): List<Stream> =
+        streams.filter { it.height > 0 && it.height < current.height }
 
     /** 诊断用：这条链路实际能支撑到哪一档。 */
     fun recommendedLabel(bandwidthKbps: Int): String {

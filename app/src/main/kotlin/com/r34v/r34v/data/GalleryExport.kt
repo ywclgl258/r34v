@@ -44,7 +44,11 @@ class GalleryExporter(private val root: File) {
                     bytesTotal += bytes.size
                     check(bytesTotal <= LocalLibrary.MAX_BOOK) { "本次导出超过 1 GiB，请分批导出" }
                     val mime = imageMime(bytes)
-                    val name = "%06d.%s".format(java.util.Locale.ROOT, page, extension(mime))
+                    val extension = extension(mime, bytes)
+                    if (mime == "image/heic") {
+                        require(galleryContainerMime(bytes) != null) { "HEIF / AVIF 图页不是有效的 ISO 容器" }
+                    }
+                    val name = "%06d.%s".format(java.util.Locale.ROOT, page, extension)
                     if (zip != null) {
                         zip.putNextEntry(ZipEntry(name)); write(bytes, zip); zip.closeEntry()
                     } else {
@@ -69,9 +73,9 @@ class GalleryExporter(private val root: File) {
             check(bounds.outWidth > 0 && bounds.outHeight > 0 && bounds.outMimeType != null) { "图页不是有效图片" }
             return bounds.outMimeType
         }
-        fun extension(mime: String) = when (mime) {
+        fun extension(mime: String, bytes: ByteArray = byteArrayOf()) = when (mime) {
             "image/jpeg" -> "jpg"; "image/png" -> "png"; "image/webp" -> "webp"; "image/gif" -> "gif"; "image/bmp", "image/x-ms-bmp" -> "bmp"
-            "image/avif" -> "avif"; "image/heif", "image/heic" -> "heic"; else -> error("暂不支持此图片格式：$mime")
+            "image/avif" -> "avif"; "image/heif", "image/heic" -> if (galleryContainerMime(bytes) == "image/avif") "avif" else "heic"; else -> error("暂不支持此图片格式：$mime")
         }
         private suspend fun write(bytes: ByteArray, output: OutputStream) {
             var offset = 0
@@ -120,7 +124,7 @@ class GalleryExportModel(application: Application) : AndroidViewModel(applicatio
                         val url = app.galleries.cachedPageUrl(entry, page, sourceRoot)
                             ?: if (offline) error("第 $page 页尚未下载，请先下载或选择已有页")
                             else AdapterRegistry.adapter(site, app.network).galleryPageLink(gallery, page)
-                        app.galleries.originalPage(site, url, galleryUrl = entry.url, entry = entry, offlineOnly = offline, sourceRoot = sourceRoot)
+                        app.galleries.originalPage(site, url, galleryUrl = entry.url, entry = entry, offlineOnly = offline, sourceRoot = sourceRoot, expectedPage = page)
                             .also { check(it.image.index == page) { "图源返回了错误页码" } }.bytes
                     }
                 }) { progress = it }

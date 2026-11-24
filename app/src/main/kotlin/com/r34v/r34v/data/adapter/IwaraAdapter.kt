@@ -48,7 +48,11 @@ class IwaraAdapter(override val site: SiteContext, private val network: Network)
 
     override fun linkRequest(url: String): FeedRequest? = IwaraProtocol.linkRequest(site, url)
 
-    override suspend fun feed(request: FeedRequest): FeedPage {
+    override suspend fun feed(request: FeedRequest): FeedPage = if (request.kind == FeedKind.SUBSCRIPTIONS) {
+        network.withIwaraSession { generation -> feedPage(request, generation) }
+    } else feedPage(request)
+
+    private suspend fun feedPage(request: FeedRequest, accountGeneration: Long? = null): FeedPage {
         val resolved = if (request.kind == FeedKind.MODEL && !IwaraProtocol.isUserId(request.target)) {
             val profileUrl = site.apiBase.toHttpUrl().newBuilder().addPathSegment("profile").addPathSegment(request.target).build()
             val profile = network.json(profileUrl.toString()).asJsonObject
@@ -57,8 +61,10 @@ class IwaraAdapter(override val site: SiteContext, private val network: Network)
             request.copy(target = user)
         } else request
         val page = try {
-            if (request.contentKind == MediaKind.GALLERY) IwaraProtocol.imageFeed(network.json(resolve(resolved)), site, request)
-            else IwaraProtocol.feed(network.json(resolve(resolved)), site, request)
+            val url = resolve(resolved)
+            val data = if (accountGeneration != null) network.iwaraSubscriptionJson(url, accountGeneration) else network.json(url)
+            if (request.contentKind == MediaKind.GALLERY) IwaraProtocol.imageFeed(data, site, request)
+            else IwaraProtocol.feed(data, site, request)
         } catch (error: GalleryResponseException) {
             if (request.kind == FeedKind.SUBSCRIPTIONS && error.status == 401) throw GalleryAccessException("请先在设置中登录 Iwara 账号，关注动态需要登录")
             throw error
@@ -113,12 +119,14 @@ class IwaraAdapter(override val site: SiteContext, private val network: Network)
     /** 功能 F25：账号登录。令牌加密落盘，之后 API 请求自动附带 Bearer；关注动态依赖它。 */
     override suspend fun login(network: Network, username: String, password: String) {
         require(username.isNotBlank() && password.isNotEmpty()) { "请填写用户名和密码" }
+        val generation = network.iwaraSessionGeneration.value
         val response = try { network.postJson(IwaraProtocol.loginEndpoint(site), IwaraProtocol.loginBody(username, password)) }
         catch (error: GalleryResponseException) {
             throw IllegalStateException(if (error.status == 401) "用户名或密码不正确" else "登录失败：HTTP ${error.status}")
         }
         val token = IwaraProtocol.authToken(com.google.gson.JsonParser.parseString(response).asJsonObject)
-        network.saveAuthToken(site.id, token)
+        currentCoroutineContext().ensureActive()
+        network.saveIwaraSession(username, token, generation)
     }
 }
 
@@ -191,14 +199,37 @@ object IwaraProtocol {
 
     fun linkRequest(site: SiteContext, url: String): FeedRequest? {
         val parsed = url.toHttpUrlOrNull() ?: return null
-        if (!site.isSite(parsed.host)) return null
-        val parts = parsed.pathSegments
-        if (parts.firstOrNull() in setOf("profile", "user")) {
-            return parts.getOrNull(1)?.takeIf(String::isNotBlank)?.let { FeedRequest(FeedKind.MODEL, it) }
+        val api = parsed.host in site.apiHosts
+        if (api) {
+            if (!parsed.isHttps || parsed.port != 443 || parsed.username.isNotEmpty() || parsed.password.isNotEmpty()) return null
+        } else {
+            if (!site.isSite(parsed.host)) return null
+            val parts = parsed.pathSegments
+            if (parts.firstOrNull() in setOf("profile", "user")) {
+                return parts.getOrNull(1)?.takeIf(String::isNotBlank)?.let { FeedRequest(FeedKind.MODEL, it) }
+            }
         }
-        val content = if (parts.firstOrNull() == "images") MediaKind.GALLERY else MediaKind.VIDEO
-        parsed.queryParameter("user")?.takeIf(String::isNotBlank)?.let { return FeedRequest(FeedKind.MODEL, it, contentKind = content) }
-        return parsed.queryParameter("tags")?.takeIf(String::isNotBlank)?.let { FeedRequest(FeedKind.TAG, it, contentKind = content) }
+        val path = if (api) parsed.encodedPath else parsed.encodedPath.removeSuffix("/")
+        val content = when (path) {
+            "/images" -> MediaKind.GALLERY
+            "/videos" -> MediaKind.VIDEO
+            else -> return null
+        }
+        val page = if (api) parsed.queryParameter("page")?.let {
+            it.toIntOrNull()?.takeIf { index -> index in 0 until Int.MAX_VALUE }?.plus(1) ?: return null
+        } ?: 1 else 1
+        val sort = when (parsed.queryParameter("sort")) {
+            "trending" -> Sort.TRENDING
+            "popularity" -> Sort.POPULARITY
+            "views" -> Sort.VIEWS
+            "likes" -> Sort.RATING
+            else -> Sort.NEWEST
+        }
+        val tags = parsed.queryParameter("tags").orEmpty().split(',').filter(String::isNotBlank)
+        parsed.queryParameter("user")?.takeIf(String::isNotBlank)?.let {
+            return FeedRequest(FeedKind.MODEL, it, sort, page, includeTags = tags, contentKind = content)
+        }
+        return tags.firstOrNull()?.let { FeedRequest(FeedKind.TAG, it, sort, page, includeTags = tags.drop(1), contentKind = content) }
     }
 
     fun feed(data: JsonElement, site: SiteContext, request: FeedRequest): FeedPage {

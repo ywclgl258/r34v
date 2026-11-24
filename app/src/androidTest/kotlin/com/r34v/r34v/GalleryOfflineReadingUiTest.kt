@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.util.Log
+import android.view.KeyEvent
 import androidx.compose.ui.test.*
 import androidx.core.graphics.scale
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -133,6 +134,189 @@ class GalleryOfflineReadingUiTest : ComposeUiCase() {
                 ui.runOnIdle { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
             }
         }
+    }
+
+    @Test fun completeShortPagesKeepOldOffsetAndCanReachTheEnd() = ComposeFixture().use { fixture ->
+        fixture.shortBook { video, _, requests ->
+            val library = fixture.app.library
+            library.saveReading(ReadingProgress(video, 11, PAGE_COUNT, "", offset = 100))
+            fixture.launchOffline(video)
+            waitForPage(11)
+            ui.waitUntil(10000) { library.reading(video.id, video.site)?.offset == 100 }
+            assertEquals(11, library.reading(video.id, video.site)?.page)
+            ui.onNodeWithContentDescription("下一页").performClick()
+            waitForPage(12)
+            ui.waitUntil(10000) { library.reading(video.id, video.site)?.offset == 0 }
+            assertEquals(12, library.reading(video.id, video.site)?.page)
+            fixture.assertNoGalleryRequests(requests)
+        }
+    }
+
+    @Test fun perBookModeAndRestoreDefaultShareTheCurrentPageAndSavedStripOffset() = ComposeFixture().use { fixture ->
+        fixture.savedSelection { video, _, requests ->
+            val library = fixture.app.library
+            library.personal.setReaderPreferences(video, ReaderPreferences(mode = ReaderMode.STRIP.name))
+            library.personal.setReaderMode(video.site, ReaderMode.LEFT_TO_RIGHT)
+            library.saveReading(ReadingProgress(video, 7, PAGE_COUNT, "", offset = -80))
+            fixture.launchOffline(video)
+            waitForPage(7)
+            readerTool("本书显示设置")
+            clickText("阅读模式 · 上下连续")
+            clickText("向左翻页")
+            waitForPage(7)
+            waitText("7 / $PAGE_COUNT")
+            readerTool("本书显示设置")
+            clickText("恢复来源默认")
+            waitForPage(7)
+            waitText("7 / $PAGE_COUNT")
+            assertEquals(-80, library.reading(video.id, video.site)?.offset)
+            assertEquals(7, library.reading(video.id, video.site)?.page)
+            readerTool("阅读模式")
+            clickText("上下连续")
+            waitForPage(7)
+            assertEquals(-80, library.reading(video.id, video.site)?.offset)
+            fixture.assertNoGalleryRequests(requests)
+        }
+    }
+
+    @Test fun landscapeVolumeKeysUseTheSameSparseSpreadsAsScreenButtons() = ComposeFixture().use { fixture ->
+        fixture.savedSelection { video, _, requests ->
+            fixture.app.library.personal.setReaderPreferences(video, ReaderPreferences(mode = ReaderMode.SPREAD.name))
+            fixture.app.library.personal.setReadingBehavior(video.site, ReadingBehavior(volumeKeys = true))
+            fixture.app.library.saveReading(ReadingProgress(video, 7, PAGE_COUNT, ""))
+            val activity = fixture.launchOffline(video)
+            try {
+                ui.runOnIdle { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }
+                ui.waitUntil(10000) { activity.resources.configuration.screenWidthDp > activity.resources.configuration.screenHeightDp }
+                waitForPage(3); waitForPage(7); waitText("7 / $PAGE_COUNT")
+                fixture.pressVolume(activity, forward = true)
+                waitForPage(11); waitText("11 / $PAGE_COUNT")
+                fixture.pressVolume(activity, forward = false)
+                waitForPage(3); waitForPage(7); waitText("3 / $PAGE_COUNT")
+                ui.onNodeWithContentDescription("上一页").assertIsNotEnabled()
+                fixture.assertNoGalleryRequests(requests)
+            } finally {
+                ui.runOnIdle { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+            }
+        }
+    }
+
+    @Test fun automaticPagingWaitsForEveryLeafOfTheSpread() = ComposeFixture().use { fixture ->
+        fixture.savedSelection { video, _, requests ->
+            val library = fixture.app.library
+            library.personal.setReaderPreferences(video, ReaderPreferences(mode = ReaderMode.SPREAD.name))
+            library.personal.setReadingBehavior(video.site, ReadingBehavior(autoPageSeconds = 1, volumeKeys = true))
+            val activity = fixture.launchOffline(video)
+            try {
+                ui.runOnIdle { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }
+                ui.waitUntil(10000) { activity.resources.configuration.screenWidthDp > activity.resources.configuration.screenHeightDp }
+                waitForPage(3); waitText("3 / $PAGE_COUNT")
+                readerTool("阅读行为")
+                waitText("自动翻页：每 1 秒"); ui.onNodeWithText("自动翻页：每 1 秒").performScrollTo().performClick()
+                waitText("每 3 秒，成功显示后推进"); ui.onNodeWithText("每 3 秒，成功显示后推进").performScrollTo().performClick()
+                ui.waitUntil(10000) { library.reading(video.id, video.site)?.page == 11 }
+                readerTool("阅读行为")
+                waitText("暂停自动翻页"); ui.onNodeWithText("暂停自动翻页").performScrollTo().performClick()
+                waitForPage(11)
+                fixture.assertNoGalleryRequests(requests)
+            } finally {
+                ui.runOnIdle { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+            }
+        }
+    }
+
+    @Test fun bookmarksBeforeDetailAndViewingDetailsDoNotCreateOrChangeHistory() = ComposeFixture().use { fixture ->
+        val video = fixture.video(SiteRegistry.EHENTAI.id)
+        fixture.app.library.saveReading(ReadingProgress(video, 7, PAGE_COUNT, "old-page"))
+        fixture.offline = true
+        val activity = fixture.launchGallery(read = true)
+        waitText("漫画加载失败")
+        fixture.ins.runOnMainSync { activity.recreate() }
+        waitText("漫画加载失败")
+        ui.onNodeWithContentDescription("页码书签").performClick()
+        assertEquals("old-page", fixture.app.library.reading(video.id, video.site)?.pageUrl)
+        fixture.ins.runOnMainSync {
+            ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                .filterIsInstance<GalleryActivity>().single().finish()
+        }
+        fixture.offline = false
+        fixture.launchGallery(read = false)
+        waitText("8 页", substring = true)
+        waitText("继续阅读 · 第 7 页")
+        assertEquals("old-page", fixture.app.library.reading(video.id, video.site)?.pageUrl)
+        fixture.ins.runOnMainSync {
+            ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                .filterIsInstance<GalleryActivity>().single().finish()
+        }
+        assertEquals("old-page", fixture.app.library.reading(video.id, video.site)?.pageUrl)
+    }
+
+    @Test fun offlineQueueStopsWhenSavedPagesAreRemovedBeforeOpening() = ComposeFixture().use { fixture ->
+        fixture.savedSelection { video, _, requests ->
+            val queue = fixture.app.queue.start("Offline", "", listOf(video), offlineOnly = true)
+            fixture.launchOffline(video, queue = queue.id)
+            waitText("顺序打开已停止", substring = true)
+            assertNull(fixture.app.queue.session(queue.id, video))
+            fixture.assertNoGalleryRequests(requests)
+        }
+    }
+
+    @Test fun selectedPageRejectionShowsStorageMessage() = ComposeFixture().use { fixture ->
+        fixture.savedSelection { video, _, requests ->
+            val gson = fixture.app.library.gson
+            val id = fixture.app.galleryDownloads.key(video)
+            val task = GalleryDownload(id, video, state = GalleryDownloadState.QUEUED,
+                total = PAGE_COUNT, pages = 1, selectedPages = listOf(3, 7, 9, 11))
+            fixture.app.getSharedPreferences("gallery_downloads_v1", android.content.Context.MODE_PRIVATE)
+                .edit().putString(id, gson.toJson(task)).commit().also(::assertTrue)
+            fixture.launchOffline(video, read = false)
+            ui.onNodeWithContentDescription("更多图集操作").performClick()
+            clickText("选择页码下载")
+            ui.onNode(hasSetTextAction()).performTextReplacement("7")
+            clickText("确定")
+            waitText("选择页码下载失败")
+            waitText("当前图集已有不同的下载范围，请先暂停任务再更改")
+            fixture.assertNoGalleryRequests(requests)
+        }
+    }
+
+    private fun ComposeFixture.pressVolume(activity: GalleryActivity, forward: Boolean) {
+        ins.runOnMainSync {
+            val key = if (forward) KeyEvent.KEYCODE_VOLUME_UP else KeyEvent.KEYCODE_VOLUME_DOWN
+            activity.onKeyDown(key, KeyEvent(KeyEvent.ACTION_DOWN, key))
+            activity.onKeyDown(key, KeyEvent(KeyEvent.ACTION_UP, key))
+        }
+    }
+
+    private fun ComposeFixture.shortBook(test: (Video, List<Int>, Collection<String>) -> Unit) {
+        val entry = video(SiteRegistry.EHENTAI.id)
+        val root = app.filesDir.absolutePath
+        val folder = app.galleries.downloadDirectory(entry, root).apply { check(mkdirs()) }
+        try {
+            val pages = (1..PAGE_COUNT).map { GalleryPageLink(it, "${entry.url}short-page-$it") }
+            val bytes = ByteArrayOutputStream().apply { writeNeutralImage(600, 200, this) }.toByteArray()
+            File(folder, "book.json").writeText(app.library.gson.toJson(GalleryDetail(entry, PAGE_COUNT, pages, PAGE_COUNT)))
+            File(folder, "complete").writeText(PAGE_COUNT.toString())
+            File(folder, "links.json").writeText(app.library.gson.toJson(mapOf("links" to pages.associate { it.index to it.url })))
+            for (link in pages) {
+                val id = hash(link.url)
+                File(folder, "$id.page.json").writeText(app.library.gson.toJson(GalleryImage(link.index, link.url, "${entry.url}compose-image-${link.index}.png", null, null)))
+                File(folder, "$id.image").writeBytes(bytes)
+            }
+            offline = true
+            val requests = ConcurrentLinkedQueue<String>()
+            val client = app.network.client
+            val clientField = Network::class.java.getDeclaredField("current").apply { isAccessible = true }
+            val recording = client.newBuilder().addInterceptor(Interceptor { chain ->
+                if (chain.request().url.host == "e-hentai.org") {
+                    requests += chain.request().url.encodedPath
+                    throw java.io.IOException("Unexpected HTTP call in offline gallery test")
+                }
+                chain.proceed(chain.request())
+            }).build()
+            clientField.set(app.network, recording)
+            try { test(entry, pages.map { it.index }, requests) } finally { clientField.set(app.network, client) }
+        } finally { folder.deleteRecursively() }
     }
 
     @Test fun onlineSplitThumbnailReusesEncodedBytesForFullPage() = ComposeFixture().use { fixture ->
@@ -266,11 +450,12 @@ class GalleryOfflineReadingUiTest : ComposeUiCase() {
         } finally { folder.deleteRecursively() }
     }
 
-    private fun ComposeFixture.launchOffline(video: Video, read: Boolean = true): GalleryActivity =
+    private fun ComposeFixture.launchOffline(video: Video, read: Boolean = true, queue: String? = null): GalleryActivity =
         ins.startActivitySync(Intent(ins.targetContext, GalleryActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             .putExtra("gallery", app.library.gson.toJson(video)).putExtra("offline", true)
-            .putExtra("read", read).putExtra("root", app.filesDir.absolutePath)) as GalleryActivity
+            .putExtra("read", read).putExtra("root", app.filesDir.absolutePath)
+            .putExtra("queue_session", queue)) as GalleryActivity
 
     private fun ComposeFixture.assertNoGalleryRequests(requests: Collection<String>) {
         assertTrue("HTTP calls attempted during offline reading: $requests", requests.isEmpty())

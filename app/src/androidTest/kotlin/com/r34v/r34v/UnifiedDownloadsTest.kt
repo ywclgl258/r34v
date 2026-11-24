@@ -313,6 +313,43 @@ class UnifiedDownloadsTest : ComposeUiCase() {
         done(f, "hitomi")
     }
 
+    @Test fun failedStorageWriteLeavesTheQueueUsableAndMarksTheTaskFailed() = ComposeFixture().use { f ->
+        notifications(f); f.launch(); waitHome()
+        val entry = f.video("ehentai")
+        val folder = File(f.app.filesDir, "gallery-downloads/${entry.site}/" +
+            java.security.MessageDigest.getInstance("SHA-256").digest(entry.id.toByteArray()).joinToString("") { "%02x".format(it) })
+        folder.mkdirs(); assertTrue(folder.deleteRecursively()); folder.writeText("not a directory")
+        try {
+            runBlocking { f.app.galleryDownloads.add(entry) }
+            ui.waitUntil(20000) { task(f)?.state == GalleryDownloadState.FAILED }
+            assertEquals(GalleryFailureKind.STORAGE, task(f)!!.failure)
+            assertTrue(task(f)!!.completedPages.orEmpty().isEmpty())
+        } finally { folder.delete() }
+        runBlocking { f.app.galleryDownloads.add(entry) }; done(f)
+    }
+
+    @Test fun completedTasksIgnoreAnOutstandingTimeoutCallback() = ComposeFixture().use { f ->
+        notifications(f); f.launch(); waitHome()
+        runBlocking { f.app.galleryDownloads.add(f.video("ehentai")) }; done(f)
+        f.app.galleryDownloads.pauseForTimeout()
+        assertEquals(GalleryDownloadState.COMPLETED, task(f)!!.state)
+    }
+
+    @Test fun legacySelectedTaskIsNotReportedWholeAndOpenRequiresActualFiles() = ComposeFixture().use { f ->
+        notifications(f); f.launch(); waitHome()
+        val entry = f.video("ehentai"); val selected = listOf(1, 3, 5)
+        runBlocking { f.app.galleryDownloads.add(entry, selected) }; done(f)
+        val legacy = task(f)!!.copy(total = selected.size)
+        assertFalse(legacy.partial)
+        assertTrue(f.ins.targetContext.getSharedPreferences("gallery_downloads_v1", Context.MODE_PRIVATE).edit()
+            .putString(legacy.id, f.app.library.gson.toJson(legacy)).commit())
+        val restored = task(f)!!
+        assertTrue(restored.partial)
+        f.app.galleries.downloadDirectory(entry).deleteRecursively()
+        assertFalse(runBlocking { f.app.galleries.isSelectionDownloaded(entry, selected) })
+        runBlocking { f.app.galleryDownloads.remove(restored.id) }
+    }
+
     @Test fun selectedPagesStayPartialAndOpenOfflineWithoutJoiningMissingPages() = ComposeFixture().use { f ->
         notifications(f); f.launch(); waitHome()
         runBlocking { f.app.galleryDownloads.add(f.video("ehentai"), listOf(1, 3, 5)) }; done(f)

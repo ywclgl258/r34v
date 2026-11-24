@@ -42,6 +42,8 @@ class NextStageFeaturesUiTest : ComposeUiCase() {
         ui.onAllNodes(hasSetTextAction()).filterToOne(hasText("最少页数")).performTextReplacement("5")
         closeKeyboard(f)
         clickText("应用条件")
+        clickText("中文")
+        assertEquals(GalleryLanguage.CHINESE, f.app.library.galleryLanguage("nhentai"))
         ui.onNodeWithText("保存搜索方案").performScrollTo().assertIsDisplayed().performClick()
         ui.onAllNodes(hasSetTextAction()).onLast().performTextReplacement("周末图集"); clickText("确定")
         android.os.SystemClock.sleep(5000)
@@ -53,10 +55,35 @@ class NextStageFeaturesUiTest : ComposeUiCase() {
         ui.waitUntil(7000) { ui.onAllNodesWithText("已固定到“我的”中的频道").fetchSemanticsNodes().isEmpty() }
         f.shot("next-stage-discovery-channels")
         clickText("周末图集")
-        ui.waitUntil(15000) { f.requests.any { it.first == "nhentai" && it.second.kind == FeedKind.SEARCH && it.second.target == "city" && it.second.includeTags == listOf("tag:sample") && it.second.filter.minPages == 5 } }
+        ui.waitUntil(15000) { f.requests.any { it.first == "nhentai" && it.second.kind == FeedKind.SEARCH && it.second.target == "city" && it.second.includeTags == listOf("tag:sample") && it.second.filter.minPages == 5 && it.second.language == GalleryLanguage.CHINESE } }
         val channels = f.app.library.personal.snapshot().channels
         assertEquals("周末图集", channels.single().name)
         assertEquals(5, channels.single().savedSearch?.filter?.minPages)
+    }
+
+    @Test fun singleSiteAuthorSearchAndIwaraGalleryChannelSurviveSavingAndRestoring() = ComposeFixture().use { f ->
+        f.app.library.switchSite("iwara"); f.launch(); waitHome(); clickText("搜索"); clickText("作者")
+        ui.onAllNodes(hasSetTextAction()).filterToOne(hasText("搜索关键词")).performTextInput("creator-sample")
+        ui.onNodeWithContentDescription("提交搜索").performClick()
+        ui.waitUntil(15_000) { f.requests.any { it.first == "iwara" && it.second.kind == FeedKind.MODEL && it.second.target == "creator-sample" } }
+        ui.onNodeWithContentDescription("固定当前频道").performClick()
+        ui.onAllNodes(hasSetTextAction()).onLast().performTextReplacement("Iwara 视频作者"); clickText("确定")
+        f.app.library.personal.pinFeed("iwara", FeedRequest(FeedKind.MODEL, "creator-sample", contentKind = MediaKind.GALLERY), "Iwara 图库作者")
+        openPersonalHome()
+        val channels = f.app.library.personal.snapshot().channels
+        assertEquals(setOf(MediaKind.VIDEO, MediaKind.GALLERY), channels.map { it.feedRequest.contentKind }.toSet())
+        ui.onNodeWithTag("personal-home").performScrollToNode(hasText("我的频道"))
+        clickText("Iwara 图库作者")
+        ui.waitUntil(15_000) { f.requests.any { it.first == "iwara" && it.second.kind == FeedKind.MODEL && it.second.target == "creator-sample" && it.second.contentKind == MediaKind.GALLERY } }
+        back(f); clickText("搜索")
+        ui.onAllNodes(hasSetTextAction()).filterToOne(hasText("creator-sample")).performTextReplacement("creator-saved")
+        closeKeyboard(f)
+        ui.onNodeWithText("保存搜索方案").performScrollTo().performClick()
+        ui.onAllNodes(hasSetTextAction()).onLast().performTextReplacement("Iwara 作者方案"); clickText("确定")
+        ui.waitUntil(7_000) { ui.onAllNodesWithText("已保存到常用搜索").fetchSemanticsNodes().isEmpty() }
+        ui.onNodeWithText("Iwara 作者方案").performScrollTo().performClick()
+        ui.waitUntil(15_000) { f.requests.any { it.first == "iwara" && it.second.kind == FeedKind.MODEL && it.second.target == "creator-saved" && it.second.contentKind == MediaKind.VIDEO } }
+        assertEquals(FeedKind.MODEL, f.app.library.personal.snapshot().savedSearches.single().singleSiteScope)
     }
 
     @Test fun playerTimeBookmarksAndSourcePreferencesPersist() = ComposeFixture().use { f ->

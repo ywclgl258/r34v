@@ -1,6 +1,7 @@
 package com.r34v.r34v
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import androidx.core.content.FileProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -54,6 +55,40 @@ class GalleryExportTest {
             }
         } finally { root.deleteRecursively() }
     }
+    @Test fun supportedModernImagesKeepBytesAndContainerTypeThroughCbz() = runBlocking {
+        val formats = listOf("avif", "heic", "gif", "webp")
+        val testAssets = InstrumentationRegistry.getInstrumentation().context.assets
+        for (format in formats) {
+            val original = testAssets.open("gallery-formats/neutral.$format").use { it.readBytes() }
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(original, 0, original.size, options)
+            if (options.outWidth <= 0) {
+                // HEIF is optional on older devices; a truncated container is still never accepted.
+                val truncated = runCatching {
+                    GalleryExporter(File(context.cacheDir, "exports/skip-${System.nanoTime()}")).prepare("truncated", listOf(1),
+                        ExportMode.CBZ, { original.copyOf(original.size - 8) })
+                }
+                assertTrue(format, truncated.isFailure)
+                continue
+            }
+            val root = File(context.cacheDir, "exports/$format-${System.nanoTime()}")
+            val local = LocalLibrary(context)
+            var imported: Video? = null
+            try {
+                val prepared = GalleryExporter(root).prepare("modern", listOf(1), ExportMode.CBZ, { original })
+                val archive = prepared.files.single().file
+                val expected = if (format == "avif" || galleryContainerMime(original) == "image/avif") "avif" else format
+                ZipFile(archive).use { zip ->
+                    val entry = zip.getEntry("000001.$expected") ?: error("missing $expected in ${archive.length()}")
+                    assertArrayEquals(original, zip.getInputStream(entry).readBytes())
+                }
+                imported = local.importArchive(FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", archive))
+                assertArrayEquals(original, File(java.net.URI(local.imageUri(imported.id, 1)!!)).readBytes())
+                assertTrue(format, isCompleteGalleryImage(File(java.net.URI(local.imageUri(imported.id, 1)!!))))
+            } finally { imported?.let { local.remove(it.id) }; root.deleteRecursively() }
+        }
+    }
+
     @Test fun failedOrCancelledExportRemovesPartialArchive(): Unit = runBlocking {
         val root = File(context.cacheDir, "exports/test-${System.nanoTime()}"); val exporter = GalleryExporter(root)
         try {

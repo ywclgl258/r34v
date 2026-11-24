@@ -40,7 +40,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
-import androidx.media3.exoplayer.offline.Download
 import androidx.core.content.edit
 import com.r34v.r34v.data.*
 import com.r34v.r34v.data.adapter.*
@@ -73,8 +72,10 @@ class MainActivity : ComponentActivity() {
     private var resumed by mutableStateOf(false)
     private var tutorial by mutableStateOf(false)
     private var notice by mutableStateOf<String?>(null)
-    /** 返回栈项带上当时的站点：从 A 站跳到 B 站页面后返回，不能用 B 站的适配器解释 A 站的请求。 */
-    private val backStack = ArrayDeque<Triple<String, FeedRequest, String>>()
+    private data class Route(val screen: String, val request: FeedRequest, val site: String, val language: GalleryLanguage?)
+    private var routeLanguage by mutableStateOf<GalleryLanguage?>(null)
+    private val backStack = ArrayDeque<Route>()
+    private fun currentRoute() = Route(screen, request, siteId, routeLanguage)
     private fun showNotice(text: String) { notice = text }
     private val dialogs = ComposeDialogs()
     private val archivePicker = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> uri?.let { importingDirectory = false; importingVideo = false; importingUri = it } }
@@ -99,6 +100,7 @@ class MainActivity : ComponentActivity() {
             siteId = savedInstanceState.getString("routeSite")?.takeIf { SiteRegistry.byId(it) != null } ?: siteId
             navigationTab = savedInstanceState.getString("navigationTab") ?: "siteHome"
             request = runCatching { store.gson.fromJson(savedInstanceState.getString("request"), FeedRequest::class.java) }.getOrNull() ?: FeedRequest()
+            routeLanguage = GalleryLanguage.entries.firstOrNull { it.name == savedInstanceState.getString("routeLanguage") }
             searchQuery = savedInstanceState.getString("searchQuery").orEmpty(); searchScope = savedInstanceState.getInt("searchScope")
             multipleSources = savedInstanceState.getBoolean("multipleSources")
             searchSites = savedInstanceState.getStringArrayList("searchSites")?.filter { id -> SiteRegistry.all.any { it.id == id } }?.takeIf { it.isNotEmpty() } ?: searchSites
@@ -112,11 +114,13 @@ class MainActivity : ComponentActivity() {
                 val screens = savedInstanceState.getStringArrayList("backScreens").orEmpty()
                 val requests = savedInstanceState.getStringArrayList("backRequests").orEmpty()
                 val sites = savedInstanceState.getStringArrayList("backSites").orEmpty()
+                val languages = savedInstanceState.getStringArrayList("backLanguages").orEmpty()
                 screens.indices.forEach { index ->
                     val json = requests.getOrNull(index) ?: return@forEach
                     val owner = sites.getOrNull(index).orEmpty().ifBlank { siteId }
+                    val language = GalleryLanguage.entries.firstOrNull { it.name == languages.getOrNull(index) }
                     runCatching { store.gson.fromJson(json, FeedRequest::class.java) }.getOrNull()
-                        ?.let { backStack.addLast(Triple(screens[index], it, owner)) }
+                        ?.let { backStack.addLast(Route(screens[index], it, owner, language)) }
                 }
             }
         } else intent.getStringExtra("link")?.let { link ->
@@ -152,26 +156,30 @@ class MainActivity : ComponentActivity() {
         outState.putStringArrayList("searchSites", ArrayList(searchSites))
         outState.putString("searchCategory", searchCategory); outState.putString("searchLanguages", store.gson.toJson(searchLanguages)); outState.putString("searchCondition", store.gson.toJson(searchCondition))
         outState.putString("importingUri", importingUri?.toString()); outState.putBoolean("importingDirectory", importingDirectory); outState.putBoolean("importingVideo", importingVideo)
-        outState.putStringArrayList("backScreens", ArrayList(backStack.map { it.first }))
-        outState.putStringArrayList("backRequests", ArrayList(backStack.map { store.gson.toJson(it.second) }))
-        outState.putStringArrayList("backSites", ArrayList(backStack.map { it.third }))
+        outState.putString("routeLanguage", routeLanguage?.name)
+        outState.putStringArrayList("backScreens", ArrayList(backStack.map { it.screen }))
+        outState.putStringArrayList("backRequests", ArrayList(backStack.map { store.gson.toJson(it.request) }))
+        outState.putStringArrayList("backSites", ArrayList(backStack.map { it.site }))
+        outState.putStringArrayList("backLanguages", ArrayList(backStack.map { it.language?.name.orEmpty() }))
         super.onSaveInstanceState(outState)
     }
     private fun navigate(target: String, push: Boolean = true) {
         tutorial = false; dialogs.dismiss()
         if (target == "siteFunctions") notice = null
-        if (push && screen != target) backStack.addLast(Triple(screen, request, siteId))
+        if (screen != target) {
+            if (push) backStack.addLast(currentRoute())
+            routeLanguage = null
+        }
         screen = target
         if (target in listOf("siteHome", "home", "explore", "search", "library")) navigationTab = target
     }
     private fun back() {
         if (backStack.isNotEmpty()) {
-            val (route, previous, owner) = backStack.removeLast()
-            // 回到别的站点的页面时，先把全局当前站点切回去，否则会用错的适配器加载列表。
-            if (owner.isNotBlank() && owner != siteId && SiteRegistry.byId(owner) != null) {
-                siteId = owner
-            }
-            request = previous; navigate(route, false)
+            val previous = backStack.removeLast()
+            if (SiteRegistry.byId(previous.site) != null) siteId = previous.site
+            request = previous.request
+            navigate(previous.screen, false)
+            routeLanguage = previous.language
         } else if (screen != "siteHome") {
             siteId = store.siteId
             navigate("siteHome", false)
@@ -188,23 +196,26 @@ class MainActivity : ComponentActivity() {
     }
     private fun openFeed(value: FeedRequest) = openSourceFeed(value, SiteRegistry.byIdOrDefault(siteId))
 
-    private fun openSourceFeed(value: FeedRequest, owner: SiteContext) {
+    private fun openSourceFeed(value: FeedRequest, owner: SiteContext) = openSourceFeed(value, owner, language = null)
+
+    private fun openSourceFeed(value: FeedRequest, owner: SiteContext, language: GalleryLanguage?) {
         val section = AdapterRegistry.adapter(owner, app.network).indexSection(value)
-        openSourcePage(if (section == null) "feed" else "index", if (section == null) value else FeedRequest(target = section), owner)
+        openSourcePage(if (section == null) "feed" else "index", if (section == null) value else FeedRequest(target = section), owner, language)
     }
 
-    private fun openSourcePage(route: String, value: FeedRequest, owner: SiteContext) {
-        backStack.addLast(Triple(screen, request, siteId))
+    private fun openSourcePage(route: String, value: FeedRequest, owner: SiteContext, language: GalleryLanguage? = null) {
+        backStack.addLast(currentRoute())
         siteId = owner.id
         request = value
         navigate(route, false)
+        routeLanguage = language
     }
 
     private fun browse(segment: String) = openSourcePage("index", FeedRequest(target = segment), SiteRegistry.byIdOrDefault(siteId))
     private fun play(video: Video, offlineId: String? = null, localPath: String? = null, read: Boolean = false,
         offline: Boolean = false, sourceRoot: String = "", page: Int = 0, autoplay: Boolean = true) {
         if (video.site == SiteRegistry.LOCAL.id) {
-            if (video.mediaKind == MediaKind.VIDEO) {
+            if (!video.isGalleryWork) {
                 // 功能 F37：本地视频走 PlayerActivity 的 local 分支，路径以登记记录为准。
                 val record = store.localVideos(SiteRegistry.LOCAL.id).firstOrNull { it.id == video.id }
                 if (record == null) { showNotice("本地视频文件不存在，请重新导入"); return }
@@ -217,7 +228,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         store.personal.markRead(video.site, setOf(video.entryKey))
-        val gallery = video.mediaKind == MediaKind.GALLERY || SiteRegistry.byIdOrDefault(video.site).mediaKind == MediaKind.GALLERY
+        val gallery = video.isGalleryWork
         startActivity(if (gallery) Intent(this, GalleryActivity::class.java).putExtra("gallery", store.gson.toJson(video.copy(mediaKind = MediaKind.GALLERY))).putExtra("read", read).putExtra("offline", offline).putExtra("root", sourceRoot).putExtra("page", page)
         else Intent(this, PlayerActivity::class.java).putExtra("video", store.gson.toJson(video)).putExtra("download", offlineId)
             .putExtra("local", localPath).putExtra("autoplay", autoplay))
@@ -231,13 +242,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun libraryScan(): Int = withContext(Dispatchers.IO) {
-        val known = app.playback.downloads().mapNotNull { task ->
-            app.playback.metadata(task)?.let { meta ->
-                LibraryRecord(kind = LibraryRecord.KIND_VIDEO, site = meta.site, id = meta.video.id, quality = meta.quality,
-                    cacheKey = task.request.id, title = meta.video.title, url = meta.video.url, thumb = meta.video.thumb,
-                    duration = meta.video.duration, bytes = task.bytesDownloaded, at = System.currentTimeMillis())
-            }
-        }
+        val known = app.playback.downloads().mapNotNull { app.playback.libraryRecord(it) }
         app.index.dropCorruptSidecars()
         app.index.scan(app.playback::cached, known).count { it.state == LibraryRecord.STATE_COMPLETED }
     }
@@ -279,7 +284,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun favorite(video: Video) {
-        val kind = if (video.mediaKind == MediaKind.GALLERY || SiteRegistry.byIdOrDefault(video.site).mediaKind == MediaKind.GALLERY) "gallery" else "video"
+        val kind = if (video.isGalleryWork) "gallery" else "video"
         showNotice(if (store.toggleFavorite(Favorite(kind, video.id, video.title, video.url, video.thumb, video.duration, site = video.site), video.site)) "已收藏" else "已取消收藏"); revision++
     }
     private fun downloadBatch(videos: List<Video>) {
@@ -292,11 +297,27 @@ class MainActivity : ComponentActivity() {
                 .onFailure { dialogs.message("无法开始批量下载", it.message.orEmpty()) }
         }
     }
+    private val searchScopes = listOf(FeedKind.SEARCH, FeedKind.TAG, FeedKind.MODEL)
+
+    private fun searchKind(site: SiteContext): FeedKind =
+        if (site.category == SiteCategory.PHOTO) FeedKind.SEARCH else searchScopes.getOrElse(searchScope) { FeedKind.SEARCH }
+
     private fun savedSearch(value: SavedSearch?) {
         if (value == null) { navigate("search"); return }
-        searchQuery = value.query; searchCondition = value.condition
-        searchSites = value.sources.filter { id -> SiteRegistry.all.any { it.id == id } }
-        searchCategory = value.category; searchLanguages = value.languages; multipleSources = true
+        searchQuery = value.query
+        searchCondition = value.condition
+        val owner = value.singleSite
+        multipleSources = owner == null
+        if (owner != null) {
+            searchScope = searchScopes.indexOf(value.singleSiteScope ?: FeedKind.SEARCH).coerceAtLeast(0)
+            val adapter = AdapterRegistry.adapter(owner, app.network)
+            val savedRequest = value.feedRequest(adapter)
+            openSourceFeed(savedRequest, owner, language = savedRequest.language.takeIf { adapter.supportsLanguage })
+            return
+        }
+        searchSites = value.sources.filter { SiteRegistry.byId(it) != null }
+        searchCategory = value.category
+        searchLanguages = value.languages
         if (searchSites.isEmpty()) {
             searchSites = searchableSiteIds(app.network)
             showNotice("搜索来源已不可用，请重新选择")
@@ -306,22 +327,33 @@ class MainActivity : ComponentActivity() {
     private fun saveSearch(onSaved: () -> Unit = {}) {
         val condition = searchCondition.copy(query = searchQuery).normalized()
         if (condition.isEmpty) { showNotice("请输入关键词或添加筛选条件"); return }
-        val sources = if (multipleSources) searchSites else listOf(siteId)
+        val owner = SiteRegistry.byIdOrDefault(siteId).takeUnless { multipleSources }
+        val sources = owner?.let { listOf(it.id) } ?: searchSites
+        val category = owner?.category?.name ?: searchCategory
+        val languages = sources.associateWith { id ->
+            searchLanguages[id]?.takeIf { owner == null } ?: store.galleryLanguage(id).name
+        }
+        val scope = owner?.let(::searchKind)
         dialogs.edit("保存搜索方案", searchQuery.ifBlank { "高级条件" }, validate = { if (it.isBlank() || it.length > 80) "名称需要 1–80 个字" else null }) { name ->
-            store.personal.saveSearch(SavedSearch(name = name, query = condition.query, sources = sources, category = searchCategory,
-                languages = sources.associateWith { searchLanguages[it] ?: store.galleryLanguage(it).name }, includeTags = condition.includeTags,
-                excludeTags = condition.excludeTags, filter = condition.filter))
+            store.personal.saveSearch(SavedSearch(name = name, query = condition.query, sources = sources, category = category,
+                languages = languages, includeTags = condition.includeTags, excludeTags = condition.excludeTags, filter = condition.filter,
+                singleSiteScope = scope))
             showNotice("已保存到常用搜索"); revision++; onSaved()
         }
     }
     private fun openChannel(channel: DiscoveryChannel) {
         channel.savedSearch?.let { savedSearch(it); return }
         val target = SiteRegistry.byId(channel.site) ?: run { showNotice("该频道的来源站点已移除"); return }
-        openSourceFeed(FeedRequest(channel.kind, channel.target), target)
+        openSourceFeed(channel.feedRequest, target)
     }
     private fun pinCurrentChannel() {
         if (request.kind !in listOf(FeedKind.SEARCH, FeedKind.TAG, FeedKind.CATEGORY, FeedKind.MODEL, FeedKind.CHARACTER)) return
-        dialogs.edit("固定到我的频道", AdapterRegistry.adapter(SiteRegistry.byIdOrDefault(siteId), app.network).feedTitle(request).ifBlank { request.target },
+        val adapter = AdapterRegistry.adapter(SiteRegistry.byIdOrDefault(siteId), app.network)
+        val mediaLabel = if (siteId == SiteRegistry.IWARA.id) {
+            if (request.contentKind == MediaKind.GALLERY) "图库" else "视频"
+        } else ""
+        val defaultName = adapter.feedTitle(request).ifBlank { request.target }
+        dialogs.edit("固定到我的频道", listOf(mediaLabel, defaultName).filter(String::isNotBlank).joinToString(" · "),
             validate = { if (it.isBlank() || it.length > 80) "名称需要 1–80 个字" else null }) { name ->
             store.personal.pinFeed(siteId, request, name); revision++; showNotice("已固定到“我的”中的频道")
         }
@@ -337,7 +369,11 @@ class MainActivity : ComponentActivity() {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(channel.name, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                             Copy(if (channel.hidden) "已隐藏" else channel.savedSearch?.let { "保存搜索" }
-                                ?: SiteRegistry.byId(channel.site)?.let { "${it.name} · ${channel.kind.title}" } ?: "来源站点已移除")
+                                ?: SiteRegistry.byId(channel.site)?.let { owner ->
+                                    val channelKind = if (owner.id != SiteRegistry.IWARA.id) channel.kind.title
+                                    else "${if (channel.feedRequest.contentKind == MediaKind.GALLERY) "图库" else "视频"} · ${channel.kind.title}"
+                                    "${owner.name} · $channelKind"
+                                } ?: "来源站点已移除")
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 TextAction({ store.personal.moveChannel(channel.id, -1) }) { Text("上移") }
                                 TextAction({ store.personal.moveChannel(channel.id, 1) }) { Text("下移") }
@@ -377,10 +413,8 @@ class MainActivity : ComponentActivity() {
         dialogs.content = {
             var error by remember { mutableStateOf<String?>(null) }; var retry by remember { mutableIntStateOf(0) }
             LaunchedEffect(link.url, retry) { error = null; try {
-                // 分派不能只看站点默认媒体类型：Iwara 同时有视频与图库，/image/ 作品链接
-                // 送进只认视频的 detail() 会在识别阶段直接失败。
-                val gallery = link.site.mediaKind == MediaKind.GALLERY ||
-                    (link.site.id == SiteRegistry.IWARA.id && com.r34v.r34v.data.adapter.IwaraProtocol.isGalleryUrl(link.site, link.url))
+                val gallery = Video(url = link.url, site = link.site.id).isGalleryWork ||
+                    (link.site.id == SiteRegistry.IWARA.id && IwaraProtocol.isGalleryUrl(link.site, link.url))
                 val video = withContext(Dispatchers.IO) { if (gallery) adapter.gallery(link.url).entry else adapter.detail(link.url).video }
                 dialogs.dismiss(); play(video.copy(site = link.site.id, mediaKind = if (gallery) MediaKind.GALLERY else video.mediaKind))
             } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "作品识别失败" } }
@@ -394,7 +428,14 @@ class MainActivity : ComponentActivity() {
         val drawer = rememberDrawerState(DrawerValue.Closed); val scope = rememberCoroutineScope()
         var pinnedSites by remember { mutableStateOf(store.pinnedSiteIds()) }
         var languageVisible by remember(site, screen) { mutableStateOf(true) }
-        var language by remember(site) { mutableStateOf(store.galleryLanguage(site.id)) }
+        val siteLanguage = remember(site.id, revision) { store.galleryLanguage(site.id) }
+        val language = routeLanguage ?: siteLanguage
+        fun changeLanguage(value: GalleryLanguage) {
+            if (screen == "search" || routeLanguage == null) store.setGalleryLanguage(value, site.id)
+            else routeLanguage = value
+            if (screen == "feed") request = request.copy(language = value, page = 1, cursor = "")
+            revision++
+        }
         var scrollDistance by remember(site, screen) { mutableFloatStateOf(0f) }
         val holder = rememberSaveableStateHolder()
         val snackbar = remember { SnackbarHostState() }
@@ -462,7 +503,7 @@ class MainActivity : ComponentActivity() {
                                 "siteSubscriptions" -> "${site.name} · 标签订阅"
                                 "siteAccount" -> "${site.name} · 账户"
                                 "feed" -> adapter.feedTitle(request)
-                                "index" -> categoryDirectoryTitle(adapter, request.target) ?: "浏览索引"
+                                "index" -> coserDirectoryTitle(site, request.target) ?: categoryDirectoryTitle(adapter, request.target) ?: "浏览索引"
                                 else -> "浏览索引"
                             }
                             Text(topTitle, Modifier.weight(1f).semantics { heading() }, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -492,7 +533,9 @@ class MainActivity : ComponentActivity() {
                     // Translation language only exists on the manga sites; a photo archive has no
                     // translations, and showing the bar there would promise a filter that is absent.
                     AnimatedVisibility(adapter.supportsLanguage && screen in listOf("siteHome", "feed", "search") && !(screen == "search" && multipleSources) && languageVisible) {
-                        Box(Modifier.padding(horizontal = 16.dp)) { Choices(listOf("全部", "中文", "日文", "中＋日"), language.ordinal) { index -> language = GalleryLanguage.entries[index]; store.setGalleryLanguage(language, site.id); request = request.copy(language = language, page = 1, cursor = "") } }
+                        Box(Modifier.padding(horizontal = 16.dp)) {
+                            Choices(listOf("全部", "中文", "日文", "中＋日"), language.ordinal) { changeLanguage(GalleryLanguage.entries[it]) }
+                        }
                     }
                 }
             }
@@ -527,7 +570,10 @@ class MainActivity : ComponentActivity() {
                             "siteHome", "feed" -> {
                                 val effective = (if (screen == "siteHome") adapter.homeRequest() else request).copy(language = language)
                                 val blocked = store.blockedTags(site.id)
-                                val feedState = remember(site.id, screen, effective, blocked) { feeds.page(site.id, screen, effective, blocked) }
+                                val accountGeneration = accountFeedGeneration(site, effective)
+                                val feedState = remember(site.id, screen, effective, blocked, accountGeneration) {
+                                    feeds.page(site.id, screen, effective, blocked, accountGeneration = accountGeneration)
+                                }
                                 key(feedState) { FeedScreen(app, site, effective, screen == "siteHome", feedState, dialogs,
                                     { play(it, autoplay = screen == "siteHome") }, ::favorite, ::scroll,
                                 permissionDenied = { revision++ }, saved = store.favorites(site.id).filter { it.kind == "video" }.map { "${it.site}:${it.target}" }.toSet(),
@@ -537,6 +583,7 @@ class MainActivity : ComponentActivity() {
                                     onArtwork = { palettes[site.id] = it },
                                 subscribe = { toggleSubscription(it) },
                                 subscribed = request.kind == FeedKind.TAG && store.isSubscribed(request.target, site.id),
+                                accountGeneration = accountGeneration,
                                 sort = { request = it }) }
                             }
                             "explore" -> {
@@ -547,22 +594,26 @@ class MainActivity : ComponentActivity() {
                                 }
                                 val effective = selected.copy(language = language)
                                 val blocked = store.blockedTags(site.id)
-                                val feedState = remember(site.id, effective, blocked) { feeds.page(site.id, "explore", effective, blocked) }
+                                val accountGeneration = accountFeedGeneration(site, effective)
+                                val feedState = remember(site.id, effective, blocked, accountGeneration) {
+                                    feeds.page(site.id, "explore", effective, blocked, accountGeneration = accountGeneration)
+                                }
                                 ExploreScreen(app, adapter, effective, feedState, dialogs, { play(it, autoplay = false) }, ::favorite, ::scroll,
                                     changeFeed = {
                                         val filter = store.gson.toJson(it.copy(page = 1, cursor = ""))
                                         savedFilter = filter
                                         store.prefs.edit { putString(filterKey, filter) }
                                     },
-                                    changeLanguage = {
-                                        language = it
-                                        store.setGalleryLanguage(it, site.id)
-                                    }, browse = ::browse, permissionDenied = { revision++ })
+                                    changeLanguage = ::changeLanguage, browse = ::browse, permissionDenied = { revision++ },
+                                    accountGeneration = accountGeneration)
                             }
                             "index" -> IndexScreen(app, site, request.target, dialogs, ::openFeed, ::browse, ::toggleSubscription)
                             "search" -> SearchScreen(adapter)
-                            "multiSearch" -> CrossSearchScreen(app, crossSearch, searchQuery, searchSites, { play(it) }, ::favorite, revision, searchCategory, searchLanguages, { searchCategory = it }, ::saveSearch, condition = searchCondition)
-                            "updates", "searchUpdates" -> GlobalInboxScreen(app, { play(it) }, dialogs, manageSubscriptions = { navigate("subscriptions") }, initialSearch = screen == "searchUpdates")
+                            "multiSearch" -> CrossSearchScreen(app, crossSearch, searchQuery, searchSites, { play(it) }, ::favorite,
+                                revision, searchCategory, searchLanguages, { searchCategory = it }, { saveSearch() },
+                                condition = searchCondition, openDirectory = ::openSourceFeed)
+                            "updates", "searchUpdates" -> GlobalInboxScreen(app, { play(it) }, dialogs,
+                                manageSubscriptions = { navigate("subscriptions") }, initialSearch = screen == "searchUpdates", openDirectory = ::openSourceFeed)
                             "library" -> LibraryScreen(site)
                             "siteFunctions" -> {
                                 val page = remember(adapter) { siteFunctionPage(adapter) }
@@ -582,10 +633,7 @@ class MainActivity : ComponentActivity() {
                                         openSourceFeed(if (option.gallery) feed.copy(contentKind = MediaKind.GALLERY) else feed, site)
                                     }, openFavorites = { navigate("siteFavorites") }, openDownloads = { navigate("siteDownloads") },
                                     openSubscriptions = { navigate("siteSubscriptions") }, openAccount = { navigate("siteAccount") },
-                                    setLanguage = {
-                                        language = it
-                                        store.setGalleryLanguage(it, site.id)
-                                    }, setReaderMode = {
+                                    setLanguage = ::changeLanguage, setReaderMode = {
                                         store.personal.setReaderMode(site.id, it); revision++
                                     }, setOriginals = {
                                         store.personal.setReadingBehavior(site.id, behavior.copy(originalImages = it)); revision++
@@ -594,7 +642,6 @@ class MainActivity : ComponentActivity() {
                             "siteFavorites" -> LibraryFavorites(site.id)
                             "siteDownloads" -> Box(Modifier.fillMaxSize().padding(horizontal = 14.dp)) { LibraryDownloads(site.id) }
                             "siteSubscriptions", "subscriptions" -> SubscriptionScreen(app, site, dialogs, { play(it) }, ::favorite,
-                                store.favorites(site.id).filter { it.kind in listOf("video", "gallery") }.map { "${it.site}:${it.target}" }.toSet(),
                                 openTag = ::openTag, revision = { revision++ }, lockedSite = site.id.takeIf { screen == "siteSubscriptions" })
                             "siteAccount" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
                                 .padding(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -613,7 +660,7 @@ class MainActivity : ComponentActivity() {
         dialogs.Host()
         importingUri?.let { uri -> LocalImportDialog(app, uri, importingDirectory, importingVideo, { importingUri = null }) { video ->
             importingUri = null; revision++; libraryTab = "片库"; navigate("library")
-            if (video.mediaKind == MediaKind.VIDEO) {
+            if (!video.isGalleryWork) {
                 // 功能 F37：登记播放记录，PlayerActivity 的本地分支按 id+path 校验。
                 val book = app.localLibrary.book(video.id)
                 if (book != null) {
@@ -629,6 +676,11 @@ class MainActivity : ComponentActivity() {
         } }
         }
     }
+    @Composable private fun accountFeedGeneration(site: SiteContext, request: FeedRequest): Long? =
+        if (site.id == SiteRegistry.IWARA.id && request.kind == FeedKind.SUBSCRIPTIONS) {
+            app.network.iwaraSessionGeneration.collectAsState().value
+        } else null
+
     @Composable private fun LoginGate() {
         Column { EmptyState("ExHentai 必须登录", "未登录时原站可能只显示白屏。请通过官方论坛登录，并确认账号具备 ExHentai 访问权限。", "官方网页登录", ::loginOfficial)
             TextAction({ navigate("settings") }, Modifier.padding(horizontal = 24.dp)) { Text("站点设置 / 导入 Cookie") }
@@ -645,8 +697,7 @@ class MainActivity : ComponentActivity() {
             val query = searchQuery.trim(); val condition = searchCondition.copy(query = query).normalized()
             if (condition.isEmpty) { error = true; focus.requestFocus(); return }
             searchQuery = query; searchCondition = condition; if (query.isNotBlank()) store.addSearch(query); focusManager.clearFocus(); keyboard?.hide()
-            if (multipleSources) navigate("multiSearch") else openFeed(adapter.searchRequest(query, when (searchScope) { 1 -> FeedKind.TAG; 2 -> FeedKind.MODEL; else -> FeedKind.SEARCH }).copy(
-                includeTags = condition.includeTags, excludeTags = condition.excludeTags, filter = condition.filter))
+            if (multipleSources) navigate("multiSearch") else openFeed(condition.feedRequest(adapter, searchKind(adapter.site), store.galleryLanguage(adapter.site.id)))
         }
         val recent = store.searches()
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -676,7 +727,7 @@ class MainActivity : ComponentActivity() {
                 ContentTabs(listOf("当前站点", "多个站点"), if (multipleSources) 1 else 0) { multipleSources = it == 1 }
                 HorizontalDivider(color = colors.outline)
                 if (multipleSources) TextAction({ dialogs.searchSources(app, searchSites) { searchSites = it; store.set("cross_search_sites", it.joinToString(",")) } }) { Text("选择来源 · ${searchSites.size} 个站点") }
-                // Photo archives have only a keyword search.
+                if (!multipleSources && adapter.site.id == SiteRegistry.GALLERYEPIC.id) Copy("按 Coser 名称搜索，在目录中查看结果。")
                 if (!multipleSources && adapter.site.category != SiteCategory.PHOTO) Choices(if (gallery) listOf(noun, "标签", adapter.creatorTitle) else listOf("视频", "标签", "作者"), searchScope) { searchScope = it }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextAction({ dialogs.advancedSearch(app, searchCondition.copy(query = searchQuery), if (multipleSources) searchSites else listOf(siteId)) { value ->
@@ -816,7 +867,7 @@ class MainActivity : ComponentActivity() {
                 Toggle("标签优先显示中文词典", "translate_tags", true)
             }
             SettingsSection("内容过滤") {
-                Setting("屏蔽词", "${store.blockedTags().size} 个", ::blockedTags)
+                Setting("屏蔽词", "${blockedWords(site.id).size} 个") { blockedTags(site.id) }
             }
             SettingsSection("账户") { AccountControls(site, adapter) }
             SettingsSection("播放") {
@@ -907,37 +958,31 @@ class MainActivity : ComponentActivity() {
             var progress by remember { mutableStateOf("正在收集本地内容…") }
             var scanning by remember { mutableStateOf(true) }
             var groups by remember { mutableStateOf(listOf<DuplicateGroup>()) }
-            var busyId by remember { mutableStateOf<String?>(null) }
+            var busyCopy by remember { mutableStateOf<Triple<String, String, String>?>(null) }
             fun remove(copy: DuplicateCopy) {
-                if (busyId != null) return
-                busyId = copy.id
+                if (busyCopy != null) return
+                busyCopy = copy.key
                 lifecycleScope.launch {
                     try {
-                        if (copy.source == "download") app.galleryDownloads.remove(copy.id) else app.localLibrary.remove(copy.id)
+                        if (copy.source == "download") app.galleryDownloads.removeDuplicate(copy) else app.localLibrary.remove(copy.id)
                         groups = groups.mapNotNull { group ->
-                            group.copy(copies = group.copies.filterNot { it.id == copy.id }).takeIf { it.copies.size > 1 }
+                            group.copy(copies = group.copies.filterNot { it.key == copy.key }).takeIf { it.copies.size > 1 }
                         }
                         showNotice("副本已删除")
                     } catch (error: Exception) {
                         if (error is CancellationException) throw error
                         showNotice(error.message ?: "删除失败，请重试")
-                    } finally { busyId = null }
+                    } finally { busyCopy = null }
                 }
             }
             LaunchedEffect(Unit) {
                 val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
                 try {
                     withContext(Dispatchers.IO) {
-                        val refs = buildList {
-                            app.galleryDownloads.tasks().filter { it.state == GalleryDownloadState.COMPLETED }.forEach { record ->
-                                runCatching { add(DuplicateBook("download", record.id, record.entry.title, record.entry.site, app.galleries.downloadDirectory(record.entry))) }
-                            }
-                            val localRoot = app.localLibrary.rootDirectory()
-                            app.localLibrary.books().forEach { book -> add(DuplicateBook("local", book.id, book.title, "本地", File(localRoot, book.id))) }
-                        }
+                        val shouldStop = { stopped.get() || !isActive }
+                        val refs = app.galleries.duplicateBooks(shouldStop) + app.localLibrary.duplicateBooks(shouldStop)
                         progress = "正在比对 ${refs.size} 本内容指纹…"
-                        // 对话框关闭即取消：扫描会把整个库读一遍，不能让它跑向已离开的界面。
-                        groups = DuplicateScan.scan(refs) { stopped.get() || !isActive }
+                        groups = DuplicateScan.scan(refs, shouldStop)
                     }
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
@@ -948,7 +993,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             val wasted = groups.sumOf { it.wastedBytes }
-            AlertDialog({ if (busyId == null) dialogs.dismiss() }, title = { Text("重复文件检查") }, text = {
+            AlertDialog({ if (busyCopy == null) dialogs.dismiss() }, title = { Text("重复文件检查") }, text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (scanning) {
                         Text(progress)
@@ -963,10 +1008,15 @@ class MainActivity : ComponentActivity() {
                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                                     Column(Modifier.weight(1f)) {
                                         Text(copy.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                        Copy("${if (copy.source == "download") "下载" else "本地"} · ${copy.site} · ${humanBytes(copy.sizeBytes)}")
+                                        val location = when {
+                                            copy.source != "download" -> "本地"
+                                            copy.sourceRoot == app.filesDir.absolutePath -> "应用内下载"
+                                            else -> "公共目录下载"
+                                        }
+                                        Copy("$location · ${SiteRegistry.displayName(copy.site)} · ${humanBytes(copy.sizeBytes)}")
                                     }
-                                    TextButton(onClick = { remove(copy) }, enabled = busyId == null) {
-                                        Text(if (busyId == copy.id) "删除中…" else "删除此副本")
+                                    TextButton(onClick = { remove(copy) }, enabled = busyCopy == null) {
+                                        Text(if (busyCopy == copy.key) "删除中…" else "删除此副本")
                                     }
                                 }
                             }
@@ -1082,10 +1132,27 @@ class MainActivity : ComponentActivity() {
             ))
         }
     }
-    private fun blockedTags() {
-        val tags = store.blockedTags()
-        dialogs.choose("屏蔽词：点击移除", tags + "添加屏蔽词") { i -> if (i < tags.size) { store.toggleBlocked(tags[i]); revision++; blockedTags() }
-            else dialogs.edit("输入标签 slug 或标题关键词") { value -> if (value.isNotBlank() && value !in store.blockedTags()) store.toggleBlocked(value.lowercase()); revision++ }
+    private fun normalizeBlockedWord(value: String) = value.trim().lowercase()
+
+    private fun blockedWords(owner: String) = store.blockedTags(owner).map(::normalizeBlockedWord).filter(String::isNotBlank).distinct()
+
+    private fun blockedTags(owner: String) {
+        val tags = blockedWords(owner)
+        dialogs.choose("屏蔽词：点击移除", tags + "添加屏蔽词") { index ->
+            val tag = tags.getOrNull(index)
+            if (tag != null) {
+                store.blockedTags(owner).distinct().filter { normalizeBlockedWord(it) == tag }.forEach { store.toggleBlocked(it, owner) }
+                revision++
+                blockedTags(owner)
+            } else dialogs.edit("输入标签 slug 或标题关键词", validate = {
+                if (normalizeBlockedWord(it).isBlank()) "请输入屏蔽词" else null
+            }) { value ->
+                val normalized = normalizeBlockedWord(value)
+                if (store.blockedTags(owner).none { normalizeBlockedWord(it) == normalized }) {
+                    store.toggleBlocked(normalized, owner)
+                    revision++
+                }
+            }
         }
     }
     private fun credentials(site: SiteContext, importing: Boolean) {

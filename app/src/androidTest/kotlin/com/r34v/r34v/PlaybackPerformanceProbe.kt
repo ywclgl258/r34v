@@ -212,7 +212,8 @@ class PlaybackPerformanceProbe {
             else -> listOf(CdnSeekPolicy.CURRENT, CdnSeekPolicy.LIMIT_PREFETCH, CdnSeekPolicy.RESERVE_PLAYED)
         }
         val expectSingleProbe = args.getString("playbackPerfExpectSingleProbe") == "true"
-        ComposeFixture().use { fixture ->
+        val liveHosts = if (cdnComparison) setOf("test-streams.mux.dev") else emptySet()
+        ComposeFixture(liveProbeHosts = liveHosts).use { fixture ->
             val directory = File(fixture.app.filesDir, "playback_probe")
             val media = if (cdnComparison) emptyMap() else directory.listFiles().orEmpty().filter(File::isFile).associate { it.name to it.readBytes() }
             val names = media.keys.filter { it.matches(Regex("segment\\d+\\.ts")) }.sorted()

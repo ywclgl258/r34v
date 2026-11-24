@@ -38,6 +38,18 @@ def accessibility_system_crash(results):
     return False
 
 
+def isolate_device_apps():
+    # The disposable google_apis CI image supports adb root. Preserve Android's network
+    # availability signals for Media3 while allowing app sockets to reach local fixtures.
+    subprocess.run(["adb", "root"], check=True, timeout=30)
+    subprocess.run(["adb", "wait-for-device"], check=True, timeout=60)
+    for tool in ("iptables", "ip6tables"):
+        rule = ["OUTPUT", "!", "-o", "lo", "-m", "owner", "--uid-owner", "10000-99999", "-j", "REJECT"]
+        if subprocess.run(["adb", "shell", tool, "-C", *rule], timeout=30, capture_output=True).returncode:
+            subprocess.run(["adb", "shell", tool, "-I", *rule], check=True, timeout=30)
+        subprocess.run(["adb", "shell", tool, "-C", *rule], check=True, timeout=30)
+
+
 def run():
     classes = os.environ.get("TEST_CLASSES", "").strip() or ",".join(
         os.environ["DEFAULT_TEST_CLASSES"].split()
@@ -47,6 +59,7 @@ def run():
     # A fresh AVD's SystemUI tutorial can take focus after the player has rotated.
     subprocess.run(["adb", "shell", "settings", "put", "secure", "immersive_mode_confirmations", "confirmed"],
                    check=True, timeout=30)
+    isolate_device_apps()
     result = subprocess.run(command).returncode
     if result == 0 or os.environ["TEST_API"] != "24" or not accessibility_system_crash(RESULTS):
         return result

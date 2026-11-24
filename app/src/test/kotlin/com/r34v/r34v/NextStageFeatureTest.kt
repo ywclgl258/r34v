@@ -37,6 +37,31 @@ class NextStageFeatureTest {
         assertEquals("mmd,blender", iwara.queryParameter("tags")); assertEquals("city", iwara.queryParameter("query"))
     }
 
+    @Test fun minimumRatingConvertsPercentagesToStarsAndIgnoresCounts() {
+        val minFourStars = AdvancedFilter(minRating = 4)
+        fun matches(rating: String) = minFourStars.matchesLoaded(Video(rating = rating))
+        assertTrue(matches("80%"))
+        assertTrue(matches("87.5 %"))
+        assertFalse(matches("79.9%"))
+        assertFalse(matches("4%"))
+        assertTrue(matches("4.2/5"))
+        assertTrue(matches("评分 4.4"))
+        assertTrue(matches("Average: 4.5"))
+        assertFalse(matches("3.9"))
+        assertFalse(matches("840 赞"))
+        assertFalse(matches("12/11/2026"))
+        assertTrue(AdvancedFilter().matchesLoaded(Video()))
+    }
+
+    @Test fun oldPinnedChannelDefaultsToVideoAndSameTargetCanRepresentGallery() {
+        val gson = Gson()
+        val old = gson.fromJson("""{"name":"作者","site":"iwara","kind":"MODEL","target":"sample"}""", DiscoveryChannel::class.java)
+        val gallery = old.restored().copy(contentKind = MediaKind.GALLERY)
+        assertEquals(MediaKind.VIDEO, old.feedRequest.contentKind)
+        assertEquals(old.feedRequest.copy(contentKind = MediaKind.GALLERY), gallery.feedRequest)
+        assertEquals(gallery.feedRequest, gson.fromJson(gson.toJson(gallery), DiscoveryChannel::class.java).feedRequest)
+    }
+
     @Test fun newPersonalObjectsRoundTripAndMergeWithoutOldFieldLoss() {
         val video = Video("1", "City", "https://rule34video.com/videos/1/city/", site = "r34v")
         val search = SavedSearch(name = "advanced", query = "", sources = listOf("r34v"), includeTags = listOf("city"), filter = AdvancedFilter(minDurationSec = 60))

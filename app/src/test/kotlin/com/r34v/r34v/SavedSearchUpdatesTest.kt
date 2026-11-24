@@ -2,6 +2,10 @@ package com.r34v.r34v
 
 import com.r34v.r34v.data.*
 import com.google.gson.Gson
+import com.r34v.r34v.data.adapter.GalleryEpicProfile
+import com.r34v.r34v.data.adapter.SiteAdapter
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import java.security.MessageDigest
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -48,6 +52,56 @@ class SavedSearchUpdatesTest {
         assertEquals(merged, BackupCodec.decode(encoded, "search-backup".toCharArray()))
         assertThrows(IllegalArgumentException::class.java) { validateBackup(backup.copy(personal = backup.personal.copy(savedSearches = listOf(search.copy(query = "changed")))) ) }
     }
+    @Test fun directorySourceDoesNotAdvanceABaselineOrRetainOldWorkResults() {
+        val source = SiteRegistry.GALLERYEPIC.id
+        val old = SavedSearchInbox("key").refreshed(source, page("coser", site = source), now = 10)
+            .refreshed("r34v", page("work"), now = 11)
+        val updated = old.refreshed(source, null, now = 20, directory = true)
+        assertEquals(SearchCheck(checkedAt = 20, directory = true), updated.checks[source])
+        assertEquals(listOf("r34v:work"), updated.entries.map { it.video.entryKey })
+        assertFalse(source in updated.known)
+        assertEquals(updated, updated.merge(old))
+    }
+
+    @Test fun savedScopeChangesDefinitionAndOldDataRetainsItsConditionKey() {
+        val legacyDefinition = """{"id":"","name":"","query":"cat","sources":["r34v"],"category":"","languages":{},"includeTags":[],"excludeTags":[],"filter":{"year":0,"month":0,"minDurationSec":0,"maxDurationSec":0,"brand":"","category":"","minRating":0,"minPages":0,"maxPages":0}}"""
+        val old = Gson().fromJson(legacyDefinition, SavedSearch::class.java).restored()
+        val expected = MessageDigest.getInstance("SHA-256").digest(legacyDefinition.toByteArray()).joinToString("") { "%02x".format(it) }
+        assertNull(old.singleSite)
+        assertEquals(listOf("r34v"), old.matchingSources().map { it.id })
+        assertEquals(expected, old.conditionKey)
+        val tagged = old.copy(singleSiteScope = FeedKind.TAG)
+        assertEquals("r34v", tagged.singleSite?.id)
+        assertNotEquals(old.conditionKey, tagged.conditionKey)
+        assertNotEquals(tagged.conditionKey, tagged.copy(singleSiteScope = FeedKind.MODEL).conditionKey)
+    }
+
+    @Test fun galleryEpicSavedSearchStaysInItsCoserDirectory() {
+        val owner = SiteRegistry.GALLERYEPIC
+        val profile = GalleryEpicProfile()
+        val adapter = object : SiteAdapter {
+            override val site = owner
+            override val capabilities = emptySet<com.r34v.r34v.data.adapter.Capability>()
+            override val sections = emptyList<com.r34v.r34v.data.adapter.Section>()
+            override val sorts = emptyList<Sort>()
+            override fun resolve(request: FeedRequest) = profile.resolve(owner, request)
+            override fun homeUrl() = "${owner.base}/"
+            override suspend fun feed(request: FeedRequest) = error("Not needed")
+            override suspend fun detail(url: String) = error("Not needed")
+            override suspend fun index(section: String) = emptyList<Link>()
+            override suspend fun login(network: Network, username: String, password: String) = Unit
+        }
+        val search = SavedSearch(name = "coser", query = "sample", sources = listOf(owner.id))
+        val request = search.feedRequest(adapter)
+        assertEquals("cosers:1:sample", profile.indexSection(request))
+        assertEquals("sample", request.target)
+        val url = profile.indexUrl(owner, requireNotNull(profile.indexSection(request)))!!.toHttpUrl()
+        assertEquals("sample", url.queryParameter("coserName"))
+        assertEquals("/en/cosers/1", url.encodedPath)
+        val legacy = Gson().fromJson("""{"name":"old","query":"sample","sources":["galleryepic"]}""", SavedSearch::class.java).restored()
+        assertEquals("cosers:1:sample", profile.indexSection(legacy.feedRequest(adapter)))
+    }
+
     @Test fun backupsFromBeforeUpdatesHaveAnEmptyInboxMap() {
         assertTrue(Gson().fromJson("{\"savedSearches\":[]}", PersonalLibrary::class.java).searchUpdates.isEmpty())
     }

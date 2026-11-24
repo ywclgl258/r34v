@@ -19,11 +19,15 @@
 
 `assembleRelease` 会自动执行 `signUpgradeRelease`，用已验证的旧、新密钥和公开的 `app/signing/upgrade.lineage` 生成签名继承包：Android 7/8 使用原 1.18.0 签名，Android 9 及以上使用 2.0.0 签名并附带从原签名继承的证明。这个行为使用 [Android 官方 apksigner 的密钥轮换机制](https://developer.android.com/tools/apksigner)。
 
+构建最后强制执行 `verifyReleaseApks`，分别验证标准包的 API 24–27／28+、兼容包的 API 24–27，并核对两包的包名、`versionCode` 和 `versionName`。该任务也可单独对现有产物运行，不需要读取签名材料。
+
 Android 9 及以上两种已发布签名都能直接升级标准包；Android 7/8 无法使用同一继承机制，已装 2.0.0 的设备使用同时生成的 `*-compat-2.0.0.apk`。应用内更新会根据系统版本和现有签名选择，并在调用安装器前核验更新包。未来发版应同时保留这两个产物，而不是换密钥或改包名。
 
 ## CI
 
-现有 `KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD` 对应固定的 `75f327…` 密钥；`LEGACY_KEYSTORE_BASE64 / LEGACY_KEYSTORE_PASSWORD / LEGACY_KEY_ALIAS / LEGACY_KEY_PASSWORD` 对应 `735438…` 密钥。工作流解码到 runner 的同一共享目录，仍执行相同的指纹校验和签名继承步骤。仓库中只包含工作流和公开证明，不包含任何私钥或密码。
+现有 `KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD` 对应固定的 `75f327…` 密钥；`LEGACY_KEYSTORE_BASE64 / LEGACY_KEYSTORE_PASSWORD / LEGACY_KEY_ALIAS / LEGACY_KEY_PASSWORD` 对应 `735438…` 密钥。默认回归（含 PR）和开发包构建不读取 Secrets；只有手动选择 `signed_release`、且运行仓库为 `ywclgl258/r34v`、引用为 `main` 时，独立的 `signed-release` 作业才使用 `release-signing` Environment。它在临时共享目录还原固定密钥，入口仍是 `validateReleaseSigning assembleRelease`，只上传 Actions 构建产物，不创建 Release 或修改远端仓库。
+
+本仓库工作流不能自行完成 GitHub Environment 的服务端配置。仓库管理员须在 Settings → Environments 创建 `release-signing`，限制部署分支为 `main`、配置必需审批人，并将上述八个 Secrets 仅配置到该 Environment；不要继续提供仓库级同名密钥。缺任一配置时作业会失败，不生成替代签名包。保留 CI 中不需要这些 Secrets 的普通回归。
 
 本轮没有修改远端 Secrets 或发布文件；远端配置仍需按此补齐。不要直接沿用可能指向旧证书的 Secret 名称而跳过指纹检查。
 

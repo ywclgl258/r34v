@@ -23,9 +23,10 @@ data class LocalBook(val id: String = "", val title: String = "", val files: Lis
 class LocalLibrary(private val context: Context) {
     companion object {
         const val MAX_PAGES = 2000
+        private const val MAX_PAGE_METADATA_BYTES = 2L * 1024 * 1024
         const val MAX_IMAGE = 50L * 1024 * 1024
         const val MAX_BOOK = 1024L * 1024 * 1024
-        fun imageName(name: String) = name.substringAfterLast('.').lowercase() in setOf("jpg", "jpeg", "png", "webp", "gif", "bmp")
+        fun imageName(name: String) = name.substringAfterLast('.').lowercase() in setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "heif", "heic")
         val videoExtensions = setOf("mp4", "webm", "mkv", "m4v", "mov", "3gp", "ts")
         const val MAX_VIDEO = 8L * 1024 * 1024 * 1024
         private val digits = Regex("\\d+|\\D+")
@@ -43,36 +44,75 @@ class LocalLibrary(private val context: Context) {
             if (result != 0) result else left.size.compareTo(right.size).takeIf { it != 0 } ?: a.compareTo(b)
         }
     }
-    private val root get() = File(context.filesDir, "local-library").apply { mkdirs() }
+    val root: File get() = File(context.filesDir, "local-library").apply { mkdirs() }
+    internal fun rootDirectory(): File = root
     private val gson = com.google.gson.Gson()
     val changes = MutableStateFlow(0)
 
-    /** 重复文件检查等只读工具用的根目录；书目录以 [books] 返回的 id 命名。 */
-    fun rootDirectory(): File = root
+    internal fun duplicateBooks(shouldStop: () -> Boolean = { false }): List<DuplicateBook> = buildList {
+        for (folder in root.listFiles().orEmpty()) {
+            if (shouldStop()) return emptyList()
+            val book = book(folder.name)?.takeIf { it.kind == "comic" } ?: continue
+            add(DuplicateBook("local", book.id, book.title, "本地", book.files.map { File(folder, it) },
+                { GalleryRepository.directChild(folder, it) && isCompleteGalleryImage(it, MAX_IMAGE) }))
+        }
+    }
     private fun folder(id: String): File { require(Regex("[a-f0-9]{64}").matches(id)); return File(root, id) }
     fun book(id: String): LocalBook? = runCatching {
-        val value = gson.fromJson(File(folder(id), "book.json").readText(), LocalBook::class.java)
+        if (!direct(root, folder(id))) return null
+        val file = File(folder(id), "book.json")
+        if (!file.isFile || file.length() !in 1..MAX_PAGE_METADATA_BYTES || !direct(folder(id), file)) return null
+        val value = file.bufferedReader().use { gson.fromJson(it, LocalBook::class.java) } ?: return null
+        if (value.id != id || value.title.isBlank() || value.files.size !in 1..MAX_PAGES ||
+            value.files.any { !direct(folder(id), File(folder(id), it)) }) return null
         when (value.kind) {
-            "video" -> value.takeIf { it.id == id && it.files.size == 1 && it.files[0].substringAfterLast('.').lowercase() in videoExtensions && File(folder(id), it.files[0]).isFile }
-            else -> value.takeIf { it.id == id && it.files.size in 1..MAX_PAGES && it.files.all { f -> Regex("\\d+\\.image").matches(f) && File(folder(id), f).isFile } }
+            "video" -> value.takeIf { it.kind == "video" && it.files.size == 1 &&
+                it.files[0].substringAfterLast('.').lowercase() in videoExtensions && File(folder(id), it.files[0]).isFile &&
+                (it.thumb.isNullOrBlank() || it.thumb == "thumb.png" && direct(folder(id), File(folder(id), "thumb.png"))) }
+            else -> value.takeIf { it.kind == "comic" && it.thumb.isBlank() &&
+                it.files.all { f -> Regex("\\d+\\.image").matches(f) && File(folder(id), f).isFile } }
         }
     }.getOrNull()
+    private fun direct(parent: File, child: File) = GalleryRepository.directChild(parent, child)
     fun books(): List<LocalBook> = root.listFiles().orEmpty().filter { it.isDirectory && !it.name.startsWith("incoming-") }.mapNotNull { book(it.name) }.sortedByDescending { it.at }
     fun imageUri(id: String, page: Int): String? = book(id)?.files?.getOrNull(page - 1)?.let { filename ->
         Uri.fromFile(File(folder(id), filename)).toString()
     }
-    fun ownsImageUri(uri: String): Boolean = runCatching {
-        val file = File(java.net.URI(uri)).canonicalFile
-        file.isFile && file.parentFile?.parentFile == root.canonicalFile &&
-            Regex("[a-f0-9]{64}").matches(file.parentFile!!.name) && Regex("\\d+\\.image").matches(file.name)
+    fun ownsImageUri(uri: String): Boolean = registeredFile(uri) { parent, file ->
+        book(parent.name)?.kind == "comic" && Regex("\\d+\\.image").matches(file.name)
+    }
+
+    /** Existing local-video covers are absolute paths; only this exact registered PNG is readable. */
+    fun ownsThumbnail(value: String): Boolean = runCatching {
+        if (value.isBlank() || java.net.URI(value).isAbsolute) return false
+        val file = File(value)
+        val parent = file.parentFile ?: return false
+        file.isFile && (direct(root, parent) || direct(root.canonicalFile, parent)) && direct(parent, file) &&
+            file.name == "thumb.png" && isCompleteGalleryImage(file) && book(parent.name)?.kind == "video"
+    }.getOrDefault(false)
+
+    private fun registeredFile(uri: String, allowed: (File, File) -> Boolean): Boolean = runCatching {
+        val parsed = java.net.URI(uri)
+        require(parsed.scheme == "file")
+        val file = File(parsed)
+        val parent = file.parentFile ?: return false
+        file.isFile && (direct(root, parent) || direct(root.canonicalFile, parent)) && direct(parent, file) &&
+            Regex("[a-f0-9]{64}").matches(parent.name) && allowed(parent, file)
     }.getOrDefault(false)
     fun video(book: LocalBook) = Video(book.id, book.title, "r34local://${book.id}", Uri.fromFile(File(folder(book.id), book.files.first())).toString(), "${book.files.size} 页", site = SiteRegistry.LOCAL.id, mediaKind = MediaKind.GALLERY)
 
     /** 本地视频条目：site 为 LOCAL、mediaKind 为 VIDEO，播放走 PlayerActivity 的本地分支。 */
     fun videoEntry(book: LocalBook): Video {
-        val thumb = book.thumb.takeIf { it.isNotBlank() }?.let { File(folder(book.id), it) }?.takeIf(File::isFile)?.absolutePath.orEmpty()
+        val thumb = book.thumb.takeIf { it.isNotBlank() }?.let { File(folder(book.id), it) }
+            ?.takeIf { ownsThumbnail(it.absolutePath) }?.absolutePath.orEmpty()
         return Video(book.id, book.title, "r34local://${book.id}", thumb, "本地视频", site = SiteRegistry.LOCAL.id, mediaKind = MediaKind.VIDEO)
     }
+    internal fun isLocalVideoComplete(id: String, path: String): Boolean = runCatching {
+        val file = File(path).canonicalFile
+        val book = book(id) ?: return false
+        val imported = File(folder(id), book.files.single())
+        file.isFile && file.canRead() && file.length() > 0 && book.bytes == file.length() && imported.canonicalFile == file
+    }.getOrDefault(false)
     fun detail(video: Video): GalleryDetail {
         val book = book(video.id) ?: error("本地文件不存在，请重新导入同一文件或目录")
         return GalleryDetail(video(book), book.files.size, emptyList(), book.files.size, description = "本地导入 · ${book.files.size} 页", cached = true)
@@ -81,6 +121,7 @@ class LocalLibrary(private val context: Context) {
         onSampled: ((Bitmap) -> Unit)? = null): GalleryRepository.RenderedPage = withContext(Dispatchers.IO) {
         val file = imageFile(id, index)
         val bitmap = decodeGalleryThumbnail(file, sizePx, onSampled) ?: error("图片无法解码")
+        check(isCompleteGalleryImage(file, MAX_IMAGE)) { "图片文件已截断，请重新导入" }
         renderedPage(id, index, file, bitmap)
     }
     private fun imageFile(id: String, index: Int): File {
@@ -91,6 +132,7 @@ class LocalLibrary(private val context: Context) {
     suspend fun page(id: String, index: Int): GalleryRepository.RenderedPage = withContext(Dispatchers.IO) {
         val file = imageFile(id, index)
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(file.path, bounds)
+        check(isCompleteGalleryImage(file, MAX_IMAGE)) { "图片文件已截断，请重新导入" }
         check(bounds.outWidth > 0 && bounds.outHeight > 0) { "图片无法解码" }
         var sample = 1
         while (bounds.outWidth.toLong() / sample * (bounds.outHeight / sample) > 4_000_000) sample *= 2
@@ -218,11 +260,10 @@ class LocalLibrary(private val context: Context) {
                     check(bytes <= MAX_IMAGE && total <= MAX_BOOK && context.filesDir.usableSpace > 16L * 1024 * 1024) { "导入空间不足或文件超过上限（单页 50 MiB，整本 1 GiB）" }
                     output.write(buffer, 0, count)
                 } }
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeFile(file.path, bounds)
-                check(bounds.outWidth > 0 && bounds.outHeight > 0) { "$label 不是有效图片" }
+                check(isCompleteGalleryImage(file, MAX_IMAGE)) { "$label 不是有效的完整图片" }
                 pages += label to file; report("已导入 ${pages.size} 页")
             }
-            check(pages.isNotEmpty()) { "没有找到支持的图片（JPG、PNG、WebP、GIF、BMP）" }
+            check(pages.isNotEmpty()) { "没有找到支持的图片（JPG、PNG、WebP、GIF、BMP、AVIF、HEIF、HEIC）" }
             val sorted = pages.sortedWith { a, b -> naturalOrder.compare(a.first, b.first) }
             val digest = MessageDigest.getInstance("SHA-256")
             sorted.forEach { (_, file) -> digest.update(java.nio.ByteBuffer.allocate(8).putLong(file.length()).array()); file.inputStream().use { input -> val buffer = ByteArray(65536); while (true) { currentCoroutineContext().ensureActive(); val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) } } }

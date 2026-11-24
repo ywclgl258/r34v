@@ -34,7 +34,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     openDetails: (Video) -> Unit = play, resumeGallery: (Video) -> Unit = play,
     onArtwork: ((ArtworkPalette) -> Unit)? = null,
     subscribe: ((Subscription) -> Unit)? = null, subscribed: Boolean = false,
-    browseToolbar: (@Composable (refresh: () -> Unit) -> Unit)? = null, sort: (FeedRequest) -> Unit) {
+    browseToolbar: (@Composable (refresh: () -> Unit) -> Unit)? = null,
+    accountGeneration: Long? = null, sort: (FeedRequest) -> Unit) {
     val scope = rememberCoroutineScope(); val adapter = remember(site) { AdapterRegistry.adapter(site, app.network) }
     var busy by remember { mutableStateOf(false) }; var error by state::error
     var loading by remember { mutableStateOf<Job?>(null) }
@@ -42,8 +43,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
     var next by state::next; var total by state::total; var cursor by state::cursor
     var cached by state::cached; var loaded by state::loaded
     val gridInset = if (browseToolbar != null) 16.dp else 14.dp
+    fun accountChanged() = accountGeneration != null && accountGeneration != app.network.iwaraSessionGeneration.value
     fun load(automatic: Boolean = false) {
-        if (busy || loaded && next > total || automatic && state.emptyPages >= 3) return
+        if (accountChanged() || busy || loaded && next > total || automatic && state.emptyPages >= 3) return
         if (!automatic) state.emptyPages = 0
         busy = true; error = null
         val generation = ++state.generation
@@ -53,7 +55,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
             try {
                 val result = app.repository.feed(requested, site)
                 ensureActive()
-                if (generation != state.generation) return@launch
+                if (accountChanged() || generation != state.generation) return@launch
                 val allowed = result.videos.filter { app.library.allowed(it, site.id) }
                 if (first) {
                     state.loadedAt = System.currentTimeMillis()
@@ -69,6 +71,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
                 cursor = result.nextCursor.orEmpty()
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
+                if (accountChanged() || generation != state.generation) return@launch
                 if (e is GalleryLoginRequiredException) { app.network.session.clear(site); permissionDenied() }
                 error = e.message ?: "加载失败，请检查网络后重试"
             } finally { if (generation == state.generation) busy = false }
@@ -78,7 +81,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
         loading?.cancel(); state.reset(); busy = false
         state.grid.requestScrollToItem(0); state.list.requestScrollToItem(0); load()
     }
-    LaunchedEffect(Unit) { if (!loaded) load() }
+    LaunchedEffect(state, accountGeneration) { if (!loaded) load() }
     val cinemaHome = home && site.mediaKind == MediaKind.VIDEO
     val refreshCount = state.refreshCount
     var rankingsReady by remember(state, refreshCount) { mutableStateOf(!cinemaHome) }
@@ -268,10 +271,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 @Composable fun ExploreScreen(app: R34Application, adapter: SiteAdapter, request: FeedRequest, state: FeedState,
     dialogs: ComposeDialogs, play: (Video) -> Unit, favorite: (Video) -> Unit, scroll: (Float, Boolean) -> Unit,
     changeFeed: (FeedRequest) -> Unit, changeLanguage: (GalleryLanguage) -> Unit, browse: (String) -> Unit,
-    permissionDenied: () -> Unit = {}) {
+    permissionDenied: () -> Unit = {}, accountGeneration: Long? = null) {
     key(state) {
         FeedScreen(app, adapter.site, request, false, state, dialogs, play, favorite, scroll,
-            permissionDenied = permissionDenied,
+            permissionDenied = permissionDenied, accountGeneration = accountGeneration,
             browseToolbar = { refresh -> ExploreToolbar(adapter, request, dialogs, changeFeed, changeLanguage, browse, refresh) },
             sort = changeFeed)
     }
@@ -279,6 +282,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 // These routes already load native category lists through SiteAdapter.index.
 private val categoryDirectorySegments = listOf("categories", "category", "genres")
+
+internal fun coserDirectoryTitle(site: SiteContext, segment: String): String? =
+    if (site.id == SiteRegistry.GALLERYEPIC.id && segment.startsWith("cosers:")) "Coser 目录" else null
 
 internal fun categoryDirectoryTitle(adapter: SiteAdapter, segment: String): String? =
     if (segment in categoryDirectorySegments && adapter.sectionUrl(segment) != null) {
@@ -431,7 +437,7 @@ internal fun categoryDirectoryTitle(adapter: SiteAdapter, segment: String): Stri
                     Title(when (segment) {
                         "works" -> "选择作品"
                         "artists" -> "作者排行"
-                        else -> adapter.sections.firstOrNull { it.key == segment }?.title ?: "浏览索引"
+                        else -> coserDirectoryTitle(site, segment) ?: adapter.sections.firstOrNull { it.key == segment }?.title ?: "浏览索引"
                     }, large = true)
                     if (isTag) Copy("订阅内容只在当前站点内汇总")
                     if (entries.isEmpty()) Copy("没有找到条目")
@@ -476,6 +482,6 @@ data class LibraryCard(val video: Video, val menuLabel: String, val remove: () -
     LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap), contentPadding = PaddingValues(top = 12.dp), verticalItemSpacing = 8.dp) {
         if (clear != null) item(span = StaggeredGridItemSpan.FullLine) { TextAction(clear) { Text("清空记录") } }
         if (cards.isEmpty()) item(span = StaggeredGridItemSpan.FullLine) { empty() }
-        items(cards, key = { "${it.video.site}:${it.video.id}" }) { card -> MediaCard(card.video, menu = listOf(card.menuLabel to card.remove), progress = card.progress) { play(card) } }
+        items(cards, key = { it.video.entryKey }) { card -> MediaCard(card.video, menu = listOf(card.menuLabel to card.remove), progress = card.progress) { play(card) } }
     }
 }

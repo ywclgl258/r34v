@@ -10,7 +10,8 @@ import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
 import kotlinx.coroutines.*
 
-@Composable fun GlobalInboxScreen(app: R34Application, play: (Video) -> Unit, dialogs: ComposeDialogs, manageSubscriptions: () -> Unit, initialSearch: Boolean = false) {
+@Composable fun GlobalInboxScreen(app: R34Application, play: (Video) -> Unit, dialogs: ComposeDialogs, manageSubscriptions: () -> Unit,
+    initialSearch: Boolean = false, openDirectory: (FeedRequest, SiteContext) -> Unit) {
     var searchUpdates by rememberSaveable(initialSearch) { mutableStateOf(initialSearch) }
     val store = app.library
     val personal by store.personal.changes.collectAsState()
@@ -24,7 +25,7 @@ import kotlinx.coroutines.*
     Column(Modifier.fillMaxSize().padding(LocalUiDensity.current.pagePadding), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Title("订阅更新", large = true)
         Choices(listOf("标签更新", "保存搜索"), if (searchUpdates) 1 else 0) { searchUpdates = it == 1 }
-        if (searchUpdates) { SavedSearchUpdatesScreen(app, play, dialogs, Modifier.weight(1f)); return@Column }
+        if (searchUpdates) { SavedSearchUpdatesScreen(app, play, dialogs, Modifier.weight(1f), openDirectory); return@Column }
         Copy("查看各来源已订阅标签的新作品。")
         Choices(listOf("未读", "全部"), if (unread) 0 else 1) { unread = it == 0 }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

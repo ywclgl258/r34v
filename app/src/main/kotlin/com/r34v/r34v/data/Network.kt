@@ -19,6 +19,13 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
 /**
@@ -60,28 +67,29 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
         restored
     }
 
-    /**
-     * Cookie 序列化。
-     *
-     * `Cookie.toString()` 对 host-only cookie 不输出 Domain，重启后按站点主域解析会把镜像
-     * （missav.media 之类）签发的 cookie 绑到主域上，既发给错误主机也收不到原镜像的会话。
-     * 这里显式带上来源主机；没有前缀的旧数据仍按原逻辑解析。
-     */
-    private fun encodeCookie(cookie: Cookie): String =
-        if (cookie.hostOnly) "h\u0001${cookie.domain}\u0001$cookie" else "d\u0001$cookie"
+    // Cookie.toString() omits Domain for host-only cookies. Store their exact host separately.
+    private fun encodeCookie(cookie: Cookie): String = if (cookie.hostOnly) {
+        listOf("h", cookie.domain, cookie.toString()).joinToString("\u0001")
+    } else "d\u0001" + cookie
 
     private fun decodeCookie(site: SiteContext, raw: String): Cookie? {
-        if (!raw.startsWith("h\u0001") && !raw.startsWith("d\u0001")) return Cookie.parse(site.base.toHttpUrl(), raw)
-        val parts = raw.split('\u0001', limit = 3)
-        val header = parts.getOrNull(2) ?: return null
-        return when (parts[0]) {
-            "h" -> {
-                val host = parts.getOrNull(1).orEmpty()
-                val base = if (host.isNotBlank() && site.isSite(host)) host else site.host
-                Cookie.parse("https://$base/".toHttpUrl(), header)
-            }
-            else -> Cookie.parse(site.base.toHttpUrl(), header)
+        if (raw.startsWith("h\u0001")) {
+            val parts = raw.split('\u0001', limit = 3)
+            val host = parts[1]
+            val header = parts.getOrNull(2) ?: return null
+            if (!site.isSite(host)) return null
+            return Cookie.parse("https://$host/".toHttpUrl(), header)?.takeIf { it.hostOnly && it.domain == host }
         }
+        val markedDomain = raw.startsWith("d\u0001")
+        val header = if (markedDomain) raw.removePrefix("d\u0001") else raw
+        val domain = header.split(';').drop(1).lastOrNull { it.substringBefore('=').trim().equals("domain", true) }
+            ?.substringAfter('=', "")?.trim()?.removePrefix(".")?.lowercase()
+        if (domain == null) {
+            // A legacy host-only record has no origin field and was stored against the primary URL.
+            return if (markedDomain) null else Cookie.parse(site.base.toHttpUrl(), header)?.takeIf { it.hostOnly }
+        }
+        if (!site.isSite(domain)) return null
+        return Cookie.parse("https://$domain/".toHttpUrl(), header)?.takeIf { !it.hostOnly && it.domain == domain }
     }
 
     @Synchronized override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
@@ -124,7 +132,12 @@ class SessionCookies(private val store: LibraryStore) : CookieJar {
         buckets.remove(site.host)
         store.prefs.edit { remove("${site.id}:cookies").remove("${site.id}:encrypted_cookies") }
         store.logout(site.id)
+        if (site.id == SiteRegistry.IWARA.id) store.clearAuthToken(site.id)
+        onCleared?.invoke(site.id)
     }
+
+    /** Network owns session generation so this storage-level jar has no dependency on it. */
+    internal var onCleared: ((String) -> Unit)? = null
 }
 
 /**
@@ -289,8 +302,25 @@ private fun applyMediaShape(builder: okhttp3.Request.Builder, host: String) {
         .removeHeader("Sec-Fetch-User")
 }
 
+internal data class IwaraSubscriptionRequest(val generation: Long)
+
+internal fun bindIwaraSubscriptionRequest(original: Request, builder: Request.Builder, currentEpoch: Long) {
+    if (original.url.encodedPath != "/subscriptions/videos") return
+    builder.cacheControl(CacheControl.Builder().noCache().noStore().build())
+    if (original.tag(IwaraSubscriptionRequest::class.java) == null) {
+        builder.tag(IwaraSubscriptionRequest::class.java, IwaraSubscriptionRequest(currentEpoch))
+    }
+}
+
+internal class SingleUseBody(private val body: RequestBody) : RequestBody() {
+    override fun isOneShot() = true
+    override fun contentType() = body.contentType()
+    override fun contentLength() = body.contentLength()
+    override fun writeTo(sink: okio.BufferedSink) = body.writeTo(sink)
+}
+
 class Network(private val context: Context, private val store: LibraryStore) {
-    val session = SessionCookies(store)
+    val session = SessionCookies(store).apply { onCleared = ::invalidateAuthToken }
     @Volatile private var current: OkHttpClient? = null
     private val diskCache by lazy { Cache(File(context.cacheDir, "http"), 32L * 1024 * 1024) }
     val feedCacheDirectory get() = File(context.cacheDir, "feeds")
@@ -298,7 +328,10 @@ class Network(private val context: Context, private val store: LibraryStore) {
         private set
     private val systemRoutes = SystemProxySelector()
     private val hostGates = java.util.concurrent.ConcurrentHashMap<String, HostGate>()
-    private val authTokenCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val authTokenCache = mutableMapOf<String, String>()
+    private val iwaraSession = MutableStateFlow(0L)
+    private val authEpoch = java.util.concurrent.atomic.AtomicLong(iwaraSession.value)
+    val iwaraSessionGeneration = iwaraSession.asStateFlow()
     private val mediaRedirects = MediaRedirectCache()
     private var defaultNetwork = context.getSystemService(android.net.ConnectivityManager::class.java)?.activeNetwork
     @Volatile private var routeGeneration = 0L
@@ -382,8 +415,10 @@ class Network(private val context: Context, private val store: LibraryStore) {
                 val request = chain.request().newBuilder().header("User-Agent", agent).header("Referer", referer)
                 if (site?.id == SiteRegistry.IWARA.id) {
                     request.header("Origin", site.base).header("x-site", "www.iwara.tv")
+                    // A private subscription response must never be replayed through a URL-keyed HTTP cache.
+                    bindIwaraSubscriptionRequest(chain.request(), request, authEpoch.get())
                     // Bearer 只发给 API 主机；媒体 CDN 不带账号凭据。
-                    if (host in site.apiHosts) authToken(site.id)?.let { request.header("Authorization", "Bearer $it") }
+                    if (host in site.apiHosts) iwaraAuthToken(request.build())?.let { request.header("Authorization", "Bearer $it") }
                 }
                 applyBrowserShape(request, chain.request(), site)
                 chain.proceed(request.build())
@@ -402,15 +437,13 @@ class Network(private val context: Context, private val store: LibraryStore) {
                 if (limits.isEmpty()) "" else "\n$limits"
         }
     }
-    private suspend fun getText(request: Request): String {
-        return client.readResponse(request) { response ->
-            if (!response.isSuccessful) throw GalleryResponseException(response.code, response.header("Retry-After"), "请求失败：HTTP ${response.code}")
-            response.body?.string().orEmpty()
-        }
+    private suspend fun OkHttpClient.readText(request: Request): String = readResponse(request) { response ->
+        if (!response.isSuccessful) throw GalleryResponseException(response.code, response.header("Retry-After"), "请求失败：HTTP ${response.code}")
+        response.body?.string().orEmpty()
     }
     suspend fun html(url: String, site: SiteContext? = null): String = withContext(Dispatchers.IO) {
         val body = SiteHtml.load(url, site) { target ->
-            getText(Request.Builder().url(target).tag(SiteContext::class.java, site).apply {
+            client.readText(Request.Builder().url(target).tag(SiteContext::class.java, site).apply {
                 if (site?.mediaKind == MediaKind.GALLERY) header("Cache-Control", "no-store")
             }.build())
         }
@@ -421,34 +454,89 @@ class Network(private val context: Context, private val store: LibraryStore) {
     suspend fun body(url: String): String = html(url)
     suspend fun text(url: String, headers: Map<String, String> = emptyMap()): String = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).apply { headers.forEach { (name, value) -> header(name, value) } }.build()
-        withRateLimitRetry { getText(request) }
+        withRateLimitRetry { client.readText(request) }
     }
-    suspend fun json(url: String, headers: Map<String, String> = emptyMap()): com.google.gson.JsonElement {
-        val body = text(url, headers)
-        return try {
-            com.google.gson.JsonParser.parseString(body).also {
-                check(it.isJsonObject || it.isJsonArray) { "站点返回了非 JSON 数据，请稍后重试或调整网络" }
-            }
+    suspend fun json(url: String, headers: Map<String, String> = emptyMap()): com.google.gson.JsonElement =
+        parseJson(text(url, headers))
+
+    private fun parseJson(body: String): com.google.gson.JsonElement = try {
+        com.google.gson.JsonParser.parseString(body).also {
+            check(it.isJsonObject || it.isJsonArray) { "站点返回了非 JSON 数据，请稍后重试或调整网络" }
         }
-        catch (_: com.google.gson.JsonParseException) { error("站点返回了非 JSON 数据，请稍后重试或调整网络") }
-    }
+    } catch (_: com.google.gson.JsonParseException) { error("站点返回了非 JSON 数据，请稍后重试或调整网络") }
+
     /** JWT 类站点会话（Iwara）：明文只在内存缓存，落盘走 SessionVault 密文。 */
-    fun saveAuthToken(siteId: String, token: String) {
-        store.saveAuthToken(siteId, SessionVault.seal(token)); authTokenCache[siteId] = token
+    @Synchronized fun saveAuthToken(siteId: String, token: String) {
+        persistAuthToken(siteId, token)
+        if (siteId == SiteRegistry.IWARA.id) iwaraSession.value = authEpoch.incrementAndGet()
     }
-    fun clearAuthToken(siteId: String) { store.clearAuthToken(siteId); authTokenCache.remove(siteId) }
-    fun authToken(siteId: String): String? = authTokenCache.getOrPut(siteId) {
+
+    @Synchronized internal fun saveIwaraSession(username: String, token: String, expectedGeneration: Long) {
+        if (expectedGeneration != authEpoch.get()) throw iwaraSessionChanged()
+        val siteId = SiteRegistry.IWARA.id
+        persistAuthToken(siteId, token)
+        store.setUsername(username.trim(), siteId)
+        iwaraSession.value = authEpoch.incrementAndGet()
+    }
+
+    private fun persistAuthToken(siteId: String, token: String) {
+        store.saveAuthToken(siteId, SessionVault.seal(token))
+        authTokenCache[siteId] = token
+    }
+
+    @Synchronized private fun invalidateAuthToken(siteId: String) {
+        authTokenCache.remove(siteId)
+        if (siteId == SiteRegistry.IWARA.id) {
+            val next = authEpoch.incrementAndGet()
+            iwaraSession.value = next
+        }
+    }
+
+    @Synchronized fun clearAuthToken(siteId: String) {
+        store.clearAuthToken(siteId)
+        if (siteId == SiteRegistry.IWARA.id) store.setUsername("", siteId)
+        invalidateAuthToken(siteId)
+    }
+
+    @Synchronized fun authToken(siteId: String): String? = authTokenCache.getOrPut(siteId) {
         store.authToken(siteId)?.let { sealed -> runCatching { SessionVault.open(sealed) }.getOrNull() }.orEmpty()
     }.takeIf { it.isNotEmpty() }
 
-    /** 带 JSON 请求体的 POST；非 2xx 抛 GalleryResponseException，保留状态码与 Retry-After。 */
-    suspend fun postJson(url: String, body: okhttp3.RequestBody): String = withContext(Dispatchers.IO) {
-        withRateLimitRetry {
-            client.readResponse(Request.Builder().url(url).post(body).build()) { response ->
-                if (!response.isSuccessful) throw GalleryResponseException(response.code, response.header("Retry-After"), "请求失败：HTTP ${response.code}")
-                response.body?.string().orEmpty()
-            }
+    @Synchronized internal fun iwaraAuthToken(request: Request): String? {
+        val subscription = request.tag(IwaraSubscriptionRequest::class.java)
+        if (subscription != null && subscription.generation != authEpoch.get()) throw IOException("Iwara 会话已切换")
+        return authToken(SiteRegistry.IWARA.id)
+    }
+
+    private fun iwaraSessionChanged() = CancellationException("Iwara 会话已切换")
+
+    internal suspend fun <T> withIwaraSession(load: suspend (Long) -> T): T = coroutineScope {
+        val generation = iwaraSession.value
+        val invalidation = launch(start = CoroutineStart.UNDISPATCHED) {
+            iwaraSession.first { it != generation }
+            this@coroutineScope.cancel(iwaraSessionChanged())
         }
+        try {
+            load(generation).also { ensureActive() }
+        } finally {
+            invalidation.cancel()
+            if (generation != iwaraSession.value) throw iwaraSessionChanged()
+        }
+    }
+
+    internal suspend fun iwaraSubscriptionJson(url: String, generation: Long): com.google.gson.JsonElement = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url(url)
+            .cacheControl(CacheControl.Builder().noCache().noStore().build())
+            .tag(IwaraSubscriptionRequest::class.java, IwaraSubscriptionRequest(generation)).build()
+        parseJson(withRateLimitRetry { client.readText(request) })
+    }
+
+    /** 带 JSON 请求体的 POST；非 2xx 抛 GalleryResponseException，保留状态码与 Retry-After。 */
+    suspend fun postJson(url: String, body: RequestBody): String = withContext(Dispatchers.IO) {
+        val singleUse = url.toHttpUrlOrNull()?.let { SiteRegistry.forRequestHost(it.host) == SiteRegistry.IWARA } == true
+        val callClient = if (singleUse) client.newBuilder().retryOnConnectionFailure(false).followRedirects(false).build() else client
+        val request = if (singleUse) Request.Builder().url(url).post(SingleUseBody(body)).build() else Request.Builder().url(url).post(body).build()
+        callClient.readText(request)
     }
     suspend fun post(url: String, form: okhttp3.RequestBody): String = withContext(Dispatchers.IO) {
         client.newCall(Request.Builder().url(url).post(form).build()).execute().use { response ->
@@ -468,8 +556,8 @@ class Network(private val context: Context, private val store: LibraryStore) {
     suspend fun login(site: SiteContext, username: String, password: String) = withContext(Dispatchers.IO) {
         require(username.isNotBlank() && password.isNotEmpty()) { "请填写用户名和密码" }
         AdapterRegistry.adapter(site, this@Network).login(this@Network, username, password)
-        // Cookie 类登录（KVS / Hanime 等）不产生 JWT，只有写下用户名后设置页才认得出已登录并允许退出。
-        store.setUsername(username.trim(), site.id)
+        // Iwara publishes its username and token together before invalidating the subscription feed.
+        if (site.id != SiteRegistry.IWARA.id) store.setUsername(username.trim(), site.id)
     }
 }
 
@@ -513,44 +601,50 @@ object AdapterRegistry {
     fun warm(network: Network) { SiteRegistry.all.forEach { adapter(it, network) } }
 }
 
-class Repository(private val network: Network, private val library: LibraryStore) {
-    private fun adapter() = AdapterRegistry.adapter(SiteRegistry.current, network)
-
-    suspend fun feed(request: FeedRequest, site: SiteContext = SiteRegistry.current): FeedPage {
-        val adapter = AdapterRegistry.adapter(site, network)
-        return withContext(Dispatchers.IO) {
-            val site = adapter.site
-            val url = adapter.resolve(request)
-            val folder = network.feedCacheDirectory.apply { mkdirs() }
-            // The cache key carries the site so two sites can never overwrite each other's snapshots.
-            val name = java.security.MessageDigest.getInstance("SHA-256")
-                .digest(("${site.id}|$url" + if (request.language == GalleryLanguage.ALL) "" else "|${request.language.name}|${request.cursor}").toByteArray()).joinToString("") { "%02x".format(it) }
-            val file = File(folder, name)
-            try {
-                val page = adapter.feed(request)
-                if (request.kind != FeedKind.FOR_YOU) runCatching {
-                    val temp = File(folder, "$name.part")
-                    // 关注动态/个人列表带账号身份：快照里只有页码与条数，切号后会回放上一账号的内容。
-                    // 这类页面不写快照，避免不同账号之间串数据。
-                    if (request.kind == FeedKind.SUBSCRIPTIONS) return@runCatching
-                    temp.writeText(com.google.gson.Gson().toJson(page)); temp.renameTo(file)
-                    folder.listFiles()?.sortedByDescending { it.lastModified() }?.drop(40)?.forEach { it.delete() }
-                }
-                page
-            } catch (error: IOException) {
-                staleFallback(request, file) ?: throw error
-            } catch (error: GalleryResponseException) {
-                // 退避与镜像都失败后仍然 429：回退旧快照，别让限流把整页打死。
-                staleFallback(request, file) ?: throw error
+internal class FeedSnapshots(private val folder: File, private val gson: com.google.gson.Gson) {
+    suspend fun load(site: SiteContext, request: FeedRequest, resolve: () -> String, fetch: suspend () -> FeedPage): FeedPage {
+        if (request.kind == FeedKind.FOR_YOU || request.kind == FeedKind.SUBSCRIPTIONS || site.id == SiteRegistry.EXHENTAI.id) {
+            return fetch()
+        }
+        // Some filters are applied by the adapter after fetching, so the URL alone does not identify a page.
+        val key = gson.toJson(listOf("feed-v2", site.id, resolve(), request))
+        val name = java.security.MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        val file = File(folder, name)
+        return try {
+            fetch().also { page ->
+                kotlin.coroutines.coroutineContext.ensureActive()
+                runCatching { save(file, page) }
             }
+        } catch (error: Exception) {
+            if (error !is IOException && error !is GalleryResponseException) throw error
+            kotlin.coroutines.coroutineContext.ensureActive()
+            runCatching { gson.fromJson(file.readText(), FeedPage::class.java) }
+                .getOrNull()?.copy(cached = true) ?: throw error
         }
     }
 
-    /** FOR_YOU 是每次现算的合成页，没有可回退的快照；其余失败都允许展示旧缓存。 */
-    private fun staleFallback(request: FeedRequest, file: File): FeedPage? =
-        if (request.kind == FeedKind.FOR_YOU) null else runCatching {
-            com.google.gson.Gson().fromJson(file.readText(), FeedPage::class.java)
-        }.getOrNull()?.copy(cached = true)
+    private fun save(file: File, page: FeedPage) {
+        folder.mkdirs()
+        val temp = File.createTempFile(file.name, ".part", folder)
+        try {
+            temp.writeText(gson.toJson(page))
+            if (temp.renameTo(file)) {
+                folder.listFiles { candidate -> candidate.name.length == 64 }
+                    ?.sortedByDescending { it.lastModified() }?.drop(40)?.forEach { it.delete() }
+            }
+        } finally { temp.delete() }
+    }
+}
+
+class Repository(private val network: Network, private val library: LibraryStore) {
+    private val snapshots = FeedSnapshots(network.feedCacheDirectory, library.gson)
+    private fun adapter() = AdapterRegistry.adapter(SiteRegistry.current, network)
+
+    suspend fun feed(request: FeedRequest, site: SiteContext = SiteRegistry.current): FeedPage = withContext(Dispatchers.IO) {
+        val adapter = AdapterRegistry.adapter(site, network)
+        snapshots.load(adapter.site, request, { adapter.resolve(request) }, { adapter.feed(request) })
+    }
 
     suspend fun detail(url: String): Detail {
         val host = url.toHttpUrlOrNull()?.host.orEmpty()

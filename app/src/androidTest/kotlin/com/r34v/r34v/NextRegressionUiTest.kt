@@ -23,11 +23,32 @@ class NextRegressionUiTest : ComposeUiCase() {
         f.app.library.set("cross_search_sites", "r34v")
         val saved = SavedSearch(name = "仅漫画来源", query = "space", sources = listOf("nhentai"), category = "COMIC", languages = mapOf("nhentai" to "CHINESE"))
         f.app.library.personal.saveSearch(saved)
-        val activity = f.launch(); home(); clickText(saved.name); waitText("nhentai · 16 项")
-        ui.runOnIdle { activity.recreate() }; waitText("nhentai · 16 项")
+        val activity = f.launch(); home()
+        ui.onNodeWithTag("personal-home").performScrollToNode(hasText(saved.name))
+        clickText(saved.name); waitText("已加载 16 项"); waitText("nhentai")
+        ui.runOnIdle { activity.recreate() }; waitText("已加载 16 项"); waitText("nhentai")
         assertFalse(f.requests.any { it.first == "r34v" && it.second.kind == FeedKind.SEARCH })
         assertTrue(f.requests.filter { it.second.kind == FeedKind.SEARCH }.all { it.second.language == GalleryLanguage.CHINESE })
     }
+    @Test fun blockedWordsFollowTheRoutedSiteAndNormalizeCase() = ComposeFixture().use { f ->
+        f.app.library.switchSite("r34v")
+        f.app.library.toggleBlocked("site-owned", "nhentai")
+        f.launch(); openSourceHome(); ui.onNodeWithContentDescription("本站功能").performClick()
+        ui.onNode(hasContentDescription("切换站点，当前", substring = true)).performClick()
+        ui.onNodeWithTag("site-entry-nhentai").performClick()
+        ui.onNodeWithContentDescription("设置").performClick()
+        waitText("1 个"); clickText("屏蔽词")
+        clickText("添加屏蔽词")
+        ui.onAllNodes(hasSetTextAction()).onLast().performTextInput("  MiXeD-Tag  ")
+        clickText("确定")
+        assertEquals(listOf("site-owned", "mixed-tag"), f.app.library.blockedTags("nhentai"))
+        assertTrue(f.app.library.blockedTags("r34v").isEmpty())
+        ui.waitForIdle(); waitText("2 个"); clickText("屏蔽词"); clickText("添加屏蔽词")
+        ui.onAllNodes(hasSetTextAction()).onLast().performTextInput("MIXED-tag")
+        clickText("确定")
+        assertEquals(listOf("site-owned", "mixed-tag"), f.app.library.blockedTags("nhentai"))
+    }
+
     @Test fun scannedVideoWithoutDownloadDatabaseRecordOpensOfflineFromTheHomeRouter() = ComposeFixture().use { f ->
         val video = f.video(); val bytes = f.ins.context.assets.open("test-pattern.mp4").use { it.readBytes() }
         val caches = f.app.playback.javaClass.getDeclaredField("downloadCaches").apply { isAccessible = true }.get(f.app.playback) as DownloadCaches

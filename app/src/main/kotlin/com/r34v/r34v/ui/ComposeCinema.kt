@@ -42,8 +42,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-@Composable fun Modifier.cinemaGlass(radius: Int = 16): Modifier = liquidSurface(radius)
-
 @Composable fun BrandWordmark() {
     val palette = LocalArtworkPalette.current ?: artworkPalette(SiteCategory.VIDEO)
     Text(androidx.compose.ui.text.buildAnnotatedString {

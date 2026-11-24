@@ -1,5 +1,6 @@
 package com.r34v.r34v
 
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.SystemClock
@@ -14,24 +15,63 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.FileProvider
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.google.gson.JsonParser
+import com.r34v.r34v.data.PendingUpgrade
 import com.r34v.r34v.data.UpgradeAsset
 import com.r34v.r34v.data.UpgradePackages
 import com.r34v.r34v.data.cachedUpgrade
 import com.r34v.r34v.data.downloadUpgrade
+import com.r34v.r34v.data.pruneUpgradeCache
 import com.r34v.r34v.data.readResponse
 import com.r34v.r34v.ui.ComposeDialogs
 import com.r34v.r34v.ui.showError
 import com.r34v.r34v.ui.toast
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import okhttp3.Request
 import java.io.File
+import java.io.IOException
 
 class UpdateController(private val activity: ComponentActivity, private val app: R34Application, private val dialogs: ComposeDialogs) {
     private val updates get() = File(activity.cacheDir, "updates")
+    private val installState = activity.getSharedPreferences("pending_upgrade", Context.MODE_PRIVATE)
+
+    private suspend fun readPending(): PendingUpgrade? = withContext(Dispatchers.IO) {
+        val record = installState.getString("asset", null)
+        val pending = record?.let(PendingUpgrade::decode)?.takeIf { newer(it.version, BuildConfig.VERSION_NAME) && it.file(updates).isFile }
+        val awaitingPermission = installState.getBoolean("awaiting_permission", false)
+        if (pending == null && record != null) installState.edit { clear() }
+        pruneUpgradeCache(updates, pending?.file(updates))
+        pending
+    }
+
+    private suspend fun remember(version: String, asset: UpgradeAsset, file: File): PendingUpgrade = withContext(Dispatchers.IO) {
+        // Pin the verified local digest even for older releases without a GitHub digest.
+        val pending = PendingUpgrade(version, asset.copy(sha256 = file.nameWithoutExtension))
+        check(installState.edit().putString("asset", pending.encode()).remove("awaiting_permission").commit()) { "无法保存待安装更新" }
+        pending
+    }
+
+    private fun offerInstall(pending: PendingUpgrade) {
+        if (!activity.isFinishing && !activity.isDestroyed) {
+            dialogs.confirm("新版本 ${pending.version}", "安装", "安装包已下载并通过校验，可直接安装。") { install(pending) }
+        }
+    }
+
+    private suspend fun offerCached(pending: PendingUpgrade): Boolean {
+        if (cachedUpgrade(updates, pending.asset, ::validate) != null) {
+            offerInstall(pending)
+            return true
+        }
+        installState.edit { clear() }
+        return false
+    }
 
     suspend fun check(silent: Boolean) {
         if (BuildConfig.DEBUG) {
@@ -39,15 +79,22 @@ class UpdateController(private val activity: ComponentActivity, private val app:
             return
         }
         runUpdate(silent) {
+            val pending = readPending()
+            if (pending != null && installState.getBoolean("awaiting_permission", false) && offerCached(pending)) return@runUpdate
             val request = Request.Builder().url("$RELEASES_URL/latest")
                 .header("Accept", "application/vnd.github+json").header("Cache-Control", "no-cache").build()
-            val release = app.network.client.readResponse(request) { response ->
-                val body = response.body?.string().orEmpty()
-                if (response.code == 403 || response.code == 429) {
-                    error(if (body.contains("rate limit", true)) "GitHub 请求过于频繁，请稍后重试" else "GitHub 拒绝访问，请检查网络或仓库权限")
+            val release = try {
+                app.network.client.readResponse(request) { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (response.code == 403 || response.code == 429) {
+                        error(if (body.contains("rate limit", true)) "GitHub 请求过于频繁，请稍后重试" else "GitHub 拒绝访问，请检查网络或仓库权限")
+                    }
+                    check(response.isSuccessful) { "更新检查失败：HTTP ${response.code}" }
+                    JsonParser.parseString(body).asJsonObject
                 }
-                check(response.isSuccessful) { "更新检查失败：HTTP ${response.code}" }
-                JsonParser.parseString(body).asJsonObject
+            } catch (error: IOException) {
+                if (pending != null && offerCached(pending)) return@runUpdate
+                throw error
             }
             app.library.prefs.edit { putLong("update_checked_at", System.currentTimeMillis()) }
             val version = release["tag_name"].asString
@@ -59,20 +106,20 @@ class UpdateController(private val activity: ComponentActivity, private val app:
             val filename = UpgradePackages.select(assets.map { it["name"].asString }, UpgradePackages.needsCompatibility(activity))
                 ?: error("此版本缺少适配当前安装签名的 APK，请稍后重试")
             val asset = UpgradeAsset.fromGitHub(release["id"].asLong, assets.first { it["name"].asString == filename })
-            val pending = cachedUpgrade(updates, asset, ::validate)
+            val cached = cachedUpgrade(updates, asset, ::validate)
             if (activity.isFinishing || activity.isDestroyed) return@runUpdate
-            if (pending != null) {
-                dialogs.confirm("新版本 $version", "安装", "安装包已下载并通过校验，可直接安装。") { install(pending) }
+            if (cached != null) {
+                offerInstall(remember(version, asset, cached))
                 return@runUpdate
             }
             val notes = release["body"]?.takeUnless { it.isJsonNull }?.asString.orEmpty().take(1800)
             dialogs.confirm("新版本 $version", "下载", notes) {
-                activity.lifecycleScope.launch { download(asset) }
+                activity.lifecycleScope.launch { download(version, asset) }
             }
         }
     }
 
-    private suspend fun download(asset: UpgradeAsset) = runUpdate(silent = false) {
+    private suspend fun download(version: String, asset: UpgradeAsset) = runUpdate(silent = false) {
         var progress by mutableStateOf<Float?>(null)
         dialogs.content = { AlertDialog({}, title = { Text("正在下载更新") }, text = {
             val amount = progress
@@ -90,9 +137,7 @@ class UpdateController(private val activity: ComponentActivity, private val app:
         } finally {
             dialogs.dismiss()
         }
-        if (!activity.isFinishing && !activity.isDestroyed) {
-            dialogs.confirm("更新已下载", "安装") { install(file) }
-        }
+        offerInstall(remember(version, asset, file))
     }
 
     private fun validate(file: File) = UpgradePackages.validate(activity, file)
@@ -113,18 +158,46 @@ class UpdateController(private val activity: ComponentActivity, private val app:
         }
     }
 
-    private fun install(file: File) {
-        try {
-            check(file.isFile) { "安装包已从缓存清除，请重新检查更新" }
-            if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
-                activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${activity.packageName}".toUri()))
-                activity.toast("允许安装后返回，再点“检查更新”即可继续安装")
-                return
+    private fun install(pending: PendingUpgrade) {
+        activity.lifecycleScope.launch {
+            runUpdate(silent = false) {
+                check(installState.getString("asset", null) == pending.encode()) { "待安装更新已变更，请重新检查更新" }
+                val file = cachedUpgrade(updates, pending.asset, ::validate) ?: run {
+                    installState.edit { clear() }
+                    error("安装包已失效，请重新检查更新并下载")
+                }
+                if (activity.isFinishing || activity.isDestroyed) return@runUpdate
+                if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
+                    withContext(Dispatchers.IO) {
+                        check(installState.edit().putBoolean("awaiting_permission", true).commit()) { "无法保存安装授权状态" }
+                    }
+                    requestPermission(pending)
+                    return@runUpdate
+                }
+                val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
+                activity.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                installState.edit { remove("awaiting_permission") }
             }
-            val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
-            activity.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        }
+    }
+
+    @androidx.annotation.RequiresApi(26)
+    private fun requestPermission(pending: PendingUpgrade) {
+        val observer = object : DefaultLifecycleObserver {
+            private var leftActivity = false
+            override fun onPause(owner: LifecycleOwner) { leftActivity = true }
+            override fun onResume(owner: LifecycleOwner) {
+                if (!leftActivity) return
+                owner.lifecycle.removeObserver(this)
+                if (activity.packageManager.canRequestPackageInstalls()) install(pending)
+            }
+        }
+        activity.lifecycle.addObserver(observer)
+        try {
+            activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${activity.packageName}".toUri()))
         } catch (error: Exception) {
-            activity.showError(error)
+            activity.lifecycle.removeObserver(observer)
+            throw error
         }
     }
 

@@ -9,6 +9,19 @@ import java.io.ByteArrayOutputStream
 
 internal const val MAX_GALLERY_IMAGE_BYTES = 24 * 1024 * 1024
 
+internal data class GalleryStripBounds(val sourceTop: Int, val destinationTop: Int, val height: Int)
+
+internal fun galleryStripBounds(height: Int, strips: Int): List<GalleryStripBounds> {
+    val stripHeight = height / strips
+    val remainder = height % strips
+    var destinationTop = 0
+    return List(strips) { index ->
+        val sourceTop = height - (index + 1) * stripHeight - remainder
+        val length = stripHeight + if (index == 0) remainder else 0
+        GalleryStripBounds(sourceTop, destinationTop, length).also { destinationTop += length }
+    }
+}
+
 /** Render the bottom-to-top strips used by the public JMComic chapter reader. */
 @Suppress("DEPRECATION")
 internal fun renderGalleryStrips(bytes: ByteArray, strips: Int): ByteArray {
@@ -22,18 +35,12 @@ internal fun renderGalleryStrips(bytes: ByteArray, strips: Int): ByteArray {
         val rendered = createBitmap(width, height)
         try {
             val canvas = Canvas(rendered)
-            val stripHeight = height / strips
-            val remainder = height % strips
-            var destination = 0
-            repeat(strips) { index ->
-                val start = height - (index + 1) * stripHeight - remainder
-                val length = stripHeight + if (index == 0) remainder else 0
-                val bitmap = decoder.decodeRegion(Rect(0, start, width, start + length), null)
+            for ((sourceTop, destinationTop, length) in galleryStripBounds(height, strips)) {
+                val bitmap = decoder.decodeRegion(Rect(0, sourceTop, width, sourceTop + length), null)
                     ?: error("无法解码分条图页")
                 try {
                     // Explicit pixel rectangles keep the result independent of device density.
-                    canvas.drawBitmap(bitmap, null, Rect(0, destination, width, destination + length), null)
-                    destination += length
+                    canvas.drawBitmap(bitmap, null, Rect(0, destinationTop, width, destinationTop + length), null)
                 } finally { bitmap.recycle() }
             }
             val jpeg = bytes.size >= 2 && bytes[0] == 0xff.toByte() && bytes[1] == 0xd8.toByte()

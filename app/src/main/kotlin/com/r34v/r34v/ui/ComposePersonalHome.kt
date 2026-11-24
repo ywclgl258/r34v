@@ -1,4 +1,5 @@
 @file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 package com.r34v.r34v.ui
 
 import androidx.compose.foundation.*
@@ -15,14 +16,32 @@ import androidx.compose.ui.unit.dp
 import com.r34v.r34v.R34Application
 import com.r34v.r34v.R
 import com.r34v.r34v.data.*
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.withContext
 
 @Composable fun rememberPersonalCatalog(app: R34Application, revision: Int, resumed: Boolean): List<CatalogEntry>? {
     val personal by app.library.personal.changes.collectAsState()
+    val historyAndFavorites by app.library.catalogChanges.collectAsState()
     val local by app.localLibrary.changes.collectAsState()
-    val value by produceState<List<CatalogEntry>?>(null, app, revision, personal, local, resumed) {
-        val scanned = app.index.scan(app.playback::cached)
-        do { value = personalCatalog(app, scanned); if (resumed) delay(3000) } while (resumed && currentCoroutineContext().isActive)
+    val videoDownloads by app.playback.downloadChanges.collectAsState()
+    val galleryDownloads by app.galleryDownloads.changes.collectAsState()
+    val scanned by produceState<List<LibraryRecord>?>(null, app, revision, resumed) {
+        if (!resumed) return@produceState
+        var scannedSignature: Pair<Long, Set<String>>? = null
+        combine(app.index.revision, app.playback.downloadChanges) { disk, _ -> disk }.conflate().collect { disk ->
+            val updated = withContext(Dispatchers.IO) {
+                val known = app.playback.downloads().mapNotNull { app.playback.libraryRecord(it) }
+                val completed = known.asSequence().filter { it.state == LibraryRecord.STATE_COMPLETED }.map { it.cacheKey }.toSet()
+                val signature = disk to completed
+                if (scannedSignature == signature) null else app.index.scan(app.playback::cached, known).also { scannedSignature = signature }
+            }
+            if (updated != null) value = updated
+        }
+    }
+    val value by produceState<List<CatalogEntry>?>(null, app, resumed, scanned, personal, historyAndFavorites, local, videoDownloads, galleryDownloads) {
+        if (resumed) scanned?.let { value = personalCatalog(app, it) }
     }
     return value
 }
@@ -36,7 +55,7 @@ import kotlinx.coroutines.*
     val snapshot = remember(personal) { store.personal.snapshot() }
     var categoryIndex by rememberSaveable { mutableIntStateOf(0) }
     val category = SiteCategory.entries.getOrNull(categoryIndex - 1)
-    fun matches(video: Video) = category == null || SiteRegistry.byIdOrDefault(video.site).category == category
+    fun matches(video: Video) = category == null || video.workCategory == category
     val later = snapshot.shelves.firstOrNull { it.id == PersonalLibrary.WATCH_LATER }?.entries.orEmpty().filter { !it.completed && matches(it.video) }
     val continuing = catalog.orEmpty().filter { it.started && !it.completed && matches(it.video) }
     val queued = later.map { item -> catalog?.firstOrNull { it.video.entryKey == item.video.entryKey } ?: CatalogEntry(item.video) }
@@ -46,7 +65,9 @@ import kotlinx.coroutines.*
     val queuedRail = queued.filter { it.video.entryKey != hero?.video?.entryKey && it.video.entryKey !in continuingKeys }
     val unread = remember(snapshot, blocked) {
         store.personal.visibleSubscriptionEntries(data = snapshot).count { !it.read } +
-            snapshot.searchUpdates.values.sumOf { box -> box.entries.count { !it.read } }
+            snapshot.savedSearches.sumOf { search ->
+                store.personal.visibleSearchEntries(search, snapshot, search.directoryRequests(app.network).keys).count { !it.read }
+            }
     }
     val padding = 14.dp
     LazyColumn(Modifier.fillMaxSize().testTag("personal-home"),

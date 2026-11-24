@@ -9,6 +9,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.r34v.r34v.data.LocalBook
 import com.r34v.r34v.data.LocalVideo
 import com.r34v.r34v.data.SiteRegistry
 import com.r34v.r34v.data.Video
@@ -48,6 +49,23 @@ class LocalSeekPreviewTest {
         val finished = runBlocking { personalCatalog(app) }.single { it.video.entryKey == video.entryKey }
         assertTrue(finished.completed)
         assertEquals(1f, finished.fraction ?: 0f, 0f)
+    }
+
+    @Test fun finishedClipPreviewDoesNotOverwriteHistoryWithoutPlaying() = withLocalPlayer(
+        autoplay = false,
+        watchedSeconds = 8,
+        ended = true,
+        afterClose = { video ->
+            val saved = requireNotNull(app.library.watch(video.id, video.site))
+            assertEquals(8L, saved.position)
+            assertEquals(true, saved.ended)
+            assertTrue(saved.finished)
+        },
+    ) { _, engine ->
+        ui.runOnIdle {
+            assertFalse(engine.isPlaying)
+            assertEquals(0L, engine.currentPosition)
+        }
     }
 
     @Test fun sliderShowsLatestLocalPreviewAndSeeksOnceOnRelease() = withLocalPlayer(autoplay = true) { _, engine ->
@@ -111,17 +129,27 @@ class LocalSeekPreviewTest {
         }
     }
 
-    private fun withLocalPlayer(autoplay: Boolean, watchedSeconds: Long? = null, test: (Video, ExoPlayer) -> Unit) {
-        val file = File.createTempFile("seek-preview-", ".mp4", app.cacheDir)
+    private fun withLocalPlayer(
+        autoplay: Boolean,
+        watchedSeconds: Long? = null,
+        ended: Boolean? = null,
+        afterClose: (Video) -> Unit = {},
+        test: (Video, ExoPlayer) -> Unit,
+    ) {
+        val id = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("seek-preview-${System.nanoTime()}".toByteArray()).joinToString("") { "%02x".format(it) }
+        val directory = File(app.localLibrary.rootDirectory(), id).apply { check(mkdirs()) }
+        val file = File(directory, "clip.mp4")
         val site = SiteRegistry.LOCAL.id
-        val video = Video(file.nameWithoutExtension, "Local seek test", site = site)
         val store = app.library
         val keys = listOf("$site:video_cache_v1", "$site:watch_history_v1", "settings_v1_auto_fullscreen")
         val previous = store.prefs.all.filterKeys { it in keys }
         try {
             instrumentation.context.assets.open("test-pattern.mp4").use { input -> file.outputStream().use(input::copyTo) }
+            File(directory, "book.json").writeText(store.gson.toJson(LocalBook(id, "Local seek test", listOf(file.name), file.length(), kind = "video")))
+            val video = app.localLibrary.videoEntry(requireNotNull(app.localLibrary.book(id)))
             store.addLocalVideo(LocalVideo(video.id, video.title, file.absolutePath, site = site), site)
-            watchedSeconds?.let { store.saveWatch(Watch(video.id, video.title, position = it, duration = 8, site = site)) }
+            watchedSeconds?.let { store.saveWatch(Watch(video.id, video.title, position = it, duration = 8, site = site, ended = ended)) }
             store.set("auto_fullscreen", false)
             val intent = Intent(app, PlayerActivity::class.java).putExtra("video", store.gson.toJson(video))
                 .putExtra("local", file.absolutePath).putExtra("autoplay", autoplay)
@@ -136,6 +164,7 @@ class LocalSeekPreviewTest {
                 }
                 test(video, requireNotNull(ready))
             }
+            afterClose(video)
         } finally {
             store.prefs.edit().apply {
                 for (key in keys) when (val value = previous[key]) {
@@ -144,7 +173,7 @@ class LocalSeekPreviewTest {
                     else -> remove(key)
                 }
             }.commit()
-            file.delete()
+            directory.deleteRecursively()
         }
     }
 }

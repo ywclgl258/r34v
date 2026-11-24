@@ -91,19 +91,7 @@ class FourKhdAdapter(
 
     override suspend fun galleryImage(url: String): GalleryImage {
         val identity = FourKhdProtocol.imageIdentity(site, url) ?: error("无法识别 4KHD 图片地址")
-        // The encoded page and offset are normally exact; a page that turned out shorter than the
-        // first one is followed forward instead of failing the whole read.
-        var page = identity.page
-        var offset = identity.offset
-        repeat(4) {
-            val images = imagesOf(identity.canonical, page)
-            check(images.isNotEmpty()) { "这条内容的第 $page 个分页没有图片，请刷新后重试" }
-            if (offset in images.indices) return GalleryImage(identity.index, url, images[offset], null, null)
-            if (offset < 0) error("图片序号无效，请刷新后重试")
-            offset -= images.size
-            page++
-        }
-        error("这条内容的分页结构与记录不一致，请刷新后重试")
+        return PhotoPages.image(identity, url, ::imagesOf)
     }
 
     override fun linkRequest(url: String): FeedRequest? = FourKhdProtocol.linkRequest(site, url)
@@ -133,7 +121,6 @@ class FourKhdAdapter(
 
 object FourKhdProtocol {
     private val contentPath = Regex("^/content/(\\d+)/([^/]+)\\.html(?:/(\\d+))?/?$")
-    private val identity = Regex("^(\\d+)-(\\d+)-(\\d+)$")
     const val CATEGORY = "写真"
 
     fun sorts(request: FeedRequest): List<Sort> = when (request.kind) {
@@ -141,9 +128,6 @@ object FourKhdProtocol {
         FeedKind.POPULAR -> listOf(Sort.POPULARITY)
         else -> listOf(Sort.NEWEST, Sort.POPULARITY)
     }
-
-    /** Everything one gallery page address carries: which book, which image, where it lives. */
-    data class Identity(val canonical: String, val index: Int, val page: Int, val offset: Int)
 
     fun postId(raw: String): String = entryId(raw)
 
@@ -196,22 +180,8 @@ object FourKhdProtocol {
     fun pageUrl(canonical: String, index: Int, page: Int, offset: Int): String =
         (if (page <= 1) canonical else "$canonical/$page") + "#$index-$page-$offset"
 
-    /** Flat book index → (content page, offset inside that page). */
-    fun position(index: Int, pageSize: Int, pageCount: Int): Pair<Int, Int> {
-        require(index > 0 && pageSize > 0) { "书籍位置无效" }
-        val page = (((index - 1) / pageSize) + 1).coerceAtMost(pageCount)
-        return page to (index - 1 - (page - 1) * pageSize)
-    }
-
-    fun imageIdentity(site: SiteContext, raw: String): Identity? {
-        val url = raw.toHttpUrlOrNull()?.takeIf { it.isHttps && site.isSite(it.host) } ?: return null
-        val canonical = contentUrl(site, raw) ?: return null
-        val numbers = identity.matchEntire(url.fragment.orEmpty())?.groupValues ?: return null
-        val index = numbers[1].toIntOrNull()?.takeIf { it > 0 } ?: return null
-        val page = numbers[2].toIntOrNull()?.takeIf { it > 0 } ?: return null
-        val offset = numbers[3].toIntOrNull()?.takeIf { it >= 0 } ?: return null
-        return Identity(canonical, index, page, offset)
-    }
+    fun imageIdentity(site: SiteContext, raw: String): PhotoPages.Identity? =
+        PhotoPages.decode(site, raw) { contentUrl(site, it) }
 
     fun feed(doc: Document, site: SiteContext): List<Video> =
         (doc.select("li.wp-block-post") + doc.select("li.post")).distinct()

@@ -92,7 +92,7 @@ internal fun artworkPalette(category: SiteCategory, hue: Float? = null): Artwork
 /** Use the same URL admission rules and site partition as visible covers. */
 internal fun coverRequest(app: R34Application, site: SiteContext, url: String): ImageRequest.Builder {
     val allowed = url.startsWith("https://") || BuildConfig.DEBUG && url.startsWith("http://") ||
-        site.id == SiteRegistry.LOCAL.id && app.localLibrary.ownsImageUri(url)
+        site.id == SiteRegistry.LOCAL.id && (app.localLibrary.ownsImageUri(url) || app.localLibrary.ownsThumbnail(url))
     val key = "${site.id}|$url"
     return ImageRequest.Builder(app).data(url.takeIf { allowed }).memoryCacheKey(key).diskCacheKey(key)
 }

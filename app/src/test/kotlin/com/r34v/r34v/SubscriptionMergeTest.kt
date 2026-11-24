@@ -39,6 +39,31 @@ class SubscriptionMergeTest {
         assertEquals(listOf("x", "z", "y"), mixed.map { it.id })
     }
 
+    @Test fun IwaraVideoAndGalleryWithSameIdBothSurviveAggregation() {
+        val video = video("same", title = "Shared title", site = SiteRegistry.IWARA.id)
+        val gallery = video.copy(mediaKind = MediaKind.GALLERY)
+        val tags = listOf(TagFeed(Subscription("one", site = video.site), listOf(video, gallery)),
+            TagFeed(Subscription("two", site = video.site), listOf(video, gallery)))
+        val keys = listOf(video.entryKey, gallery.entryKey)
+        assertEquals(keys, SubscriptionMerge.grouped(tags).single().second.map(Video::entryKey))
+        SubscriptionOrder.entries.forEach { order ->
+            assertEquals(keys, SubscriptionMerge.sort(tags, order).map(Video::entryKey))
+        }
+    }
+
+    @Test fun IwaraLegacyBaselineDoesNotSuppressANewGallery() {
+        val video = video("same", title = "Shared title", site = SiteRegistry.IWARA.id)
+        val gallery = video.copy(mediaKind = MediaKind.GALLERY)
+        val feed = TagFeed(Subscription("one", site = video.site), listOf(video, gallery))
+        val first = SubscriptionInbox().refreshed(listOf(TagFeed(Subscription("one", site = video.site), listOf(video))), now = 1)
+        val legacy = first.copy(known = mapOf("one" to listOf(video.id)))
+        assertTrue(legacy.entries.single().read)
+        val refreshed = legacy.refreshed(listOf(feed), now = 2)
+        assertEquals(setOf(video.entryKey, gallery.entryKey), refreshed.entries.map { it.video.entryKey }.toSet())
+        assertTrue(refreshed.entries.single { it.video.mediaKind == MediaKind.VIDEO }.read)
+        assertFalse(refreshed.entries.single { it.video.mediaKind == MediaKind.GALLERY }.read)
+    }
+
     @Test fun titleOrderIsCaseInsensitiveAndStableForEqualTitles() {
         val tags = listOf(TagFeed(Subscription(slug = "a", site = "r34v"),
             listOf(video("2", "beta"), video("1", "Alpha"), video("3", "alpha"))))

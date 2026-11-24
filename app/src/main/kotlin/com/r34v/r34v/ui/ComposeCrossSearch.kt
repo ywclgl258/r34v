@@ -30,7 +30,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 data class SearchBucket(val videos: List<Video> = emptyList(), val next: Int = 1, val cursor: String = "", val more: Boolean = true,
-    val busy: Boolean = false, val error: String? = null, val cached: Boolean = false)
+    val busy: Boolean = false, val error: String? = null, val cached: Boolean = false, val directory: FeedRequest? = null)
 
 class CrossSearchState : ViewModel() {
     var buckets by mutableStateOf<Map<String, SearchBucket>>(emptyMap()); private set
@@ -48,31 +48,35 @@ class CrossSearchState : ViewModel() {
         languages = languageOverrides
         jobs.values.forEach { it.cancel() }; jobs.clear(); generation++; signature = key
         buckets = sites.associateWith { SearchBucket() }
-        sites.forEach { load(app, query, it) }
+        sites.forEach { load(app, it) }
     }
-    fun refreshSource(app: R34Application, query: String, site: String) {
-        jobs[site]?.cancel(); buckets = buckets + (site to SearchBucket()); load(app, query, site)
+    fun refreshSource(app: R34Application, site: String) {
+        jobs[site]?.cancel(); buckets = buckets + (site to SearchBucket()); load(app, site)
     }
-    fun load(app: R34Application, query: String, siteId: String) {
+    fun load(app: R34Application, siteId: String) {
         val bucket = buckets[siteId] ?: return
         if (bucket.busy || !bucket.more) return
         val site = SiteRegistry.byId(siteId) ?: return
         val epoch = generation
+        val language = GalleryLanguage.entries.firstOrNull { it.name == languages[siteId] } ?: app.library.galleryLanguage(siteId)
+        val adapter = AdapterRegistry.adapter(site, app.network)
+        val request = condition.feedRequest(adapter, language = language).copy(page = bucket.next, cursor = bucket.cursor)
+        if (adapter.indexSection(request) != null) {
+            buckets = buckets + (siteId to SearchBucket(more = false, directory = request))
+            return
+        }
         buckets = buckets + (siteId to bucket.copy(busy = true, error = null))
         jobs[siteId] = viewModelScope.launch {
             try {
                 val page = permits.withPermit {
                     if (siteId == "exhentai" && !app.network.session.hasGallerySession(site)) error("本站需要登录，请在站点设置中完成认证")
-                    val adapter = AdapterRegistry.adapter(site, app.network)
                     check(Capability.SEARCH in adapter.capabilities) { "本站不支持关键词搜索" }
-                    app.repository.feed(adapter.searchRequest(condition.query, FeedKind.SEARCH).copy(page = bucket.next, cursor = bucket.cursor,
-                        includeTags = condition.includeTags, excludeTags = condition.excludeTags, filter = condition.filter,
-                        language = if (adapter.supportsLanguage) GalleryLanguage.entries.firstOrNull { it.name == languages[siteId] } ?: app.library.galleryLanguage(siteId) else GalleryLanguage.ALL), site)
+                    app.repository.feed(request, site)
                 }
                 ensureActive()
                 if (generation != epoch) return@launch
                 val repeated = page.nextCursor != null && page.nextCursor == bucket.cursor && bucket.cursor.isNotBlank()
-                val videos = (bucket.videos + page.videos.map { it.copy(site = siteId, mediaKind = site.mediaKind) }
+                val videos = (bucket.videos + page.videos.map { it.copy(site = siteId) }
                     .filter { app.library.allowed(it, siteId) }).distinctBy { it.entryKey }
                 buckets = buckets + (siteId to SearchBucket(videos, bucket.next + 1, page.nextCursor.orEmpty(), page.hasNext && !repeated,
                     error = if (repeated) "站点返回了重复分页，请刷新搜索" else null, cached = page.cached))
@@ -118,9 +122,11 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
 
 @Composable fun CrossSearchScreen(app: R34Application, state: CrossSearchState, query: String, sites: List<String>,
     play: (Video) -> Unit, favorite: (Video) -> Unit, rulesVersion: Int, initialCategory: String = "", languages: Map<String, String> = emptyMap(),
-    categoryChanged: (String) -> Unit = {}, save: (() -> Unit)? = null, condition: SearchCondition? = null) {
-    var category by rememberSaveable(initialCategory) { mutableIntStateOf(SiteCategory.entries.indexOfFirst { it.name == initialCategory } + 1) }
+    categoryChanged: (String) -> Unit = {}, save: (() -> Unit)? = null, condition: SearchCondition? = null,
+    openDirectory: (FeedRequest, SiteContext) -> Unit) {
+    val category = SiteCategory.entries.indexOfFirst { it.name == initialCategory } + 1
     var only by rememberSaveable { mutableStateOf("") }
+    val visible = sites.filter { category == 0 || SiteRegistry.byId(it)?.category == SiteCategory.entries[category - 1] }
     LaunchedEffect(query, sites, rulesVersion, languages, condition) { state.search(app, query, sites, languageOverrides = languages, condition = condition) }
     val columns = when {
         LocalConfiguration.current.fontScale > 1.5f && windowSizeDp().width < 400 -> 1
@@ -130,12 +136,14 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
         windowSizeDp().width >= 600 -> 3
         else -> 2
     }
-    val visible = sites.filter { category == 0 || SiteRegistry.byIdOrDefault(it).category == SiteCategory.entries[category - 1] }
     val activeOnly = only.takeIf { it in visible }.orEmpty()
     val activeSites = if (activeOnly.isBlank()) visible else listOf(activeOnly)
     val merged = remember(state.buckets, activeSites) {
-        activeSites.flatMap { id -> (state.buckets[id]?.videos.orEmpty()).map { it.copy(site = id) } }
-            .distinctBy { it.entryKey }
+        activeSites.flatMap { state.buckets[it]?.videos.orEmpty() }.distinctBy { it.entryKey }
+    }
+    val directories = activeSites.mapNotNull { id ->
+        val site = SiteRegistry.byId(id) ?: return@mapNotNull null
+        state.buckets[id]?.directory?.let { site to it }
     }
     val failures = activeSites.mapNotNull { id -> state.buckets[id]?.error?.let { id to it } }
     val pending = activeSites.count { state.buckets[it]?.busy != false }
@@ -147,7 +155,6 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
                 Title(if (query.isBlank()) "高级条件搜索" else "搜索：$query", large = true, maxLines = 3)
                 if (condition != null && !condition.isEmpty && query.isNotBlank()) Copy("已应用高级筛选")
                 ContentTabs(listOf("全部") + SiteCategory.entries.map { it.title }, category) { index ->
-                    category = index
                     categoryChanged(if (index == 0) "" else SiteCategory.entries[index - 1].name)
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -171,6 +178,11 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             }
         }
+        directories.forEach { (site, request) ->
+            item(span = StaggeredGridItemSpan.FullLine, key = "directory:${site.id}") {
+                SearchDirectoryEntry(site) { openDirectory(request, site) }
+            }
+        }
         items(merged.size, key = { merged[it].entryKey }, contentType = { "result" }) { index ->
             val video = merged[index]
             MediaCard(video, menu = listOf("收藏 / 取消收藏" to { favorite(video) })) { play(video) }
@@ -186,7 +198,7 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
                             Text(SiteRegistry.byIdOrDefault(id).name, style = MaterialTheme.typography.titleMedium)
                             Copy(message)
                         }
-                        TextAction({ state.refreshSource(app, query, id) }) { Text("刷新来源") }
+                        TextAction({ state.refreshSource(app, id) }) { Text("刷新来源") }
                     }
                 }
             }
@@ -194,16 +206,28 @@ fun ComposeDialogs.searchSources(app: R34Application, selected: List<String>, ac
         item(span = StaggeredGridItemSpan.FullLine, key = "status") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (pending > 0 && merged.isEmpty()) Loading(title = "正在搜索 $pending 个来源")
-                if (pending == 0 && merged.isEmpty() && failures.isEmpty()) {
+                if (pending == 0 && merged.isEmpty() && failures.isEmpty() && (activeSites.isEmpty() || activeSites.size != directories.size)) {
                     Copy(if (activeSites.isEmpty()) "此分类没有已选的搜索来源" else "当前条件下暂无结果",
                         Modifier.fillMaxWidth().artworkPanel().padding(16.dp).semantics { liveRegion = LiveRegionMode.Polite })
                 }
                 if (pending == 0) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     activeSites.filter { state.buckets[it]?.more == true && state.buckets[it]?.error == null }
-                        .forEach { id -> Action("加载 ${SiteRegistry.byIdOrDefault(id).name} 下一页") { state.load(app, query, id) } }
+                        .forEach { id -> Action("加载 ${SiteRegistry.byIdOrDefault(id).name} 下一页") { state.load(app, id) } }
                 }
             }
         }
+    }
+}
+
+@Composable internal fun SearchDirectoryEntry(site: SiteContext, description: String = "搜索结果位于站点目录", open: () -> Unit) {
+    val label = if (site.id == SiteRegistry.GALLERYEPIC.id) "Coser 目录" else "搜索目录"
+    Row(Modifier.fillMaxWidth().artworkPanel().padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(site.name, style = MaterialTheme.typography.titleMedium)
+            Copy(description)
+        }
+        TextAction(open) { Text("打开 $label") }
     }
 }
 
@@ -215,9 +239,13 @@ private fun SearchSourceFilter(sites: List<String>, active: String, buckets: Map
         DropdownMenu(open, { open = false }) {
             (listOf("") + sites).forEach { id ->
                 val name = if (id.isBlank()) "全部来源" else SiteRegistry.byIdOrDefault(id).name
-                val count = if (id.isBlank()) sites.sumOf { buckets[it]?.videos?.size ?: 0 } else buckets[id]?.videos?.size ?: 0
+                val status = when {
+                    id.isBlank() -> sites.sumOf { buckets[it]?.videos?.size ?: 0 }.toString()
+                    buckets[id]?.directory != null -> "目录"
+                    else -> (buckets[id]?.videos?.size ?: 0).toString()
+                }
                 DropdownMenuItem(
-                    text = { Text("$name · $count") },
+                    text = { Text("$name · $status") },
                     onClick = { open = false; select(id) },
                     trailingIcon = if (active == id) ({ Glyph(R.drawable.ic_check, null) }) else null,
                 )

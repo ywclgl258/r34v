@@ -25,12 +25,20 @@ data class AdvancedFilter(
     fun matchesLoaded(video: Video): Boolean {
         val seconds = durationSeconds(video.duration)
         val pages = Regex("(\\d+)").find(video.duration)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-        val rating = Regex("(\\d+(?:\\.\\d+)?)").find(video.rating)?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
         return (minDurationSec == 0 || seconds >= minDurationSec) &&
             (maxDurationSec == 0 || seconds in 1..maxDurationSec) &&
             (minPages == 0 || pages >= minPages) && (maxPages == 0 || pages in 1..maxPages) &&
-            (minRating == 0 || rating >= minRating || rating * 20 >= minRating)
+            (minRating == 0 || ratingInStars(video.rating) >= minRating)
     }
+}
+
+private val ratingFormat = Regex("(?:评分\\s*)?(?:Average:\\s*)?(\\d+(?:\\.\\d+)?)\\s*(%|/\\s*5|★|星)?", RegexOption.IGNORE_CASE)
+
+private fun ratingInStars(raw: String): Float {
+    val match = ratingFormat.matchEntire(raw.trim()) ?: return 0f
+    val value = match.groupValues[1].toFloatOrNull() ?: return 0f
+    val stars = if (match.groupValues[2] == "%") value / 20 else value
+    return stars.takeIf { it in 0f..5f } ?: 0f
 }
 
 data class SearchCondition(
@@ -133,7 +141,17 @@ data class DiscoveryChannel(
     val savedSearch: SavedSearch? = null,
     val hidden: Boolean = false,
     val order: Int = 0,
-)
+    val contentKind: MediaKind? = null,
+) {
+    /** Old channel JSON also lacks kind, target and id even though their Kotlin declarations have defaults. */
+    internal fun restored(): DiscoveryChannel = copy(
+        id = id?.takeIf(String::isNotBlank) ?: UUID.randomUUID().toString(), site = site ?: "", kind = kind ?: FeedKind.SEARCH, target = target ?: "",
+        savedSearch = savedSearch?.restored(),
+    )
+    val feedRequest: FeedRequest get() = restored().let {
+        FeedRequest(it.kind, it.target, contentKind = contentKind ?: MediaKind.VIDEO)
+    }
+}
 
 data class TimestampSpan(val start: Int, val end: Int, val positionMs: Long)
 

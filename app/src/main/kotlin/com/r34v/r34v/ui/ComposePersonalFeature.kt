@@ -21,7 +21,8 @@ import com.r34v.r34v.data.*
 @Composable fun PersonalFeature(entry: CatalogEntry, play: (Video) -> Unit) {
     val config = LocalConfiguration.current
     val site = SiteRegistry.byIdOrDefault(entry.video.site)
-    val palette = rememberArtworkPalette(site, entry.video.thumb, cachedOnly = entry.offline)
+    val category = entry.video.workCategory
+    val palette = rememberArtworkPalette(site, entry.video.thumb, category, cachedOnly = entry.offline)
     ArtworkColors(palette) {
     BoxWithConstraints(
         Modifier.fillMaxWidth().padding(horizontal = 14.dp)
@@ -29,10 +30,10 @@ import com.r34v.r34v.data.*
     ) {
         val separate = config.fontScale > 1.3f || maxWidth < 320.dp
         val wide = maxWidth >= 640.dp
-        val fitCover = site.category != SiteCategory.VIDEO || entry.video.mediaKind == MediaKind.GALLERY
-        val action = "${if (entry.started) "继续" else "开始"}${site.category.verb}"
-        val tag = when (site.category) { SiteCategory.VIDEO -> "video-stage"; SiteCategory.COMIC -> "comic-stage"; SiteCategory.PHOTO -> "photo-stage" }
-        val icon = when (site.category) { SiteCategory.VIDEO -> R.drawable.ic_play; SiteCategory.COMIC -> R.drawable.ic_bookmark; SiteCategory.PHOTO -> R.drawable.ic_explore }
+        val fitCover = category != SiteCategory.VIDEO
+        val action = "${if (entry.started) "继续" else "开始"}${category.verb}"
+        val tag = when (category) { SiteCategory.VIDEO -> "video-stage"; SiteCategory.COMIC -> "comic-stage"; SiteCategory.PHOTO -> "photo-stage" }
+        val icon = when (category) { SiteCategory.VIDEO -> R.drawable.ic_play; SiteCategory.COMIC -> R.drawable.ic_bookmark; SiteCategory.PHOTO -> R.drawable.ic_explore }
         val info: @Composable ColumnScope.() -> Unit = {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(site.name, Modifier.weight(1f), color = palette.muted,

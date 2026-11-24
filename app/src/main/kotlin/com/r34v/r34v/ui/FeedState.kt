@@ -6,10 +6,13 @@ import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
 import androidx.compose.runtime.*
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import com.google.gson.annotations.SerializedName
 import com.google.gson.reflect.TypeToken
 import com.r34v.r34v.R34Application
 import com.r34v.r34v.data.*
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import java.security.MessageDigest
 
 internal data class FeedPosition(
@@ -69,17 +72,40 @@ class FeedState internal constructor(
 }
 
 class FeedStates(application: Application) : AndroidViewModel(application) {
-    private val store = (application as R34Application).library
-    private data class Key(val site: String, val screen: String, val request: FeedRequest, val blocked: List<String>)
+    private val app = application as R34Application
+    private val store = app.library
+    private val iwaraSession = app.network.iwaraSessionGeneration
+    private data class Key(val site: String, val screen: String, val request: FeedRequest, val blocked: List<String>, val accountGeneration: Long?)
     private val pages = object : LinkedHashMap<Key, FeedState>(8, .75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Key, FeedState>?) = size > 8
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Key, FeedState>?): Boolean {
+            if (size <= 8) return false
+            if (eldest?.key?.accountGeneration != null) eldest.value.reset()
+            return true
+        }
     }
-    fun page(site: String, screen: String, request: FeedRequest, blocked: List<String>): FeedState {
-        val key = Key(site, screen, request, blocked.toList())
+
+    init {
+        viewModelScope.launch {
+            iwaraSession.collect { generation ->
+                pages.entries.removeAll { (key, state) ->
+                    val obsolete = key.accountGeneration != null && key.accountGeneration != generation
+                    if (obsolete) state.reset()
+                    obsolete
+                }
+            }
+        }
+    }
+
+    fun page(site: String, screen: String, request: FeedRequest, blocked: List<String>, accountGeneration: Long? = null): FeedState {
+        val accountFeed = site == SiteRegistry.IWARA.id && request.kind == FeedKind.SUBSCRIPTIONS
+        val generation = if (accountFeed) accountGeneration ?: iwaraSession.value else null
+        if (generation != null && generation != iwaraSession.value) return FeedState(request)
+        val key = Key(site, screen, request, blocked.toList(), generation)
         val old = pages[key]
         if (old != null && (!old.loaded || System.currentTimeMillis() - old.loadedAt < 5 * 60_000)) return old
+        if (accountFeed) old?.reset()
 
-        val state = if (screen == "siteHome" || screen == "explore") {
+        val state = if (!accountFeed && (screen == "siteHome" || screen == "explore")) {
             val id = MessageDigest.getInstance("SHA-256").digest(store.gson.toJson(listOf(site, screen, request, key.blocked)).toByteArray())
                 .joinToString("") { "%02x".format(it) }
             val saved = positions()[id]?.takeIf { !it.work.isNullOrBlank() && it.throughPage >= request.page }

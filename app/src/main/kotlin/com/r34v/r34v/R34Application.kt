@@ -96,7 +96,7 @@ class R34Application : Application() {
         } finally {
             withContext(NonCancellable + Dispatchers.Main) {
                 storage.endChange()
-                if (!storage.pendingRestart) {
+                if (storage.canWriteDownloads) {
                     if (resumeVideos) manager.resumeDownloads()
                     galleryDownloads.resumePending()
                 }

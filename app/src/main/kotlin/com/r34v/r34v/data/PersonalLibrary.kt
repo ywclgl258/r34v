@@ -21,8 +21,23 @@ data class SubscriptionInbox(val known: Map<String, List<String>> = emptyMap(), 
 internal data class SubscriptionTagRefresh(val baselineCreated: Boolean, val newUnread: Int)
 data class SavedSearch(val id: String = UUID.randomUUID().toString(), val name: String = "", val query: String = "",
     val sources: List<String> = emptyList(), val category: String = "", val languages: Map<String, String> = emptyMap(),
-    val includeTags: List<String> = emptyList(), val excludeTags: List<String> = emptyList(), val filter: AdvancedFilter = AdvancedFilter()) {
-    val condition: SearchCondition get() = SearchCondition(query, includeTags, excludeTags, filter)
+    val includeTags: List<String> = emptyList(), val excludeTags: List<String> = emptyList(), val filter: AdvancedFilter = AdvancedFilter(),
+    val singleSiteScope: FeedKind? = null) {
+    /** Gson allocates legacy objects without invoking constructor defaults for absent fields. */
+    internal fun restored(): SavedSearch = copy(
+        id = id?.takeIf(String::isNotBlank) ?: UUID.randomUUID().toString(), name = name ?: "", query = query ?: "",
+        sources = sources ?: emptyList(), category = category ?: "", languages = languages ?: emptyMap(),
+        includeTags = includeTags ?: emptyList(), excludeTags = excludeTags ?: emptyList(), filter = filter ?: AdvancedFilter(),
+    )
+    val condition: SearchCondition get() = restored().let { SearchCondition(it.query, it.includeTags, it.excludeTags, it.filter) }
+    val singleSite: SiteContext? get() = when (singleSiteScope) {
+        FeedKind.SEARCH, FeedKind.TAG, FeedKind.MODEL -> sources.singleOrNull()?.let(SiteRegistry::byId)
+        else -> null
+    }
+    fun matchingSources(): List<SiteContext> {
+        val saved = restored()
+        return saved.sources.mapNotNull(SiteRegistry::byId).filter { saved.category.isBlank() || it.category.name == saved.category }
+    }
 }
 enum class SmartRule(val title: String) { UNFINISHED("未看完"), OFFLINE_UNSEEN("已离线未看"), RECENT("最近加入") }
 data class SmartShelf(val id: String = UUID.randomUUID().toString(), val name: String = "", val rule: SmartRule = SmartRule.UNFINISHED,
@@ -62,12 +77,13 @@ fun SubscriptionInbox.refreshed(feeds: List<TagFeed>, now: Long = System.current
                 }
             } else {
                 val earlier = nextEntries[key]
-                val baseline = previous == null || video.id in previous
+                val baseline = previous == null || key in previous ||
+                    video.mediaKind == MediaKind.VIDEO && video.id in previous
                 val latest = video.copy(tagSlugs = video.tagSlugs ?: earlier?.video?.tagSlugs)
                 nextEntries[key] = InboxEntry(latest, read = baseline && (earlier?.read ?: true), at = now)
             }
         }
-        nextKnown[slug] = (feed.videos.map { it.id } + previous.orEmpty()).distinct().take(1000)
+        nextKnown[slug] = (feed.videos.map { it.entryKey } + previous.orEmpty()).distinct().take(1000)
     }
     return SubscriptionInbox(nextKnown, nextEntries.values.sortedByDescending { it.at }.take(1000))
 }
@@ -85,7 +101,9 @@ class PersonalStore(private val library: LibraryStore) {
     fun snapshot(): PersonalLibrary = synchronized(library) {
         val raw = library.prefs.getString(KEY, null)
         if (cachedSnapshot != null && raw == cachedRaw) return@synchronized cachedSnapshot!!
-        val parsed = raw?.let { runCatching { library.gson.fromJson(it, PersonalLibrary::class.java) }.getOrNull() }
+        val parsed = raw?.let {
+            runCatching { library.gson.fromJson(it, PersonalLibrary::class.java).restored() }.getOrNull()
+        }
         // 解析失败时不能静默当作空库：那会在下一次编辑时把片单、书签、收藏整体覆盖掉。
         // 先把原始内容另存为损坏快照，再返回空库继续可用，用户仍可从备份键里找回。
         if (raw != null && parsed == null) preserveCorrupt(raw)
@@ -107,12 +125,18 @@ class PersonalStore(private val library: LibraryStore) {
             library.prefs.edit { putString(KEY, raw) }
         }
     }
+    private fun PersonalLibrary.restored(): PersonalLibrary = copy(
+        savedSearches = savedSearches.map { it.restored() },
+        channels = channels.map { it.restored() },
+    )
+
     fun shelves() = snapshot().shelves
     fun saveSearch(value: SavedSearch) {
         require(value.name.trim().length in 1..80 && value.query.length <= 2048 && !value.condition.isEmpty)
         value.filter.validate()
         require(value.sources.isNotEmpty() && value.sources.all { id -> SiteRegistry.all.any { it.id == id } })
-        val normalized = value.copy(name = value.name.trim(), query = value.query.trim(), sources = value.sources.distinct())
+        val saved = value.restored()
+        val normalized = saved.copy(name = saved.name.trim(), query = saved.query.trim(), sources = saved.sources.distinct())
         change { it.copy(savedSearches = it.savedSearches.filterNot { p -> p.id == value.id } + normalized,
             searchUpdates = if (it.searchUpdates[value.id]?.conditionKey == normalized.conditionKey) it.searchUpdates else it.searchUpdates - value.id) }
     }
@@ -124,13 +148,18 @@ class PersonalStore(private val library: LibraryStore) {
             if (search.id == id) search.copy(name = normalized) else search
         }) }
     }
-    fun refreshSearch(search: SavedSearch, site: String, page: FeedPage?, error: String = "") = change { data ->
+    fun refreshSearch(search: SavedSearch, site: String, page: FeedPage?, error: String = "", directory: Boolean = false) = change { data ->
         val current = data.savedSearches.firstOrNull { it.id == search.id }
         if (current == null || current.conditionKey != search.conditionKey || site !in current.sources) data
         else {
             val box = data.searchUpdates[search.id]?.takeIf { it.conditionKey == current.conditionKey } ?: SavedSearchInbox(current.conditionKey)
-            data.copy(searchUpdates = data.searchUpdates + (search.id to box.refreshed(site, page, error)))
+            data.copy(searchUpdates = data.searchUpdates + (search.id to box.refreshed(site, page, error, directory = directory)))
         }
+    }
+    internal fun visibleSearchEntries(search: SavedSearch, data: PersonalLibrary, directorySources: Set<String>): List<InboxEntry> {
+        val sources = search.matchingSources().mapTo(mutableSetOf()) { it.id } - directorySources
+        val entries = data.searchUpdates[search.id]?.entries.orEmpty().filter { it.video.site in sources }
+        return library.filterAllowed(entries, InboxEntry::video)
     }
     fun markSearchRead(id: String, keys: Set<String>) = change { data ->
         val box = data.searchUpdates[id]
@@ -275,9 +304,11 @@ class PersonalStore(private val library: LibraryStore) {
     }
     fun pinFeed(site: String, request: FeedRequest, name: String) {
         require(SiteRegistry.byId(site) != null && name.trim().length in 1..80)
-        val channel = DiscoveryChannel(name = name.trim(), site = site, kind = request.kind, target = request.target,
-            order = (snapshot().channels.minOfOrNull { it.order } ?: 0) - 1)
-        change { it.copy(channels = it.channels.filterNot { old -> old.site == site && old.kind == request.kind && old.target == request.target } + channel) }
+        change { data ->
+            val channel = DiscoveryChannel(name = name.trim(), site = site, kind = request.kind, target = request.target,
+                order = (data.channels.minOfOrNull { it.order } ?: 0) - 1, contentKind = request.contentKind)
+            data.copy(channels = data.channels.filterNot { it.site == site && it.feedRequest == channel.feedRequest } + channel)
+        }
     }
     fun moveChannel(id: String, delta: Int) = change { data ->
         val all = data.channels.sortedBy { it.order }.toMutableList(); val from = all.indexOfFirst { it.id == id }; val to = from + delta

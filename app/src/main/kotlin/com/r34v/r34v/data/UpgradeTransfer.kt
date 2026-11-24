@@ -1,6 +1,7 @@
 package com.r34v.r34v.data
 
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -10,6 +11,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okio.ByteString.Companion.toByteString
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.CoroutineContext
@@ -30,6 +32,53 @@ internal data class UpgradeAsset(val releaseId: Long, val id: Long, val size: Lo
             check(digest == null || digest.startsWith("sha256:")) { "更新资产摘要无效" }
             return UpgradeAsset(releaseId, asset["id"].asLong, asset["size"].asLong, digest?.removePrefix("sha256:"))
         }
+    }
+}
+
+internal data class PendingUpgrade(val version: String, val asset: UpgradeAsset) {
+    init {
+        require(version.isNotBlank() && asset.sha256 != null)
+    }
+
+    fun file(updates: File) = File(asset.cacheDirectory(updates), "${asset.sha256}.apk")
+
+    fun encode(): String = JsonObject().apply {
+        addProperty("tag_name", version)
+        addProperty("release_id", asset.releaseId)
+        addProperty("id", asset.id)
+        addProperty("size", asset.size)
+        addProperty("digest", "sha256:${asset.sha256}")
+    }.toString()
+
+    companion object {
+        fun decode(record: String): PendingUpgrade? = try {
+            val json = JsonParser.parseString(record).asJsonObject
+            PendingUpgrade(json["tag_name"].asString, UpgradeAsset.fromGitHub(json["release_id"].asLong, json))
+        } catch (_: RuntimeException) {
+            null
+        }
+    }
+}
+
+// The controller serializes cleanup and transfers with the update-operation mutex.
+internal fun pruneUpgradeCache(updates: File, pending: File?, @Suppress("UNUSED_PARAMETER") now: Long = System.currentTimeMillis()) {
+    fun removeStale(file: File) {
+        if (file != pending && file.isFile) {
+            // Windows scanners may hold a newly observed file briefly; retry only this known cache file.
+            repeat(3) { attempt ->
+                if (!file.exists() || file.delete()) return
+                if (attempt < 2) Thread.sleep(20)
+            }
+            throw IOException("无法删除过期更新包 ${file.name}")
+        }
+    }
+    listOf("r34v-update.apk", "r34v-update.apk.part").forEach { removeStale(File(updates, it)) }
+    val assetDirectory = Regex("[1-9][0-9]*-[1-9][0-9]*")
+    File(updates, "apk").listFiles().orEmpty().filter { it.isDirectory && assetDirectory.matches(it.name) }.forEach { dir ->
+        dir.listFiles().orEmpty().filter {
+            it.extension == "apk" && (sha256Hex.matches(it.nameWithoutExtension) || it.name.startsWith("download-"))
+        }.forEach(::removeStale)
+        if (dir.list()?.isEmpty() == true) dir.delete()
     }
 }
 

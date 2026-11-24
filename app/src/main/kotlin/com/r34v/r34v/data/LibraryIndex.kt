@@ -1,6 +1,7 @@
 package com.r34v.r34v.data
 
-import android.graphics.BitmapFactory
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.CancellationException
@@ -64,7 +65,6 @@ data class LibraryRecord(
 class LibraryIndex(private val context: android.content.Context, private val storage: StorageRoot, private val gson: Gson = Gson()) {
     val revision = MutableStateFlow(0L)
     fun invalidate() { revision.update { it + 1 } }
-    private data class KnownPages(val links: Map<Int, String> = emptyMap())
     private fun safe(value: String): String {
         val cleaned = value.map { if (it.isLetterOrDigit() || it in "._-") it else '_' }.joinToString("").take(64)
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }.take(8)
@@ -78,10 +78,7 @@ class LibraryIndex(private val context: android.content.Context, private val sto
      * always included so an upgrade from an older build keeps showing what it already had, and
      * so nothing disappears if the all-files grant is later revoked.
      */
-    private fun layouts(): List<StorageRoot.Layout> = buildList {
-        if (storage.granted()) runCatching { add(storage.layoutOf(StorageRoot.Mode.SHARED)) }
-        add(storage.layoutOf(StorageRoot.Mode.PRIVATE))
-    }
+    private fun layouts(): List<StorageRoot.Layout> = storage.readableLayouts()
 
     /** Where a fresh sidecar should be written: the location actually in use. */
     private fun writeLayout(): StorageRoot.Layout = storage.ensure()
@@ -146,6 +143,7 @@ class LibraryIndex(private val context: android.content.Context, private val sto
         val record = LibraryRecord(kind = LibraryRecord.KIND_COMIC, site = site, id = entry.id, title = entry.title,
             url = entry.url, thumb = entry.thumb, duration = entry.duration, bytes = bytes, at = at, versionCode = versionCode)
         val target = layout ?: comicLocation(entry) ?: writeLayout()
+        if (target.mode == StorageRoot.Mode.SHARED) storage.noteSharedGallery(GalleryRepository.relativeFolder(entry))
         write(comicSidecar(site, entry.id, target), gson.toJson(record))
     }
 
@@ -182,14 +180,15 @@ class LibraryIndex(private val context: android.content.Context, private val sto
      * shows up and gets its sidecar written on the next scan.
      */
     suspend fun scan(isCached: (String, String) -> Boolean, known: List<LibraryRecord> = emptyList()): List<LibraryRecord> = withContext(Dispatchers.IO) {
-        val all = runCatching { layouts() }.getOrDefault(emptyList())
+        val all = layouts()
+        val job = currentCoroutineContext()
         if (all.isEmpty()) return@withContext known
         val found = LinkedHashMap<String, LibraryRecord>()
         val livePartial = mutableSetOf<String>()
         fun key(record: LibraryRecord) = "${record.site}:${record.id}:${record.quality}"
         fun videoRecord(record: LibraryRecord, sourceRoot: String): LibraryRecord? = runCatching {
             if (record.kind != LibraryRecord.KIND_VIDEO || record.schema != LibraryRecord.VERSION ||
-                SiteRegistry.byId(record.site) == null || record.id.isBlank() || record.quality.isBlank() ||
+                SiteRegistry.byId(record.site)?.category != SiteCategory.VIDEO || record.id.isBlank() || record.quality.isBlank() ||
                 record.cacheKey != key(record)) return@runCatching null
             val cached = runCatching { isCached(record.cacheKey, sourceRoot) }.getOrDefault(false)
             record.copy(title = record.title.orEmpty(), url = record.url.orEmpty(), thumb = record.thumb.orEmpty(),
@@ -217,50 +216,38 @@ class LibraryIndex(private val context: android.content.Context, private val sto
             }
 
             // Comics: book folder is the payload, `complete` plus every page is the proof.
-            layout.comics.listFiles().orEmpty().filter { it.isDirectory }.forEach { siteFolder ->
-                val site = SiteRegistry.byId(siteFolder.name) ?: return@forEach
-                siteFolder.listFiles().orEmpty().filter { it.isDirectory }.forEach bookLoop@ { book -> runCatching {
-                    val bookJson = read(File(book, "book.json"), GalleryDetail::class.java) ?: return@bookLoop
-                    val entry = bookJson.entry
-                    if (entry.id.isBlank() || entry.site != site.id || book.name != hash(entry.id) || bookJson.pageCount <= 0) return@bookLoop
+            if (!GalleryRepository.directChild(layout.root, layout.comics)) continue
+            val sharedPresent = if (layout.mode == StorageRoot.Mode.SHARED) mutableSetOf<String>() else null
+            for (siteFolder in layout.comics.listFiles().orEmpty()) {
+                val site = SiteRegistry.byId(siteFolder.name) ?: continue
+                if (!siteFolder.isDirectory || !GalleryRepository.directChild(layout.comics, siteFolder)) continue
+                for (book in siteFolder.listFiles().orEmpty()) {
+                    job.ensureActive()
+                    if (!book.isDirectory || !GalleryRepository.directChild(siteFolder, book)) continue
+                    val diskBook = GalleryRepository.readDiskBook(book, gson, expectedSite = site.id) ?: continue
+                    sharedPresent?.add("${site.id}/${book.name}")
+                    val entry = diskBook.detail.entry
                     val recordKey = "${site.id}:${entry.id}:"
-                    if (found[recordKey]?.state == LibraryRecord.STATE_COMPLETED) return@bookLoop
+                    if (found[recordKey]?.state == LibraryRecord.STATE_COMPLETED) continue
                     val sidecar = read(comicSidecar(site.id, entry.id, layout), LibraryRecord::class.java)
-                    val links = read(File(book, "links.json"), KnownPages::class.java)?.links.orEmpty()
-                    val pages = (1..bookJson.pageCount).mapNotNull { page ->
-                        val url = links[page]?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                        val image = File(book, "${hash(url.substringBefore('?'))}.image")
-                        val metadata = read(File(book, "${hash(url.substringBefore('?'))}.page.json"), GalleryImage::class.java)
-                        if (metadata?.index == page && metadata.pageUrl == url && hasImageHeader(image)) page to image else null
-                    }.toMap()
-                    val bytes = pages.values.sumOf { it.length() }
-                    val marker = runCatching { File(book, "complete").readText().trim().toInt() }.getOrNull()
-                    val whole = marker == bookJson.pageCount && pages.size == bookJson.pageCount
-                    val selected = if (whole) emptyList() else read(File(book, "selection.json"), GalleryRepository.DownloadSelection::class.java)?.selected.orEmpty()
-                    val intactSelection = selected.takeIf { pages.keys.containsAll(it) }.orEmpty()
+                    val audit = diskBook.audit { job.ensureActive() }
+                    val whole = diskBook.hasCompleteMarker && audit.complete
+                    val intactSelection = if (whole) emptyList() else diskBook.selection.takeIf { audit.validPages.toSet().containsAll(it) }.orEmpty()
                     val at = sidecar?.at?.takeIf { it > 0 } ?: book.listFiles().orEmpty().minOfOrNull { it.lastModified() } ?: System.currentTimeMillis()
-                    val record = LibraryRecord(kind = LibraryRecord.KIND_COMIC, site = site.id, id = entry.id, title = entry.title.orEmpty(),
-                        url = entry.url.orEmpty(), thumb = entry.thumb.orEmpty().ifBlank { sidecar?.thumb.orEmpty() }, duration = entry.duration.orEmpty(),
-                        bytes = bytes, at = at, state = if (whole) LibraryRecord.STATE_COMPLETED else LibraryRecord.STATE_PARTIAL,
-                        detail = if (whole) "" else "已保存 ${pages.size} / ${bookJson.pageCount} 页",
+                    val record = LibraryRecord(kind = LibraryRecord.KIND_COMIC, site = site.id, id = entry.id, title = entry.title,
+                        url = entry.url, thumb = entry.thumb.ifBlank { sidecar?.thumb.orEmpty() }, duration = entry.duration,
+                        bytes = audit.bytes, at = at, state = if (whole) LibraryRecord.STATE_COMPLETED else LibraryRecord.STATE_PARTIAL,
+                        detail = if (whole) "" else "已保存 ${audit.validPages.size} / ${audit.total} 页",
                         versionCode = sidecar?.versionCode ?: versionCode, sourceRoot = layout.root.absolutePath,
                         intactSelection = intactSelection)
-                    if (sidecar == null) runCatching { putComic(entry, bytes, at, layout) }
+                    if (sidecar == null) runCatching { putComic(entry, audit.bytes, at, layout) }
                     if (whole || intactSelection.isNotEmpty() || found[recordKey]?.intactSelection.isNullOrEmpty()) found[recordKey] = record
-                } }
+                }
             }
+            sharedPresent?.let(storage::syncSharedGalleries)
         }
         found.values.sortedByDescending { it.at }
     }
-
-    private fun hasImageHeader(image: File): Boolean {
-        if (!image.isFile || image.length() == 0L) return false
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(image.path, bounds)
-        return bounds.outWidth > 0 && bounds.outHeight > 0
-    }
-
-    private fun hash(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
 
     /** One-line summary for settings: where things are and how much of it. */
     fun summary(records: List<LibraryRecord>): String {
@@ -272,8 +259,12 @@ class LibraryIndex(private val context: android.content.Context, private val sto
     }
 
     /** Deletes the sidecar for a comic the user removed, so a rescan does not resurrect it. */
-    @Synchronized fun forgetComic(site: String, id: String) {
-        comicSidecars(site, id).forEach { it.delete() }
+    @Synchronized fun forgetComic(site: String, id: String, sourceRoot: String = "") {
+        val sidecars = if (sourceRoot.isBlank()) comicSidecars(site, id)
+            else listOf(comicSidecar(site, id, storage.sourceLayout(sourceRoot)))
+        sidecars.forEach { file ->
+            if (file.exists() && !file.delete()) throw java.io.IOException("无法删除图集索引，请重试")
+        }
         invalidate()
     }
 

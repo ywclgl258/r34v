@@ -2,6 +2,7 @@ package com.r34v.r34v
 
 import com.r34v.r34v.data.*
 import com.r34v.r34v.data.adapter.*
+import kotlinx.coroutines.runBlocking
 import org.jsoup.Jsoup
 import org.junit.Assert.*
 import org.junit.Test
@@ -228,6 +229,43 @@ class PhotoArchiveTest {
         val fourKhdLinks = PhotoPages.links(listOf(12, 6, 12)) { page -> if (page == 1) fourKhd else "$fourKhd/$page" }
         val decoded = FourKhdProtocol.imageIdentity(SiteRegistry.FOURKHD, fourKhdLinks[18].url)!!
         assertEquals(19, decoded.index); assertEquals(3, decoded.page); assertEquals(0, decoded.offset)
+    }
+
+    @Test fun savedPhotoPositionFollowsAShortPageAndKeepsTheOriginalIdentity() = runBlocking {
+        val canonical = "https://everia.club/2026/11/04/sample/"
+        val url = PhotoPages.encode("${canonical}2/", 19, 2, 2)
+        val visited = mutableListOf<Int>()
+        val image = PhotoPages.image(PhotoPages.Identity(canonical, 19, 2, 2), url) { book, page ->
+            assertEquals(canonical, book)
+            visited += page
+            if (page == 2) listOf("first.jpg") else listOf("second.jpg", "target.jpg")
+        }
+        assertEquals(listOf(2, 3), visited)
+        assertEquals(GalleryImage(19, url, "target.jpg", null, null), image)
+    }
+
+    @Test fun savedPhotoPositionStopsAtAnEmptyPageOrAfterFourPages() = runBlocking {
+        val identity = PhotoPages.Identity("https://everia.club/2026/11/04/sample/", 19, 2, 4)
+        val url = PhotoPages.encode("${identity.canonical}2/", 19, 2, 4)
+        val visited = mutableListOf<Int>()
+        val emptyPage = runCatching {
+            PhotoPages.image(identity, url) { _, page ->
+                visited += page
+                if (page == 2) listOf("first.jpg") else emptyList()
+            }
+        }
+        assertEquals(listOf(2, 3), visited)
+        assertEquals("这条内容的第 3 个分页没有图片，请刷新后重试", emptyPage.exceptionOrNull()?.message)
+
+        visited.clear()
+        val exhausted = runCatching {
+            PhotoPages.image(identity, url) { _, page ->
+                visited += page
+                listOf("page-$page.jpg")
+            }
+        }
+        assertEquals(listOf(2, 3, 4, 5), visited)
+        assertEquals("这条内容的分页结构与记录不一致，请刷新后重试", exhausted.exceptionOrNull()?.message)
     }
 
     @Test fun photoProfilesOnlyOfferSortsTheirRoutesImplement() {

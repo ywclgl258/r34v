@@ -2,6 +2,7 @@ package com.r34v.r34v
 
 import com.r34v.r34v.data.*
 import com.r34v.r34v.data.adapter.FourKhdProtocol
+import com.r34v.r34v.data.adapter.PhotoPages
 import org.jsoup.Jsoup
 import org.junit.Assert.*
 import org.junit.Test
@@ -67,14 +68,14 @@ class FourKhdParserTest {
         assertEquals("https://i0.wp.com/pic.4khd.com/fixture/set-one-001.webp?w=1300", FourKhdProtocol.cover(doc))
     }
 
-    @Test fun flatBookIndexMapsOntoContentPages() {
-        // 3 images on the first page, 2 on the second: page 4 lives on content page 2, offset 0.
-        assertEquals(1 to 0, FourKhdProtocol.position(1, 3, 2))
-        assertEquals(1 to 2, FourKhdProtocol.position(3, 3, 2))
-        assertEquals(2 to 0, FourKhdProtocol.position(4, 3, 2))
-        assertEquals(2 to 1, FourKhdProtocol.position(5, 3, 2))
-        // A short trailing page cannot push the index past the last content page.
-        assertEquals(2 to 2, FourKhdProtocol.position(6, 3, 2))
+    @Test fun flatBookIndexUsesActualContentPageLengths() {
+        val canonical = "https://www.4khd.com/content/04/sample-set-one.html"
+        val pages = PhotoPages.links(listOf(3, 2)) { page -> if (page == 1) canonical else "$canonical/$page" }
+        assertEquals(listOf(1, 2, 3, 4, 5), pages.map { it.index })
+        assertEquals(listOf(1 to 0, 1 to 1, 1 to 2, 2 to 0, 2 to 1), pages.map { link ->
+            val position = checkNotNull(FourKhdProtocol.imageIdentity(site, link.url))
+            position.page to position.offset
+        })
     }
 
     @Test fun pageAddressesSurviveARestart() {

@@ -43,9 +43,6 @@ private enum class FavoriteType(val title: String) {
     }
 }
 
-private fun favoriteSource(id: String): String =
-    SiteRegistry.byId(id)?.name ?: SiteRegistry.retiredVideoHosts[id] ?: id
-
 @Composable internal fun FavoritesScreen(
     favorites: List<Favorite>, personal: PersonalStore, dialogs: ComposeDialogs,
     open: (Favorite, Video?) -> Unit, remove: (Favorite) -> Unit, discover: () -> Unit,
@@ -69,7 +66,7 @@ private fun favoriteSource(id: String): String =
         val terms = query.trim().split(Regex("\\s+")).filter(String::isNotEmpty)
         val matching = scopedFavorites.filter { item ->
             (selectedSource.isEmpty() || item.site == selectedSource) && (type == FavoriteType.ALL || FavoriteType.of(item) == type) &&
-                terms.all { term -> listOf(item.title, item.target, favoriteSource(item.site)).any { it.contains(term, ignoreCase = true) } }
+                terms.all { term -> listOf(item.title, item.target, SiteRegistry.displayName(item.site)).any { it.contains(term, ignoreCase = true) } }
         }
         if (titleOrder) matching.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
         else matching.sortedByDescending { it.at }
@@ -82,7 +79,7 @@ private fun favoriteSource(id: String): String =
         }.toMap()
     }
     val selectedKeys = remember(selection) { selection.toSet() }
-    val selected = remember(selectable, selectedKeys) {
+    val selected = remember(selectable, selectedKeys, selecting) {
         if (selecting) selectable.filterKeys { it in selectedKeys }.values.toList()
         else emptyList()
     }
@@ -108,15 +105,15 @@ private fun favoriteSource(id: String): String =
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (lockedSite == null) {
-                        Selector(if (source.isEmpty()) "全部来源" else favoriteSource(source), Modifier.weight(1f)) {
-                            val sources = (scopedFavorites.map { it.site } + source).distinct().filter(String::isNotBlank).sortedBy(::favoriteSource)
+                        Selector(if (source.isEmpty()) "全部来源" else SiteRegistry.displayName(source), Modifier.weight(1f)) {
+                            val sources = (scopedFavorites.map { it.site } + source).distinct().filter(String::isNotBlank).sortedBy(SiteRegistry::displayName)
                             focus.clearFocus()
-                            dialogs.choose("收藏来源", listOf("全部来源") + sources.map(::favoriteSource), sources.indexOf(source) + 1) {
+                            dialogs.choose("收藏来源", listOf("全部来源") + sources.map(SiteRegistry::displayName), sources.indexOf(source) + 1) {
                                 source = sources.getOrNull(it - 1).orEmpty()
                             }
                         }
                     } else {
-                        Copy(favoriteSource(lockedSite), Modifier.weight(1f))
+                        Copy(SiteRegistry.displayName(lockedSite), Modifier.weight(1f))
                     }
                     Selector(if (titleOrder) "按名称" else "最近收藏", Modifier.weight(1f)) {
                         focus.clearFocus()
@@ -127,7 +124,7 @@ private fun favoriteSource(id: String): String =
                     Copy("${results.size} 项收藏", Modifier.weight(1f))
                     if (filtered) TextAction(::reset) { Text("清空筛选") }
                     if (selectable.isNotEmpty() && !selecting) TextAction({
-                        focus.clearFocus(); type = FavoriteType.ALL; selection = selectable.keys.toList(); selecting = true
+                        focus.clearFocus(); selection = selectable.keys.toList(); selecting = true
                     }) { Text("多选") }
                 }
             }
@@ -141,7 +138,7 @@ private fun favoriteSource(id: String): String =
         items(results, key = Favorite::key) { favorite ->
             val chosen = favorite.key in selectedKeys
             FavoriteRow(favorite, personal, dialogs, open, remove,
-                selection = if (selecting) chosen else null,
+                selecting = selecting, selection = chosen.takeIf { selecting && favorite.key in selectable },
                 toggle = { checked -> selection = if (checked) selectedKeys.toList() + favorite.key else (selectedKeys - favorite.key).toList() })
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .55f))
         }
@@ -171,15 +168,18 @@ private fun favoriteSource(id: String): String =
 }
 
 @Composable private fun FavoriteRow(favorite: Favorite, personal: PersonalStore, dialogs: ComposeDialogs,
-    open: (Favorite, Video?) -> Unit, remove: (Favorite) -> Unit, selection: Boolean? = null, toggle: (Boolean) -> Unit = {}) {
+    open: (Favorite, Video?) -> Unit, remove: (Favorite) -> Unit, selecting: Boolean, selection: Boolean?, toggle: (Boolean) -> Unit) {
     val site = SiteRegistry.byId(favorite.site)
     val type = FavoriteType.of(favorite)
     val video = remember(favorite, site) { favorite.media(site) }
     val title = favorite.title.ifBlank { favorite.target }
     var expanded by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().heightIn(min = 66.dp).testTag("favorite-${favorite.key}").clip(ArtworkShape)
-        .then(if (selection != null) Modifier.toggleable(selection, role = Role.Checkbox, onValueChange = toggle)
-        else Modifier.clickable(role = Role.Button) { open(favorite, video) }).padding(vertical = 7.dp),
+        .then(when {
+            selection != null -> Modifier.toggleable(selection, role = Role.Checkbox, onValueChange = toggle)
+            selecting -> Modifier
+            else -> Modifier.clickable(role = Role.Button) { open(favorite, video) }
+        }).padding(vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         if (selection != null) Checkbox(selection, null, modifier = Modifier.size(40.dp))
         if (site != null && favorite.thumb.isNotBlank()) SiteImage(favorite.thumb, site,
@@ -190,9 +190,9 @@ private fun favoriteSource(id: String): String =
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
             val label = if (site == null) "来源已移除" else type.title
-            Copy(listOf(favoriteSource(favorite.site), label, favorite.subtitle).filter(String::isNotBlank).joinToString(" · "))
+            Copy(listOf(SiteRegistry.displayName(favorite.site), label, favorite.subtitle).filter(String::isNotBlank).joinToString(" · "))
         }
-        if (selection == null) Box {
+        if (!selecting) Box {
             IconAction(R.drawable.ic_more, "$title 的更多操作") { expanded = true }
             DropdownMenu(expanded, { expanded = false }) {
                 if (video != null) {
@@ -210,7 +210,7 @@ private fun favoriteSource(id: String): String =
 }
 
 private fun Favorite.media(site: SiteContext?): Video? {
-    if (site == null || kind !in listOf("video", "gallery")) return null
+    if (site == null || target.isBlank() || kind !in listOf("video", "gallery")) return null
     return Video(target, title, site.absolute(path), thumb, subtitle, site = site.id,
         mediaKind = if (kind == "gallery") MediaKind.GALLERY else MediaKind.VIDEO)
 }

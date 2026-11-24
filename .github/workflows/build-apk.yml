@@ -11,6 +11,14 @@ on:
         required: false
         default: ''
         type: string
+      signed_release:
+        description: '从受保护的 main 构建并验签正式 APK'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -30,43 +38,57 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
       - uses: gradle/actions/setup-gradle@v4
-      - run: chmod +x gradlew
       - name: Verify Kotlin and build debug APK
         run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
           name: r34v-development-not-for-updates
           path: app/build/outputs/apk/debug/*.apk
-      - name: Prepare signing key
-        id: signing
+
+  signed-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.signed_release && github.repository == 'ywclgl258/r34v' && github.ref == 'refs/heads/main'
+    needs: [verify, android-regression]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Configure release-signing in GitHub with main-only deployment, required reviewers,
+    # and all eight signing secrets scoped to that environment. YAML cannot set those protections.
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - name: Build and verify both signed APKs
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          LEGACY_KEYSTORE_BASE64: ${{ secrets.LEGACY_KEYSTORE_BASE64 }}
-        run: |
-          mkdir -p "$HOME/.r34v/signing"
-          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$LEGACY_KEYSTORE_BASE64" ]; then
-            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$HOME/.r34v/signing/release.jks"
-            printf '%s' "$LEGACY_KEYSTORE_BASE64" | base64 --decode > "$HOME/.r34v/signing/historical.jks"
-            echo 'available=true' >> "$GITHUB_OUTPUT"
-          else
-            echo '::notice::缺少固定发布密钥。仅提供独立开发版，不生成替代正式升级包。'
-          fi
-      - name: Build signed release
-        if: steps.signing.outputs.available == 'true'
-        env:
-          KEYSTORE_PATH: /home/runner/.r34v/signing/release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          LEGACY_KEYSTORE_PATH: /home/runner/.r34v/signing/historical.jks
+          LEGACY_KEYSTORE_BASE64: ${{ secrets.LEGACY_KEYSTORE_BASE64 }}
           LEGACY_KEYSTORE_PASSWORD: ${{ secrets.LEGACY_KEYSTORE_PASSWORD }}
           LEGACY_KEY_ALIAS: ${{ secrets.LEGACY_KEY_ALIAS }}
           LEGACY_KEY_PASSWORD: ${{ secrets.LEGACY_KEY_PASSWORD }}
-        run: ./gradlew :app:validateReleaseSigning :app:assembleRelease --no-daemon
+        run: |
+          set -euo pipefail
+          umask 077
+          export R34V_SIGNING_HOME="$(mktemp -d "$RUNNER_TEMP/r34v-signing.XXXXXX")"
+          trap 'rm -rf -- "$R34V_SIGNING_HOME"' EXIT
+          export KEYSTORE_PATH="$R34V_SIGNING_HOME/release.jks"
+          export LEGACY_KEYSTORE_PATH="$R34V_SIGNING_HOME/historical.jks"
+          printf '%s' "${KEYSTORE_BASE64:?Missing release signing key}" | base64 --decode > "$KEYSTORE_PATH"
+          printf '%s' "${LEGACY_KEYSTORE_BASE64:?Missing historical signing key}" | base64 --decode > "$LEGACY_KEYSTORE_PATH"
+          unset KEYSTORE_BASE64 LEGACY_KEYSTORE_BASE64
+          ./gradlew :app:validateReleaseSigning :app:assembleRelease --no-daemon
       - uses: actions/upload-artifact@v4
-        if: steps.signing.outputs.available == 'true'
         with:
           name: r34v-kotlin-release
+          if-no-files-found: error
           path: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/mapping/release/mapping.txt
@@ -91,7 +113,6 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
       - uses: gradle/actions/setup-gradle@v4
-      - run: chmod +x gradlew
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -105,13 +126,16 @@ jobs:
             com.r34v.r34v.OptimizationUiTest
             com.r34v.r34v.OptimizationIoTest
             com.r34v.r34v.SiteSessionTest
+            com.r34v.r34v.IwaraSessionNetworkTest
             com.r34v.r34v.SiteFunctionsUiTest
             com.r34v.r34v.FavoriteCollectionUiTest
             com.r34v.r34v.GalleryOfflineReadingUiTest
+            com.r34v.r34v.OfflinePlaybackQueueTest
             com.r34v.r34v.LocalSeekPreviewTest
             com.r34v.r34v.VideoRemovalTest
             com.r34v.r34v.SubscriptionUiTest
             com.r34v.r34v.StorageLifecycleTest
+            com.r34v.r34v.StorageStartupTest
             com.r34v.r34v.DownloadCacheTest
             com.r34v.r34v.RouDataSourceTest
             com.r34v.r34v.TimestampTextUiTest

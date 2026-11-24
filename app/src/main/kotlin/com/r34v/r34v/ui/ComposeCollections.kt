@@ -14,7 +14,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.TextField
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -37,22 +36,6 @@ fun ComposeDialogs.addToShelf(store: PersonalStore, video: Video) {
     choose("加入片单", shelves.map { it.name } + "新建合集") { index ->
         if (index < shelves.size) store.add(video, shelves[index].id)
         else edit("新建合集", validate = { if (it.isBlank() || it.length > 80) "请输入 1–80 个字" else null }) { name -> store.add(video, store.createShelf(name)) }
-    }
-}
-
-fun ComposeDialogs.selectVideos(videos: List<Video>, action: (List<Video>) -> Unit) {
-    val entries = videos.distinctBy { it.entryKey }
-    content = {
-        var selected by remember { mutableStateOf(entries.map { it.entryKey }.toSet()) }
-        AlertDialog(::dismiss, title = { Text("选择下载作品 · ${selected.size} / ${entries.size}") }, text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                TextAction({ selected = if (selected.size == entries.size) emptySet() else entries.map { it.entryKey }.toSet() }) { Text("全选 / 清空") }
-                entries.forEach { video -> CheckRow("${SiteRegistry.byIdOrDefault(video.site).name} · ${video.title}", video.entryKey in selected) {
-                    selected = if (it) selected + video.entryKey else selected - video.entryKey
-                } }
-            }
-        }, confirmButton = { TextAction({ dismiss(); action(entries.filter { it.entryKey in selected }) }, enabled = selected.isNotEmpty()) { Text("下一步") } },
-            dismissButton = { TextAction(::dismiss) { Text("取消") } })
     }
 }
 

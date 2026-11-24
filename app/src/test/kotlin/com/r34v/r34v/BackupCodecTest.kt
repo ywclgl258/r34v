@@ -63,6 +63,36 @@ class BackupCodecTest {
         ))
         assertThrows(IllegalArgumentException::class.java) { validateBackup(invalid) }
     }
+    @Test fun mergingLargerChannelListsPreservesTheWholeExport() {
+        fun channels(range: IntRange) = range.map { index ->
+            DiscoveryChannel(id = "channel-$index", name = "固定频道 $index", site = SiteRegistry.R34V.id, target = "sample-$index")
+        }
+        val local = document().copy(personal = PersonalLibrary(channels = channels(1..60)))
+        val incoming = document().copy(personal = PersonalLibrary(channels = channels(61..120)))
+        val merged = mergeBackups(local, incoming)
+        val decoded = BackupCodec.decode(BackupCodec.encode(merged, password), password)
+        assertEquals(120, decoded.personal.channels.size)
+        assertEquals(channels(1..120).toSet(), decoded.personal.channels.toSet())
+    }
+
+    @Test fun sparseLegacySavedSearchAndChannelAreRestoredForValidation() {
+        val json = """{"personal":{"savedSearches":[{"name":"旧作者","query":"sample","sources":["iwara"]}],"channels":[{"name":"旧频道","site":"iwara","kind":"MODEL","target":"sample"}]}}"""
+        val backup = com.google.gson.Gson().fromJson(json, LibraryBackup::class.java)
+        validateBackup(backup)
+        assertEquals(FeedKind.MODEL, backup.personal.channels.single().feedRequest.kind)
+        assertEquals("sample", backup.personal.savedSearches.single().query)
+        val decoded = BackupCodec.decode(BackupCodec.encode(backup, password), password)
+        assertEquals("sample", decoded.personal.channels.single().target)
+    }
+
+    @Test fun mergeRestoresSparseLegacyIdsBeforeDeduplicating() {
+        val json = """{"personal":{"channels":[{"name":"作者一","site":"iwara","kind":"MODEL","target":"one"},{"name":"作者二","site":"iwara","kind":"MODEL","target":"two"}]}}"""
+        val incoming = com.google.gson.Gson().fromJson(json, LibraryBackup::class.java)
+        val merged = mergeBackups(document(), incoming)
+        assertEquals(setOf("one", "two"), merged.personal.channels.map { it.target }.toSet())
+        assertTrue(merged.personal.channels.all { it.id.isNotBlank() })
+    }
+
     @Test fun localImageFavoritesRoundTripByBookAndPage() {
         val id = "a".repeat(64)
         val video = Video(id, "本地漫画", "r34local://$id", site = "local", mediaKind = MediaKind.GALLERY)

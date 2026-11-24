@@ -54,6 +54,8 @@ class GalleryActivity : ComponentActivity() {
     private var error by mutableStateOf<String?>(null)
     private var gate by mutableStateOf(false)
     private var offlineOnly = false
+    private var offlineQueue = false
+    private val queueToken get() = intent.getStringExtra("queue_session")
     private var sourceRoot = ""
     private var reading by mutableStateOf(false)
     private var controlsVisible by mutableStateOf(true)
@@ -64,6 +66,7 @@ class GalleryActivity : ComponentActivity() {
     private var jump by mutableStateOf(ReaderJump(0, 1))
     private var revision by mutableIntStateOf(0)
     private var saveReader: (() -> Unit)? = null
+    private var readerNavigation: ReaderNavigation? = null
     private var readerMode by mutableStateOf(ReaderMode.STRIP)
     private var readerPreferences by mutableStateOf(ReaderPreferences())
     private var readingBehavior by mutableStateOf(ReadingBehavior())
@@ -81,20 +84,21 @@ class GalleryActivity : ComponentActivity() {
         exports.save(it, tree = true)
     }
     private val progressSaver by lazy { ReadingProgressSaver(lifecycleScope, store::saveReading) }
-    /** 打开时从历史恢复的位置。仅浏览详情未翻页时，不要把它写回历史。 */
+    /** Initial-history fallback for a sparse download; details alone never write it back. */
     private var restoredPage = 0
     private var restoredOffset = 0
     private fun saveProgress() {
         saveReader?.invoke()
         val gallery = detail
-        if (gallery != null && (reading || readingPages.size == gallery.pageCount)) {
-            val target = page.coerceIn(1, gallery.pageCount)
-            // 只打开详情就离开时 page 仍是恢复值，此时写回会覆盖原有阅读进度。
-            val untouched = !reading && target == restoredPage && stripOffset == restoredOffset
-            if (!untouched) progressSaver.record(ReadingProgress(entry, target, gallery.pageCount,
-                images[page]?.pageUrl.orEmpty(), offset = stripOffset))
+        if (reading && error == null && gallery != null && readingPages.binarySearch(page) >= 0) {
+            recordProgress(gallery, page, images[page], stripOffset)
         }
         progressSaver.flush()
+    }
+    private fun recordProgress(gallery: GalleryDetail, target: Int, image: GalleryImage?, offset: Int) {
+        val pageUrl = image?.pageUrl ?: images[target]?.pageUrl
+            ?: gallery.pageLinks.firstOrNull { it.index == target }?.url.orEmpty()
+        progressSaver.record(ReadingProgress(entry, target, gallery.pageCount, pageUrl, offset = offset))
     }
     private val officialLogin = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { if (it.resultCode == RESULT_OK) load(reading) }
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,7 +110,7 @@ class GalleryActivity : ComponentActivity() {
         readerMode = ReaderMode.entries.firstOrNull { it.name == readerPreferences.mode } ?: store.personal.readerMode(site.id)
         store.personal.markRead(site.id, setOf(entry.entryKey))
         val savedReading = store.reading(entry.id, site.id)
-        val savedInstanceStatePage = savedInstanceState?.getInt("page")
+        val savedInstanceStatePage = savedInstanceState?.getInt("page")?.takeIf { it > 0 }
         val intentPage = intent.getIntExtra("page", 0).takeIf { it > 0 }
         page = savedInstanceStatePage ?: intentPage ?: savedReading?.page ?: 1
         pinnedPage = savedInstanceStatePage != null || intentPage != null
@@ -118,7 +122,8 @@ class GalleryActivity : ComponentActivity() {
         restoredPage = savedReading?.page ?: 0
         restoredOffset = savedReading?.offset ?: 0
         reading = savedInstanceState?.getBoolean("reading") ?: intent.getBooleanExtra("read", false)
-        offlineOnly = savedInstanceState?.getBoolean("offline") ?: intent.getBooleanExtra("offline", false)
+        offlineQueue = savedInstanceState?.getBoolean("offlineQueue") == true || app.queue.session(queueToken, entry)?.offlineOnly == true
+        offlineOnly = offlineQueue || (savedInstanceState?.getBoolean("offline") ?: intent.getBooleanExtra("offline", false))
         sourceRoot = intent.getStringExtra("root").orEmpty()
         controlsVisible = savedInstanceState?.getBoolean("controlsVisible") ?: true
         jump = ReaderJump(0, page, stripOffset)
@@ -132,12 +137,17 @@ class GalleryActivity : ComponentActivity() {
         error = null; pageJob?.cancel()
         pageJob = lifecycleScope.launch { try {
             val local = entry.site == SiteRegistry.LOCAL.id
+            check(!offlineQueue || !local || withContext(Dispatchers.IO) { MediaRouter.localComicAvailable(app, entry) }) {
+                "部分本地图页缺失或损坏"
+            }
             if (offlineOnly && !local && sourceRoot.isBlank()) sourceRoot = withContext(Dispatchers.IO) { app.galleries.readingRoot(entry) }
             val gallery = if (local) withContext(Dispatchers.IO) { app.localLibrary.detail(entry) } else app.galleries.detail(entry, offlineOnly, sourceRoot)
             entry = gallery.entry
             if (sourceRoot.isBlank() && !local) sourceRoot = withContext(Dispatchers.IO) { app.galleries.readingRoot(entry) }
             val pages = if (offlineOnly && !local) gallery.downloadedPages else (1..gallery.pageCount).toList()
+            check(pages.isNotEmpty()) { "未找到可读取的图页" }
             val sparse = pages.size < gallery.pageCount
+            check(!offlineQueue || !sparse) { "部分图页缺失或损坏" }
             // 已有的 Bundle / Intent 页码优先，其次恢复历史。选页离线回到首个可读页。
             val target = when {
                 sparse -> page.takeIf { it in pages } ?: restoredPage.takeIf { it in pages } ?: pages.first()
@@ -151,7 +161,23 @@ class GalleryActivity : ComponentActivity() {
             readingPages = pages
             detail = gallery
             if (resume) reader(target, stripOffset) else { reading = false; controlsVisible = true }
-        } catch (e: Exception) { if (e is CancellationException) throw e; if (e is GalleryLoginRequiredException) { app.network.session.clear(site); gate = true } else error = e.message ?: "${itemNoun}加载失败" } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            when {
+                offlineQueue -> stopOfflineQueue(e)
+                e is GalleryLoginRequiredException -> { app.network.session.clear(site); gate = true }
+                else -> error = e.message ?: "${itemNoun}加载失败"
+            }
+        } }
+    }
+    private fun stopOfflineQueue(cause: Exception) {
+        if (error != null) return
+        pauseReaderPlayback()
+        val ended = runCatching { queueToken?.let { app.queue.endCurrent(it, entry) } }
+        val reason = cause.message ?: "请检查离线文件"
+        val status = if (ended.isSuccess) "顺序打开已停止" else ended.exceptionOrNull()?.message ?: "无法结束片单"
+        error = "「${entry.title}」的离线文件已不可用。$status。$reason"
     }
     private fun reader(target: Int, offset: Int = 0) {
         if (readingPages.binarySearch(target) < 0) {
@@ -159,6 +185,24 @@ class GalleryActivity : ComponentActivity() {
             return
         }
         page = target; stripOffset = offset; jump = ReaderJump(jump.serial + 1, target, offset); reading = true
+    }
+    private fun pauseReaderPlayback() {
+        autoPageRunning = false
+        slideshowRunning = false
+    }
+    private fun moveReader(navigation: ReaderNavigation, forward: Boolean, repeated: Boolean = false) {
+        pauseReaderPlayback()
+        val target = if (repeated) navigation.boundary(forward) else navigation.adjacent(page, forward)
+        if (target != null && target != page) reader(target)
+    }
+    private fun switchReaderMode(mode: ReaderMode) {
+        if (mode == readerMode) return
+        saveProgress()
+        readerMode = mode
+        if (reading && detail != null) {
+            val offset = if (mode == ReaderMode.STRIP) stripOffset else 0
+            jump = ReaderJump(jump.serial + 1, page, offset)
+        }
     }
     private fun applyBars() {
         val bars = WindowCompat.getInsetsController(window, window.decorView)
@@ -229,47 +273,49 @@ class GalleryActivity : ComponentActivity() {
         val readerJump = jump
         val mode = readerMode
         val pages = readingPages
-        val spreads = if (mode == ReaderMode.SPREAD && windowSizeDp().width > windowSizeDp().height) {
-            remember(pages, readerPreferences.doubleCover) {
-                readerSheets(pages.size, 2, readerPreferences.doubleCover || pages.first() != 1)
-                    .map { sheet -> sheet.map { pages[it - 1] } }
-            }
-        } else emptyList()
-        val sheet = spreads.indexOfFirst { page in it }
-        val index = pages.binarySearch(page).coerceAtLeast(0)
-        val previous = if (spreads.isNotEmpty()) spreads.getOrNull(sheet - 1)?.first() else pages.getOrNull(index - 1)
-        val next = if (spreads.isNotEmpty()) spreads.getOrNull(sheet + 1)?.first() else pages.getOrNull(index + 1)
+        val window = windowSizeDp()
+        val spread = if (mode == ReaderMode.SPREAD && window.width > window.height) 2 else 1
+        val combineCover = spread == 1 || readerPreferences.doubleCover
+        val navigation = remember(pages, spread, combineCover) { ReaderNavigation(pages, spread, combineCover) }
+        SideEffect { readerNavigation = navigation }
+        DisposableEffect(Unit) { onDispose { readerNavigation = null } }
+        val currentPage = page
+        val index = pages.binarySearch(currentPage).coerceAtLeast(0)
+        val previous = navigation.adjacent(currentPage, forward = false)
+        val next = navigation.adjacent(currentPage, forward = true)
         val positionChanged: (Int, GalleryImage?, Int) -> Unit = { current, image, offset ->
             if (reading && jump == readerJump && readerMode == mode) {
-                page = current; stripOffset = offset
-                progressSaver.record(ReadingProgress(entry, current, gallery.pageCount, image?.pageUrl.orEmpty(), offset = offset))
+                val savedOffset = if (mode == ReaderMode.STRIP) offset else if (current == page) stripOffset else 0
+                page = current; stripOffset = savedOffset
+                recordProgress(gallery, current, image, savedOffset)
             }
         }
-        LaunchedEffect(autoPageRunning, page, images[page], readingBehavior.autoPageSeconds, pages) {
-            if (autoPageRunning && readingBehavior.autoPageSeconds > 0 && images[page] != null) {
-                withFrameNanos { }
-                delay(readingBehavior.autoPageSeconds * 1000L)
-                if (!autoPageRunning) return@LaunchedEffect
-                if (next != null) reader(next) else autoPageRunning = false
-            }
+        var readyPages by remember(readerJump, mode, navigation) { mutableStateOf<List<Int>>(emptyList()) }
+        val shown = currentPage in readyPages
+        val playingSlideshow = slideshowRunning
+        val random = playingSlideshow && readingBehavior.slideshowRandom
+        val interval = when {
+            playingSlideshow -> readingBehavior.slideshowSeconds
+            autoPageRunning -> readingBehavior.autoPageSeconds
+            else -> 0
         }
-        LaunchedEffect(slideshowRunning, page, images[page], readingBehavior.slideshowSeconds, readingBehavior.slideshowRandom, pages) {
-            if (slideshowRunning && readingBehavior.slideshowSeconds > 0 && images[page] != null) {
-                withFrameNanos { }
-                delay(readingBehavior.slideshowSeconds * 1000L)
-                if (!slideshowRunning) return@LaunchedEffect
-                val target = if (readingBehavior.slideshowRandom) pages.filter { it != page }.randomOrNull() else next
-                if (target != null) reader(target) else slideshowRunning = false
-            }
+        LaunchedEffect(interval, playingSlideshow, random, readerJump, mode, navigation, currentPage, shown) {
+            if (interval <= 0 || !shown) return@LaunchedEffect
+            withFrameNanos { }
+            delay(interval * 1000L)
+            if (!reading || jump != readerJump || readerMode != mode || page != currentPage || page !in readyPages) return@LaunchedEffect
+            if (playingSlideshow && !slideshowRunning || !playingSlideshow && !autoPageRunning) return@LaunchedEffect
+            val target = if (random) pages.filter { it !in readyPages }.randomOrNull() else next
+            if (target != null) reader(target) else pauseReaderPlayback()
         }
         val chromeEdge = palette.bottom.copy(alpha = if (reduceTransparency) 1f else .88f)
         val chromeSurface = palette.surface.copy(alpha = if (reduceTransparency) 1f else .92f)
         Box(Modifier.fillMaxSize().background(Color.Black).displayCutoutPadding()) {
-            if (mode == ReaderMode.STRIP) ComicReader(pages, readerJump, ::loadStripPage,
-                { autoPageRunning = false; slideshowRunning = false; controlsVisible = !controlsVisible }, positionChanged, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent,
-                sparse = pages.size < gallery.pageCount)
-            else PagedComicReader(pages, readerJump, mode, ::loadStripPage,
-                { autoPageRunning = false; slideshowRunning = false; controlsVisible = !controlsVisible }, positionChanged, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent, readerPreferences.doubleCover, currentPage = page)
+            val toggle = { pauseReaderPlayback(); controlsVisible = !controlsVisible }
+            if (mode == ReaderMode.STRIP) ComicReader(pages, readerJump, ::loadStripPage, toggle, ::pauseReaderPlayback,
+                positionChanged, { readyPages = it }, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent)
+            else PagedComicReader(navigation, readerJump, mode, ::loadStripPage, toggle, ::pauseReaderPlayback,
+                positionChanged, { readyPages = it }, { saveReader = it }, readerPreferences.fit, readerPreferences.cropPercent, currentPage)
             androidx.compose.animation.AnimatedVisibility(controlsVisible, Modifier.align(Alignment.TopCenter),
                 enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
                 Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(chromeSurface, chromeEdge)))
@@ -295,18 +341,18 @@ class GalleryActivity : ComponentActivity() {
                 Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(chromeEdge, chromeSurface)))
                     .navigationBarsPadding(), contentAlignment = Alignment.Center) {
                     Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 2.dp)) {
-                        if (autoPageRunning || slideshowRunning) TextAction({ autoPageRunning = false; slideshowRunning = false }, Modifier.fillMaxWidth()) {
+                        if (autoPageRunning || slideshowRunning) TextAction(::pauseReaderPlayback, Modifier.fillMaxWidth()) {
                             Text(if (slideshowRunning) "幻灯片播放中 · 点击暂停" else "自动翻页中 · 点击暂停")
                         }
                         var slider by remember(index, pages) { mutableFloatStateOf((index + 1).toFloat()) }
                         fun sliderPage() = pages[slider.roundToInt().coerceIn(1, pages.size) - 1]
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            IconButton({ previous?.let { reader(it) } }, enabled = previous != null, modifier = Modifier.size(48.dp)) { Glyph(R.drawable.ic_back, "上一页") }
+                            IconButton({ moveReader(navigation, forward = false) }, enabled = previous != null, modifier = Modifier.size(48.dp)) { Glyph(R.drawable.ic_back, "上一页") }
                             TextAction(::jumpDialog, Modifier.weight(1f)) {
                                 Text("${sliderPage()} / ${gallery.pageCount}", style = MaterialTheme.typography.titleMedium,
                                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontWeight = FontWeight.Bold)
                             }
-                            IconButton({ next?.let { reader(it) } }, enabled = next != null, modifier = Modifier.size(48.dp)) { Glyph(R.drawable.ic_chevron_right, "下一页") }
+                            IconButton({ moveReader(navigation, forward = true) }, enabled = next != null, modifier = Modifier.size(48.dp)) { Glyph(R.drawable.ic_chevron_right, "下一页") }
                         }
                         if (pages.size > 1) {
                             Slider(slider, { slider = it }, Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 12.dp).semantics { contentDescription = "${itemNoun}${actionVerb}进度" }, valueRange = 1f..pages.size.toFloat(),
@@ -364,16 +410,35 @@ class GalleryActivity : ComponentActivity() {
             }
         }
     }
-    /** 详情页主操作：与旧版整块按钮逻辑一致，只是从纵向堆叠挪到一行。 */
-    private fun downloadAction(download: GalleryDownload?) {
-        if (download?.state == GalleryDownloadState.COMPLETED && download.partial != true) { offlineOnly = true; load(true); return }
+    private suspend fun hasOfflineDownload(gallery: GalleryDetail, download: GalleryDownload, root: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val requested = download.selectedPages ?: (1..gallery.pageCount).toList()
+            app.galleries.isSelectionDownloaded(gallery.entry, requested, root)
+        }
+
+    private fun downloadAction(download: GalleryDownload?, openOffline: Boolean = false, onFilesMissing: () -> Unit = {}) {
         if (download?.state == GalleryDownloadState.REMOVING) return
+        val gallery = detail ?: return
+        val root = sourceRoot
         lifecycleScope.launch { try {
-            if (download?.state in listOf(GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED)) app.galleryDownloads.pause(download!!.id)
-            else {
-                if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-                    requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 42)
-                app.galleryDownloads.add(entry); toast("已加入下载，可在统一下载中心查看")
+            when {
+                openOffline && download != null -> {
+                    if (hasOfflineDownload(gallery, download, root)) {
+                        offlineOnly = true
+                        load(true)
+                    } else {
+                        onFilesMissing()
+                        toast("部分本地文件缺失或损坏，请继续下载")
+                    }
+                }
+                download != null && download.state in listOf(GalleryDownloadState.DOWNLOADING, GalleryDownloadState.QUEUED) ->
+                    app.galleryDownloads.pause(download.id)
+                else -> {
+                    if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 42)
+                    app.galleryDownloads.add(gallery.entry, download?.selectedPages)
+                    toast("已加入下载，可在统一下载中心查看")
+                }
             }
         } catch (e: Exception) { if (e is CancellationException) throw e; showError(e) } }
     }
@@ -385,18 +450,21 @@ class GalleryActivity : ComponentActivity() {
             add("加入合集" to { dialogs.addToShelf(app.library.personal, entry) })
             if (entry.site != SiteRegistry.LOCAL.id) {
                 add("管理下载" to { startActivity(Intent(this@GalleryActivity, MainActivity::class.java).putExtra("downloads", true)) })
+                if (download?.selectedPages != null) add("下载整本" to { downloadAction(null) })
                 add("选择页码下载" to { selectPages() })
             }
         }
         dialogs.choose("更多图集操作", options.map { it.first }) { index -> options[index].second() }
     }
 
-    @Composable private fun GalleryAction(label: String, icon: Int, modifier: Modifier, active: Boolean? = null, click: () -> Unit) {
+    @Composable private fun GalleryAction(label: String, icon: Int, modifier: Modifier, active: Boolean? = null,
+        enabled: Boolean = true, click: () -> Unit) {
         val colors = MaterialTheme.colorScheme
         val tint = if (active == true) colors.onPrimary else colors.onSurface
         Column(modifier.heightIn(min = 54.dp).clip(ArtworkPill)
             .background(if (active == true) colors.primary else Color.Transparent)
-            .clickable(role = Role.Button, onClick = click).semantics { if (active != null) selected = active }.padding(vertical = 8.dp),
+            .clickable(enabled = enabled, role = Role.Button, onClick = click)
+            .semantics { if (active != null) selected = active }.padding(vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically)) {
             CompositionLocalProvider(LocalContentColor provides tint) { Glyph(icon, null, Modifier.size(19.dp)) }
             Text(label, color = tint, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, textAlign = TextAlign.Center, fontWeight = FontWeight.SemiBold)
@@ -417,6 +485,7 @@ class GalleryActivity : ComponentActivity() {
                 dialogs.choose("自动翻页间隔", values.map { if (it == 0) "关闭" else "每 $it 秒，成功显示后推进" }, values.indexOf(readingBehavior.autoPageSeconds)) { selected ->
                     readingBehavior = readingBehavior.copy(autoPageSeconds = values[selected]).also { store.personal.setReadingBehavior(site.id, it) }
                     autoPageRunning = readingBehavior.autoPageSeconds > 0 && reading
+                    if (autoPageRunning) slideshowRunning = false
                 }
             }),
         )
@@ -433,14 +502,19 @@ class GalleryActivity : ComponentActivity() {
     }
     private fun readerDisplayOptions() {
         fun save(value: ReaderPreferences) {
-            readerPreferences = value; store.personal.setReaderPreferences(entry, value)
-            readerMode = ReaderMode.entries.firstOrNull { it.name == value.mode } ?: store.personal.readerMode(site.id)
+            readerPreferences = value
+            store.personal.setReaderPreferences(entry, value)
         }
         dialogs.content = {
             AlertDialog(dialogs::dismiss, title = { Text("本书显示设置") }, text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Selector("阅读模式 · ${readerMode.title}") {
-                        dialogs.choose("本书阅读模式", ReaderMode.entries.map { it.title }, readerMode.ordinal) { selected -> save(readerPreferences.copy(mode = ReaderMode.entries[selected].name)); readerDisplayOptions() }
+                        dialogs.choose("本书阅读模式", ReaderMode.entries.map { it.title }, readerMode.ordinal) { selected ->
+                            val mode = ReaderMode.entries[selected]
+                            switchReaderMode(mode)
+                            save(readerPreferences.copy(mode = mode.name))
+                            readerDisplayOptions()
+                        }
                     }
                     Selector("缩放适配 · ${readerPreferences.fit.title}") {
                         dialogs.choose("缩放适配", ReaderFit.entries.map { it.title }, readerPreferences.fit.ordinal) { save(readerPreferences.copy(fit = ReaderFit.entries[it])); readerDisplayOptions() }
@@ -456,7 +530,10 @@ class GalleryActivity : ComponentActivity() {
                         dialogs.choose("双页封面规则", listOf("封面与第二页合并", "封面单独成页"), if (readerPreferences.doubleCover) 0 else 1) { save(readerPreferences.copy(doubleCover = it == 0)); readerDisplayOptions() }
                     }
                     TextAction({
-                        store.personal.clearReaderPreferences(entry); readerPreferences = ReaderPreferences(); readerMode = store.personal.readerMode(site.id); dialogs.dismiss()
+                        switchReaderMode(store.personal.readerMode(site.id))
+                        store.personal.clearReaderPreferences(entry)
+                        readerPreferences = ReaderPreferences()
+                        dialogs.dismiss()
                     }) { Text("恢复来源默认") }
                 }
             }, confirmButton = { TextAction(dialogs::dismiss) { Text("完成") } })
@@ -482,7 +559,8 @@ class GalleryActivity : ComponentActivity() {
             val root = sourceRoot
             try {
                 val pageUrl = firstSaved?.let { withContext(Dispatchers.IO) { app.galleries.downloadedPageUrl(video, it, root) } }
-                if (pageUrl != null) value = app.galleries.originalPage(site, pageUrl, false, entry = video, offlineOnly = true, sourceRoot = root).bytes
+                if (pageUrl != null) value = app.galleries.originalPage(site, pageUrl, false, entry = video,
+                    offlineOnly = true, sourceRoot = root, expectedPage = firstSaved).bytes
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -569,6 +647,19 @@ class GalleryActivity : ComponentActivity() {
         }
         val downloadRevision by app.galleryDownloads.changes.collectAsState()
         val download = remember(downloadRevision, entry.id, entry.site) { app.galleryDownloads.task(entry) }
+        val root = sourceRoot
+        var offlineDownload by remember(download, root) { mutableStateOf<Boolean?>(null) }
+        if (download?.state == GalleryDownloadState.COMPLETED) {
+            LaunchedEffect(download, root, gallery) {
+                offlineDownload = try {
+                    hasOfflineDownload(gallery, download, root)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    false
+                }
+            }
+        }
         Column(Modifier.fillMaxSize().artworkReveal(entry.entryKey).verticalScroll(rememberScrollState()).padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             val comic = site.category == SiteCategory.COMIC
@@ -598,11 +689,18 @@ class GalleryActivity : ComponentActivity() {
                     when (download?.state) {
                         GalleryDownloadState.DOWNLOADING -> "下载中"
                         GalleryDownloadState.QUEUED -> "排队中"
-                        GalleryDownloadState.PAUSED -> "已暂停"
+                        GalleryDownloadState.PAUSED -> if (download.selectedPages != null) "继续所选页" else "已暂停"
                         GalleryDownloadState.RETRY_WAIT -> "等待重试"
-                        GalleryDownloadState.COMPLETED -> if (download.partial) "继续所选页" else "已离线"
+                        GalleryDownloadState.COMPLETED -> when (offlineDownload) {
+                            null -> "检查离线文件…"
+                            true -> if (download.partial) "离线${verb}所选页" else "已离线"
+                            false -> if (download.selectedPages != null) "继续所选页" else "重新下载"
+                        }
                         else -> if (site.category != SiteCategory.COMIC) "下载全部" else "下载整本"
-                    }, R.drawable.ic_download, Modifier.weight(1f)) { downloadAction(download) }
+                    }, R.drawable.ic_download, Modifier.weight(1f),
+                    enabled = download?.state != GalleryDownloadState.COMPLETED || offlineDownload != null) {
+                        downloadAction(download, offlineDownload == true) { offlineDownload = false }
+                    }
                 VerticalDivider(Modifier.height(24.dp), color = MaterialTheme.colorScheme.outline)
                 IconAction(R.drawable.ic_more, "更多图集操作") { galleryMoreOptions(download) }
             }
@@ -639,7 +737,14 @@ class GalleryActivity : ComponentActivity() {
             Action("跳到指定页", click = ::jumpDialog)
         }
     }
-    private suspend fun loadStripPage(target: Int, force: Boolean): GalleryRepository.RenderedPage = loadGalleryPage(target, force)
+    private suspend fun loadStripPage(target: Int, force: Boolean): GalleryRepository.RenderedPage = try {
+        loadGalleryPage(target, force)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        if (offlineQueue) stopOfflineQueue(e)
+        throw e
+    }
 
     private suspend fun loadThumbnail(target: Int, sizePx: Int): android.graphics.Bitmap =
         loadGalleryPage(target, force = false, sizePx = sizePx).bitmap
@@ -649,14 +754,20 @@ class GalleryActivity : ComponentActivity() {
         val source = site
         val root = sourceRoot
         val offline = offlineOnly
+        if (offline && video.site != SiteRegistry.LOCAL.id && target !in readingPages) {
+            val error = error("该页未保存在本机，离线阅读不会联网补页")
+            if (offlineQueue) stopOfflineQueue(error)
+            throw error
+        }
         if (video.site == SiteRegistry.LOCAL.id) {
             val result = if (sizePx == null) app.localLibrary.page(video.id, target) else app.localLibrary.thumbnail(video.id, target, sizePx)
             return result.also { images[target] = it.image }
         }
         val gallery = detail ?: error("${itemNoun}信息尚未载入")
         suspend fun load(url: String, refresh: Boolean): GalleryRepository.RenderedPage {
-            val result = if (sizePx == null) app.galleries.page(source, url, refresh, galleryUrl = video.url, entry = video, offlineOnly = offline, sourceRoot = root)
-                else app.galleries.thumbnail(source, url, sizePx, refresh, video, offline, root)
+            val result = if (sizePx == null) app.galleries.page(source, url, refresh, galleryUrl = video.url, entry = video,
+                offlineOnly = offline, sourceRoot = root, expectedPage = target)
+            else app.galleries.thumbnail(source, url, sizePx, refresh, video, offline, root, expectedPage = target)
             return result.also { images[target] = it.image }
         }
         if (offline) {
@@ -744,7 +855,11 @@ class GalleryActivity : ComponentActivity() {
             lifecycleScope.launch {
                 try {
                     app.galleryDownloads.add(entry, pages); toast("已选择 ${pages.size} 页，可在下载中心查看")
-                } catch (e: Exception) { if (e is CancellationException) throw e; showError(e) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    dialogs.message("选择页码下载失败", e.message ?: "无法加入下载，请重试")
+                }
             }
         }
     }
@@ -761,35 +876,47 @@ class GalleryActivity : ComponentActivity() {
     }
     private fun readingOptions() {
         dialogs.choose("阅读模式", ReaderMode.entries.map { it.title }, readerMode.ordinal) { index ->
-            saveProgress(); readerMode = ReaderMode.entries[index]; store.personal.setReaderMode(site.id, readerMode)
-            jump = ReaderJump(jump.serial + 1, page, if (readerMode == ReaderMode.STRIP) stripOffset else 0)
+            val mode = ReaderMode.entries[index]
+            switchReaderMode(mode)
+            store.personal.setReaderMode(site.id, mode)
         }
     }
     private fun bookmarks() {
+        val gallery = detail?.takeIf { readingPages.isNotEmpty() } ?: run {
+            toast("${itemNoun}信息尚未载入")
+            return
+        }
         saveProgress()
         val marks = store.personal.bookmarks(entry)
         val current = marks.any { it.page == page }
         dialogs.choose("页码书签", listOf(if (current) "移除本页书签" else "添加第 $page 页书签") + marks.map { "跳到第 ${it.page} 页" } + if (marks.isNotEmpty()) listOf("删除书签…") else emptyList()) { index ->
             when {
                 index == 0 -> store.personal.toggleBookmark(entry, page, stripOffset)
-                index <= marks.size -> marks[index - 1].let { reader(it.page.coerceIn(1, detail!!.pageCount), it.offset) }
+                index <= marks.size -> marks[index - 1].let { reader(it.page.coerceIn(1, gallery.pageCount), it.offset) }
                 else -> dialogs.choose("删除书签", marks.map { "第 ${it.page} 页" }) { store.personal.toggleBookmark(entry, marks[it].page) }
             }
         }
     }
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
-        if (reading && readingBehavior.volumeKeys && keyCode in setOf(android.view.KeyEvent.KEYCODE_VOLUME_UP, android.view.KeyEvent.KEYCODE_VOLUME_DOWN) && readingPages.isNotEmpty()) {
-            val forward = (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) != readingBehavior.reverseVolume
-            autoPageRunning = false; slideshowRunning = false
-            val index = readingPages.binarySearch(page).coerceAtLeast(0)
-            val target = if (event.repeatCount > 0) { if (forward) readingPages.last() else readingPages.first() }
-                else readingPages.getOrNull(index + if (forward) 1 else -1) ?: page
-            reader(target)
+        val navigation = readerNavigation
+        val up = keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP
+        val down = keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN
+        if (reading && readingBehavior.volumeKeys && navigation != null && (up || down)) {
+            moveReader(navigation, forward = up != readingBehavior.reverseVolume, repeated = event.repeatCount > 0)
             return true
         }
         return super.onKeyDown(keyCode, event)
     }
-    override fun onSaveInstanceState(outState: Bundle) { saveProgress(); outState.putBoolean("offline", offlineOnly); outState.putInt("page", page); outState.putInt("stripOffset", stripOffset); outState.putBoolean("reading", reading); outState.putBoolean("controlsVisible", controlsVisible); super.onSaveInstanceState(outState) }
-    override fun onStop() { autoPageRunning = false; slideshowRunning = false; saveProgress(); super.onStop() }
+    override fun onSaveInstanceState(outState: Bundle) {
+        saveProgress()
+        outState.putBoolean("offline", offlineOnly)
+        outState.putBoolean("offlineQueue", offlineQueue)
+        outState.putInt("page", page)
+        outState.putInt("stripOffset", stripOffset)
+        outState.putBoolean("reading", reading)
+        outState.putBoolean("controlsVisible", controlsVisible)
+        super.onSaveInstanceState(outState)
+    }
+    override fun onStop() { pauseReaderPlayback(); saveProgress(); super.onStop() }
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) applyBars() }
 }

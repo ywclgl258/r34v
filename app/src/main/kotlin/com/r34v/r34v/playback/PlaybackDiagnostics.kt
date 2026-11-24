@@ -60,5 +60,5 @@ class PlaybackDiagnostics(private val network: Network, private val probe: Media
      * 退到最高档，标签对不上时退到“不高于该高度里最高的一档”。
      */
     internal fun pickTarget(streams: List<Stream>, preferred: String): Stream? =
-        StreamSelection.preferred(streams, preferred) ?: streams.firstOrNull { it.height > 0 } ?: streams.firstOrNull()
+        StreamSelection.preferred(streams, preferred)
 }

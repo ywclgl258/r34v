@@ -50,7 +50,7 @@ private class SubscriptionRefresh {
 private data class SubscriptionTagCheck(val slug: String, val job: Job)
 
 @Composable fun SubscriptionScreen(app: R34Application, site: SiteContext, dialogs: ComposeDialogs,
-    play: (Video) -> Unit, favorite: (Video) -> Unit, saved: Set<String>, openTag: (Subscription) -> Unit,
+    play: (Video) -> Unit, favorite: (Video) -> Unit, openTag: (Subscription) -> Unit,
     revision: () -> Unit, lockedSite: String? = null) {
     val liveTagSources = remember(app, lockedSite) {
         SiteRegistry.all.filter { candidate ->
@@ -60,7 +60,7 @@ private data class SubscriptionTagCheck(val slug: String, val job: Job)
     }
     val lockedOwner = lockedSite?.let { liveTagSources.singleOrNull() }
     if (lockedSite != null && lockedOwner == null) {
-        val name = SiteRegistry.byId(lockedSite)?.name ?: SiteRegistry.retiredVideoHosts[lockedSite] ?: lockedSite
+        val name = SiteRegistry.displayName(lockedSite)
         SubscriptionList {
             item("unsupported") { LibraryNotice("此站点不支持标签订阅", name) }
         }
@@ -262,11 +262,9 @@ private data class SubscriptionTagCheck(val slug: String, val job: Job)
                 val feeds = tags.mapNotNull { tag -> refresh.feeds[tag.slug]?.copy(subscription = tag) }
                 feeds.takeIf { it.isNotEmpty() }?.let { store.subscriptionPage(it, order) }
             }
-            var remoteSaved by remember(owner.id, site.id) { mutableStateOf(if (owner.id == site.id) emptySet() else store.subscriptionSavedKeys(owner.id)) }
-            val savedKeys = if (owner.id == site.id) saved else remoteSaved
-            val toggleFavorite: (Video) -> Unit = { video ->
-                favorite(video)
-                if (owner.id != site.id) remoteSaved = store.subscriptionSavedKeys(owner.id)
+            val catalogRevision by store.catalogChanges.collectAsState()
+            val savedKeys = remember(catalogRevision, owner.id) {
+                store.favorites(owner.id).mapTo(mutableSetOf(), Favorite::key)
             }
             Column(Modifier.padding(horizontal = pagePadding), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Copy(if (view == SubscriptionView.CONTENT) "浏览所选来源中已订阅标签的作品。" else "查看检查发现的新作品。首次检查建立基线。")
@@ -295,7 +293,7 @@ private data class SubscriptionTagCheck(val slug: String, val job: Job)
                     }
                     when {
                         view == SubscriptionView.INBOX -> subscriptionInbox(inbox, unreadOnly, { unreadOnly = it },
-                            { keys -> store.personal.markRead(owner.id, keys) }, columns, play, toggleFavorite)
+                            { keys -> store.personal.markRead(owner.id, keys) }, columns, play, favorite)
                         tags.isEmpty() -> item("empty") {
                             EmptyState("还没有订阅标签", "在标签页点“订阅”，即可在这里看到该来源的订阅内容。",
                                 "浏览标签") { browseTags(owner.id) }
@@ -311,7 +309,7 @@ private data class SubscriptionTagCheck(val slug: String, val job: Job)
                                 }
                             }
                             if (refresh.busy && page == null) item("loading") { Loading(title = "正在整理订阅内容") }
-                            page?.let { subscriptionWorks(it, columns, savedKeys, play, toggleFavorite, openTag) }
+                            page?.let { subscriptionWorks(it, columns, savedKeys, play, favorite, openTag) }
                         }
                     }
                 }
@@ -319,9 +317,6 @@ private data class SubscriptionTagCheck(val slug: String, val job: Job)
         }
     }
 }
-
-private fun LibraryStore.subscriptionSavedKeys(site: String): Set<String> = favorites(site)
-    .filter { it.kind in listOf("video", "gallery") }.map { "${it.site}:${it.target}" }.toSet()
 
 @Composable private fun SubscriptionList(content: LazyListScope.() -> Unit) {
     val padding = LocalUiDensity.current.pagePadding
@@ -422,8 +417,9 @@ private fun LazyListScope.subscriptionWorks(page: SubscriptionPage, columns: Int
 @Composable private fun SubscriptionRow(row: List<Video>, columns: Int, saved: Set<String>, play: (Video) -> Unit, favorite: (Video) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(LocalUiDensity.current.cardGap)) {
         row.forEach { video ->
+            val kind = if (video.isGalleryWork) "gallery" else "video"
             MediaCard(video, Modifier.weight(1f),
-                menu = listOf((if ("${video.site}:${video.id}" in saved) "已收藏 / 取消收藏" else "收藏") to { favorite(video) })) { play(video) }
+                menu = listOf((if ("${video.site}:$kind:${video.id}" in saved) "已收藏 / 取消收藏" else "收藏") to { favorite(video) })) { play(video) }
         }
         repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
     }
