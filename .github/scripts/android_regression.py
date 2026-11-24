@@ -41,8 +41,18 @@ def accessibility_system_crash(results):
 def isolate_device_apps():
     # The disposable google_apis CI image supports adb root. Preserve Android's network
     # availability signals for Media3 while allowing app sockets to reach local fixtures.
-    subprocess.run(["adb", "root"], check=True, timeout=30)
-    subprocess.run(["adb", "wait-for-device"], check=True, timeout=60)
+    last_error = ""
+    for attempt in range(5):
+        subprocess.run(["adb", "wait-for-device"], check=True, timeout=60)
+        rooted = subprocess.run(["adb", "root"], capture_output=True, text=True, timeout=30)
+        subprocess.run(["adb", "wait-for-device"], check=True, timeout=60)
+        uid = subprocess.run(["adb", "shell", "id", "-u"], capture_output=True, text=True, timeout=30)
+        if rooted.returncode == 0 and uid.returncode == 0 and uid.stdout.strip() == "0":
+            break
+        last_error = f"attempt {attempt + 1}: root={rooted.returncode} ({rooted.stdout.strip()} {rooted.stderr.strip()}) uid={uid.stdout.strip()}"
+        time.sleep(2)
+    else:
+        raise RuntimeError(f"adb root did not succeed: {last_error}")
     for tool in ("iptables", "ip6tables"):
         rule = ["OUTPUT", "!", "-o", "lo", "-m", "owner", "--uid-owner", "10000-99999", "-j", "REJECT"]
         if subprocess.run(["adb", "shell", tool, "-C", *rule], timeout=30, capture_output=True).returncode:
@@ -78,6 +88,7 @@ def run():
             for package in ("com.r34v.r34v.debug.test", "com.r34v.r34v.debug"):
                 if f"package:{package}" in installed:
                     subprocess.run(["adb", "uninstall", package], check=True, timeout=30)
+            isolate_device_apps()
             return subprocess.run(command).returncode
         time.sleep(2)
     raise RuntimeError("Android 7 did not finish rebooting")
