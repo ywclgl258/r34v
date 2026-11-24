@@ -50,7 +50,7 @@ class HlsPlaybackIntegrationTest : ComposeUiCase() {
                 f.app.playback.manager.requirements = androidx.media3.exoplayer.scheduler.Requirements(0)
                 f.app.playback.add(video, stream)
             }
-            fun waitUntil(message: String, condition: () -> Boolean) {
+            fun waitUntil(message: () -> String, condition: () -> Boolean) {
                 val until = android.os.SystemClock.elapsedRealtime() + 25000
                 while (android.os.SystemClock.elapsedRealtime() < until) {
                     var done = false
@@ -58,8 +58,9 @@ class HlsPlaybackIntegrationTest : ComposeUiCase() {
                     if (done) return
                     Thread.sleep(100)
                 }
-                fail(message)
+                fail(message())
             }
+            fun waitUntil(message: String, condition: () -> Boolean) = waitUntil({ message }, condition)
             waitUntil("HLS download did not complete") {
                 val download = f.app.playback.manager.downloadIndex.getDownload(key)
                 assertNotEquals("HLS download failed", Download.STATE_FAILED, download?.state)
@@ -71,9 +72,11 @@ class HlsPlaybackIntegrationTest : ComposeUiCase() {
                 activity = f.ins.startActivitySync(Intent(f.ins.targetContext, PlayerActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("video", f.app.library.gson.toJson(video)).putExtra(extra, key)) as PlayerActivity
                 val playerField = PlayerActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
-                waitUntil("Production player did not decode $extra HLS") {
+                var lastState = "none"
+                waitUntil({ "Production player did not decode $extra HLS ($lastState)" }) {
                     val player = playerField.get(activity) as? ExoPlayer
                     assertNull(player?.playerError)
+                    lastState = "player=${player != null} state=${player?.playbackState} w=${player?.videoSize?.width} h=${player?.videoSize?.height} pos=${player?.currentPosition} dur=${player?.duration} pwr=${player?.playWhenReady} playing=${player?.isPlaying}"
                     player?.playbackState == Player.STATE_READY && player.videoSize.width > 0
                 }
                 f.ins.runOnMainSync { activity?.finish() }; activity = null
@@ -104,7 +107,7 @@ class HlsPlaybackIntegrationTest : ComposeUiCase() {
             center.performScrollToIndex(0)
             clickText("已完成"); center.performScrollToNode(tile)
             ui.onNode(hasAnyAncestor(tile) and hasText("已完成 ·", substring = true)).assertExists()
-            ui.onNode(hasAnyAncestor(tile) and hasText("离线打开")).assertDoesNotExist()
+            ui.onNode(hasAnyAncestor(tile) and hasText("离线打开")).assertIsDisplayed()
         } finally {
             f.ins.runOnMainSync {
                 activity?.finish(); f.app.playback.remove(key)

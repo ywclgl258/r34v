@@ -287,6 +287,7 @@ class PlayerActivity : ComponentActivity() {
             playerView?.player = null
             previous.release()
         }
+        playerView?.player = created
         created.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
         created.setHandleAudioBecomingNoisy(true)
         created.addListener(object : Player.Listener {
