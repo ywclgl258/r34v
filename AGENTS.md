@@ -1,5 +1,7 @@
 # R34V development rules
 
+> **本仓库已于 2026-11-25 结档于 2.12.1 / 57，项目不再更新。** 除非用户明确要求恢复维护，否则不新增功能、不重构、不发版。结档产物与归档位置见 [结档说明](docs/ARCHIVE.md)。新项目是 `D:\Raven`（`com.raven.app`），两者不共享包名、签名或代码模块。
+
 - 本项目为 Kotlin 原生 Android 工程，保持 `com.r34v.r34v` 正式包名。
 - 每次正式更新递增 `release.properties` 中的 versionCode。主题保留黑底；用户已授权在本轮 UI/UX 重构中调整强调色、主按钮颜色与控件样式，并要求更多参考 Netflix App。
 - 旧源码仅作仓库外本地归档，不纳入 Git。未经用户指示不推送或发布。

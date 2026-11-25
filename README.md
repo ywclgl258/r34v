@@ -1,5 +1,7 @@
 # R34V
 
+> **已结档。** 项目停更于 2.12.1 / 57，不再接受功能更新。最终产物、签名核验与归档位置见 [结档说明](docs/ARCHIVE.md)。
+
 支持视频、漫画与写真共 19 个站点的 Kotlin 原生 Android 客户端，包括 Rule34Video、Hanime1、Iwara、MissAV、Jable、rou.video、KBJFree、Pornhub、E-Hentai、ExHentai、nhentai、Hitomi、WNACG、JMComic、4KHD、Everia、4KUp、GalleryEpic 和 Cosplaytele。界面使用 Jetpack Compose + Material 3，包括浏览、片库、设置、视频控件和条漫阅读器。Media3 播放画面与仅用于 EH/EX 官方认证的 WebView 通过 AndroidView 接入；不依赖 Flutter。迁移说明见 [Compose 重构](docs/dev/compose-migration.md)。
 
 ## 功能
